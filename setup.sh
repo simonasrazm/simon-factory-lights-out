@@ -43,6 +43,7 @@ while [[ $# -gt 0 ]]; do
   case $1 in
     --workspace) WORKSPACE="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
+    --sflo-path) SFLO_PATH_OVERRIDE="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
@@ -102,6 +103,14 @@ echo ""
 
 # --- Install SFLO to workspace ---
 
+# If --sflo-path was provided, sflo is already in place — skip copy entirely
+if [[ -n "${SFLO_PATH_OVERRIDE:-}" ]]; then
+  SFLO_PATH="$SFLO_PATH_OVERRIDE"
+  IN_PLACE=true
+  echo "SFLO path provided: $SFLO_PATH — skipping copy"
+  echo "  ✓ SFLO at $SFLO_PATH"
+else
+
 SFLO_PATH="$WORKSPACE/$SFLO_DIR_NAME"
 IN_PLACE=false
 
@@ -121,6 +130,16 @@ elif [[ -n "$SOURCE_REAL" && -n "$WORKSPACE_REAL" && "$SOURCE_REAL" == "$WORKSPA
   IN_PLACE=true
   SFLO_PATH="$SOURCE"
   echo "Running from SFLO repo root — configuring in-place (no copy needed)"
+elif [[ -n "$SOURCE_REAL" && -n "$SFLO_REAL" && "$SOURCE_REAL" == "$SFLO_REAL"/* ]]; then
+  # Source is INSIDE the target (e.g. sflo-dev/sflo/ submodule inside sflo-dev/)
+  # Copying would destroy the source. Use source's parent as SFLO_PATH.
+  IN_PLACE=true
+  SFLO_PATH="$SFLO_REAL"
+  echo "Source is inside target directory — configuring in-place (no copy needed)"
+elif [[ -n "$SFLO_REAL" && -n "$SOURCE_REAL" && "$SFLO_REAL" == "$SOURCE_REAL"/* ]]; then
+  # Target is inside source — same overlap problem in reverse
+  IN_PLACE=true
+  echo "Target is inside source directory — configuring in-place (no copy needed)"
 elif [[ -d "$SOURCE" ]]; then
   # Local source — copy (prefer cp -r for cross-platform, rsync if available)
   if [[ -d "$SFLO_PATH" ]]; then
@@ -154,6 +173,8 @@ else
   exit 1
 fi
 echo "  ✓ SFLO at $SFLO_PATH"
+
+fi  # end of SFLO_PATH_OVERRIDE check
 
 # --- Install hooks ---
 
