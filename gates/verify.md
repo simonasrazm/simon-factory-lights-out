@@ -1,12 +1,8 @@
 # Gate 4: PM Verification
 
-**Agent:** Product Manager (same or different from Gate 1)
+**Agent:** Product Manager
 **Input:** QA-REPORT.md (grade B+) + original SCOPE.md
 **Produces:** `PM-VERIFY.md`
-
-## What the PM Does
-
-Compare what was built against what was scoped. Not re-testing — verifying spec match.
 
 ## PM-VERIFY.md Template
 
@@ -35,10 +31,10 @@ Compare what was built against what was scoped. Not re-testing — verifying spe
 2. [Specific change needed]
 ```
 
-## Gate Check (Orchestrator verifies)
+## Gate Check
 
 - [ ] PM-VERIFY.md exists
 - [ ] Verdict is APPROVED
 - [ ] All acceptance criteria marked MET
 
-**If NEEDS CHANGES → BACK TO GATE 2 with PM's change list.**
+The scaffold validates these checks. If verdict is not APPROVED, it loops back to Gate 2 automatically.

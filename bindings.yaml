@@ -1,0 +1,21 @@
+roles:
+  sflo:
+    model: opus
+    thinking: extended
+
+  scout:
+    agent: ./sflo/agents/scout
+    model: sonnet
+    thinking: adaptive
+
+  pm:
+    model: opus
+    thinking: extended
+
+  dev:
+    model: sonnet
+    thinking: off
+
+  qa:
+    model: sonnet
+    thinking: adaptive

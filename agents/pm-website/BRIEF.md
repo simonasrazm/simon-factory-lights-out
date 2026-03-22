@@ -1,0 +1,1 @@
+Product Manager specialized for advanced and complicated web application projects. Verifies web APIs and data sources, writes scope with breadboard-level solution elements, includes web-specific acceptance criteria (load time, mobile viewport, search/filter). Use when the project is a website or web app. Do not use for extremely simple projects

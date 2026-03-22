@@ -1,54 +1,78 @@
 # SFLO — Simon Factory Lights Out
 
-**SFLO** is a gated pipeline protocol for building software products with AI coding agents. "Lights out" means you don't look at the code — you throw an idea in and test the outcome. It ensures nothing ships without proper discovery, development, testing, and verification — even when humans aren't watching.
+A gated pipeline protocol for building software with AI agents. Five gates — each producing a required artifact. No artifact, no progress. No skipping.
 
-Born from building software with AI agents that skip requirements, ship broken UIs, and declare "done" without evidence. SFLO makes that structurally impossible. Of course LLMs will bend rules. Of course this is not 100% reliable. Code wins over the LLM, but this system gives speed that is superior to precision (if that is what you need). I found that quality matters but only after the speed. Test many good enough things and then focus on quality. In addition this procedure has a cost aspect. Never seen in any popular agentic framework yet.
+```mermaid
+flowchart LR
+    G1["Gate 1<br/>DISCOVER<br/><br/>PM Agent<br/>SCOPE.md"] --> DEV_QA
 
-## The Problem
+    subgraph DEV_QA ["Inner Loop — max 10 rounds"]
+        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>TEST<br/><br/>QA Agent<br/>QA-REPORT.md"]
+        G3 -- "grade < B+" --> G2
+    end
 
-When you tell an AI agent "build me X":
-
-- It skips requirements gathering and builds from vibes
-- It does not test
-- It declares "done" before anything actually works
-- Context is lost between agent handoffs
-- Quality bars are fake
-
-## The Solution: 5 Gates
-
-```
-DISCOVER → BUILD → TEST → VERIFY → SHIP
+    DEV_QA -- "grade ≥ B+" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
+    G4 -- "not A" --> DEV_QA
+    G4 -- "A" --> G5["Gate 5<br/>SHIP<br/><br/>SFLO Agent<br/>SHIP-DECISION.md"]
 ```
 
-Each gate produces a required artifact. No artifact = gate not passed. No skipping.
+## Install
 
-## Quick Start
+Tell your AI agent:
 
-1. Copy the protocol files to your AI agent workspace
-2. When starting a new product: trigger `SFLO`
-3. The orchestrating agent reads `sflo.md` and runs the pipeline
-4. Each gate spawns a specialist agent with the right context
-5. Ship only after all 5 gates pass
+> Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-## Files
+The agent will clone the repo, run `setup.sh`, install the pipeline hook, and configure bindings. After a gateway restart (OpenClaw) or new session (Claude Code), SFLO is ready.
 
-| File | Purpose |
-|------|---------|
-| `sflo.md` | The core pipeline — read this first |
-| `gates/discovery.md` | Gate 1: PM Discovery — data sources, scope, acceptance criteria |
-| `gates/build.md` | Gate 2: Developer Build — implementation with self-checks |
-| `gates/test.md` | Gate 3: QA Testing — real data, real queries, graded |
-| `gates/verify.md` | Gate 4: PM Verification — spec match confirmation |
-| `gates/ship.md` | Gate 5: Ship Decision — evidence-based go/no-go |
-| `roles.md` | Agent roles and selection heuristics |
+## Usage
 
-## Design Principles
+Say **"SFLO: [describe what to build]"** to start the pipeline. Examples:
 
-- **Evidence over assertion** — every gate produces a file with proof
-- **Real data or fail** — mock/sample data is an automatic failure
-- **Loops are explicit** — Dev↔QA cycles up to 10 rounds, then escalate
-- **Context survives handoffs** — each agent reads predecessor's artifacts
-- **Humans can override** — but overrides are logged
+- "SFLO: build a job board website with search and filters"
+- "SFLO: create a CLI tool that scans code for vulnerabilities"
+
+The pipeline runs automatically — Scout picks the right agents, gates enforce quality, hooks keep it moving until done or escalated.
+
+## Agents
+
+Gates define **what** to produce. Agents define **how**. Each agent is a directory with a `SOUL.md` (methodology) and a `BRIEF.md` (one-paragraph description for Scout matching). See `docs/agent-spec.md` for the spec.
+
+### How Scout picks agents
+
+On user prompt, Scout scans `agents/` directory and reads each `BRIEF.md` to understand what the agent specializes in. It then matches agents to pipeline roles based on the user's prompt. Scout is an LLM agent.
+
+```mermaid
+flowchart TD
+    P["User prompt:<br/>'Build a weather dashboard'"] --> S["Scout reads prompt"]
+    S --> SCAN["Scans agent directories"]
+    SCAN --> B1["agents/pm/BRIEF.md<br/>'Generic PM for any project'"]
+    SCAN --> B2["agents/pm-website/BRIEF.md<br/>'PM specialized for web apps.<br/>Web-specific acceptance criteria.'"]
+    SCAN --> B3["agents/pm-mobile/BRIEF.md<br/>'PM for mobile apps. Platform-specific<br/>criteria for iOS and Android.'"]
+    B1 --> MATCH{"Match prompt<br/>to role"}
+    B2 --> MATCH
+    B3 --> MATCH
+    MATCH -- "web app → pm-website" --> A["PM: agents/pm-website"]
+    MATCH -- "no match → generic" --> G["PM: agents/pm"]
+```
+
+**Example:** When the prompt says "build a weather dashboard," Scout reads all BRIEF.md files, sees that `pm-website` specializes in web apps, and assigns it as PM. If no better agent matches, Scout falls back to the generic agent (`agents/pm`).
+
+### Adding your own agents
+
+Create a directory with two files:
+
+```
+agents/
+  my-pm-agent/
+    BRIEF.md      ← one paragraph, tells Scout when to use this agent
+    SOUL.md       ← full methodology, read by the agent at runtime
+```
+
+Scout will discover your agent automatically on the next pipeline run — no configuration needed.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

@@ -10,4 +10,4 @@ Thanks for your interest in improving the Simon Factory Lights Out protocol.
 ## What I'm Looking For
 
 - Improvements to gate definitions based on real-world usage
-- Specialized PM and other agents that would generally benefit anyone
+- New agents that would generally benefit anyone (see `docs/agent-spec.md` for the agent format)

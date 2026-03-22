@@ -1,6 +1,6 @@
 # Gate 5: Ship Decision
 
-**Agent:** Orchestrator (the coordinating agent)
+**Agent:** SFLO (the coordinating agent)
 **Input:** All gate artifacts
 **Produces:** `SHIP-DECISION.md`
 

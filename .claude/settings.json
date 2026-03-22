@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python src/hooks/claude-code/stop_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

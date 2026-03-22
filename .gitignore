@@ -1,0 +1,5 @@
+.sflo/
+__pycache__/
+*.pyc
+*.lock
+.claude/settings.local.json

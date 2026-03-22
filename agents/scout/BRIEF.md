@@ -1,0 +1,1 @@
+Evaluates user prompts and matches available agents to pipeline roles. Scans agents/ directory, reads BRIEF.md descriptions, returns structured assignments. Always runs as the first step at pipeline startup.

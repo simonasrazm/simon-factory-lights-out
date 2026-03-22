@@ -1,0 +1,1 @@
+Generic QA agent. Tests with real data, grades honestly, fixes minor bugs directly. Covers real data verification, core journey, acceptance criteria, edge cases, and performance. Use for any project type.
