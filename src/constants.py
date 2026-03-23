@@ -26,3 +26,8 @@ S_SCOUT = "scout"
 S_ASSIGN = "assign"
 S_ESCALATE = "escalate"
 S_DONE = "done"
+
+PRE_GATE_PHASES = {
+    S_SCOUT: {"artifact": "SCOUT-ASSIGNMENTS.md", "next_state": "gate-1"},
+    S_ASSIGN: {"artifact": "SCOUT-ASSIGNMENTS.md", "next_state": "gate-1"},
+}

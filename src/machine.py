@@ -4,7 +4,7 @@ import os
 import re
 
 from .constants import (
-    GATES, SFLO_ROOT, INNER_LOOP_MAX, OUTER_LOOP_MAX,
+    GATES, PRE_GATE_PHASES, SFLO_ROOT, INNER_LOOP_MAX, OUTER_LOOP_MAX,
     S_SCOUT, S_ASSIGN, S_ESCALATE, S_DONE,
 )
 from .state import write_state
@@ -40,12 +40,45 @@ def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
     return reads
 
 
+def _parse_assignments_artifact(artifact_path):
+    """Parse a SCOUT-ASSIGNMENTS.md artifact into {role: agent_path}."""
+    assignments = {}
+    role_map = {"pm": "pm", "developer": "dev", "qa": "qa"}
+    with open(artifact_path, "r", encoding="utf-8") as f:
+        for line in f:
+            m = re.match(r"-\s+\*\*(\w+):\*\*\s+(\S+)", line.strip())
+            if m:
+                label = m.group(1).lower()
+                role = role_map.get(label, label)
+                assignments[role] = m.group(2)
+    return assignments
+
+
 def auto_transition(state, sflo_dir):
-    """If at gate-N and the artifact already exists, transition to check-N.
+    """Advance state when the expected artifact for the current phase exists.
+
+    Covers both pre-gate phases (from PRE_GATE_PHASES table) and gate
+    phases (from GATES table). Each phase produces an artifact; when
+    that artifact is present on disk the state advances.
 
     Returns True if a transition was made.
     """
-    gate_match = re.match(r"gate-(\d+)", state["current_state"])
+    current = state["current_state"]
+
+    # --- pre-gate phases (scout, assign, …) ---------------------------------
+    phase = PRE_GATE_PHASES.get(current)
+    if phase:
+        artifact_path = os.path.join(sflo_dir, phase["artifact"])
+        if os.path.isfile(artifact_path):
+            if not state.get("assignments"):
+                state["assignments"] = _parse_assignments_artifact(artifact_path)
+            state["current_state"] = phase["next_state"]
+            write_state(sflo_dir, state)
+            return True
+        return False
+
+    # --- gate phases (gate-1 … gate-5) --------------------------------------
+    gate_match = re.match(r"gate-(\d+)", current)
     if gate_match:
         n = int(gate_match.group(1))
         artifact = GATES[n]["artifact"]
@@ -54,6 +87,7 @@ def auto_transition(state, sflo_dir):
             state["current_state"] = f"check-{n}"
             write_state(sflo_dir, state)
             return True
+
     return False
 
 
