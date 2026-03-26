@@ -8,15 +8,19 @@ flowchart LR
 
     subgraph DEV_QA ["Inner Loop — max 10 rounds"]
         G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>TEST<br/><br/>QA Agent<br/>QA-REPORT.md"]
-        G3 -- "grade < B+" --> G2
+        G3 -- "below threshold" --> G2
     end
 
-    DEV_QA -- "grade ≥ B+" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
+    DEV_QA -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
     G4 -- "not A" --> DEV_QA
     G4 -- "A" --> G5["Gate 5<br/>SHIP<br/><br/>SFLO Agent<br/>SHIP-DECISION.md"]
 ```
 
 ## Install
+
+If you want to use v1 (no code) - get it from [here](https://github.com/simonasrazm/simon-factory-lights-out/commit/7c53dba87045d3ae80b4b01bb23d4cbf09941b84)
+
+### Latest version install
 
 Tell your AI agent:
 

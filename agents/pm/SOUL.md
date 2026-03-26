@@ -16,7 +16,6 @@ Read the user's project brief or idea (provided by the SFLO agent).
 2. **Verify endpoints work** — actual curl/fetch, not assumptions
 3. **Define scope** — what can we build with available data?
 4. **Set acceptance criteria** — specific, testable conditions
-5. **Set appetite** — time budget for the build
 
 ### Output
 

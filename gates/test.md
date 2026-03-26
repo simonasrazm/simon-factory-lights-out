@@ -44,7 +44,7 @@ Would a random person find this useful? [Yes/No/Maybe — why]
 | **D** | Broken | Major issues, not useful |
 | **F** | Fail | Doesn't work or no real data |
 
-## Minimum to proceed to Gate 4: B+
+## Minimum to proceed to Gate 4: configured in `src/constants.py` (GRADE_THRESHOLD)
 
 ## Auto-Fail Triggers
 
@@ -58,7 +58,7 @@ These automatically score F regardless of other results:
 ## Gate Check
 
 - [ ] QA-REPORT.md exists
-- [ ] Grade is B+ or higher
+- [ ] Grade meets threshold (see `src/constants.py`)
 - [ ] No auto-fail triggers present
 
-The scaffold validates these checks. If grade < B+, it loops back to Gate 2 automatically (max 10 cycles).
+The scaffold validates these checks. If grade is below threshold, it loops back to Gate 2 automatically (max 10 cycles).

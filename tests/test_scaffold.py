@@ -4,8 +4,12 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from conftest import run_scaffold, BINDINGS_YAML, PASSING_ARTIFACTS
 

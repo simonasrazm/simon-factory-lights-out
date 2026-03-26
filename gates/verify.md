@@ -1,7 +1,7 @@
 # Gate 4: PM Verification
 
 **Agent:** Product Manager
-**Input:** QA-REPORT.md (grade B+) + original SCOPE.md
+**Input:** QA-REPORT.md (passed QA threshold) + original SCOPE.md
 **Produces:** `PM-VERIFY.md`
 
 ## PM-VERIFY.md Template
