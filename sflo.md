@@ -29,7 +29,7 @@ Custom agents can extend any role. Core gate checks are always enforced by the s
 |------|----------|----------------------|
 | 1. Discovery | `SCOPE.md` | Data sources section, acceptance criteria |
 | 2. Build | `BUILD-STATUS.md` | Build success marker, all checks marked |
-| 3. Test | `QA-REPORT.md` | Grade present, grade ≥ B+ threshold, auto-fail patterns |
+| 3. Test | `QA-REPORT.md` | Grade present, grade meets threshold (see `constants.py`), auto-fail patterns |
 | 4. Verify | `PM-VERIFY.md` | Verdict present, verdict = APPROVED |
 | 5. Ship | `SHIP-DECISION.md` | Decision present, decision ∈ {SHIP, HOLD, KILL} |
 
@@ -39,7 +39,7 @@ All artifacts are produced in `.sflo/` — runtime outputs, not source code.
 
 Enforced by the scaffold state machine:
 
-- **QA grade < B+:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles.
+- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `src/constants.py`.)
 - **PM rejects:** Outer loop — back to Dev→QA with PM's deviation list. Inner counter resets. Max 10 outer loops.
 - **Limits exhausted:** Scaffold escalates to human. No agent can continue.
 

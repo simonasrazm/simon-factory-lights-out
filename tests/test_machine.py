@@ -8,7 +8,7 @@ import unittest
 import sys
 # Add sflo/ to path so we can import src as a package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
+sys.path.insert(0, os.path.dirname(__file__))
 from conftest import TempDirMixin, PASSING_ARTIFACTS
 from src.machine import compute_next, apply_transition, auto_transition
 
@@ -45,7 +45,7 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
 
     def test_check_passed(self):
         self.write_state("check-3")
-        self.write_artifact("QA-REPORT.md", "### Grade: A\n")
+        self.write_artifact("QA-REPORT.md", PASSING_ARTIFACTS["QA-REPORT.md"])
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         self.assertEqual(result["action"], "validated")
@@ -53,7 +53,7 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
 
     def test_check_failed(self):
         self.write_state("check-3")
-        self.write_artifact("QA-REPORT.md", "### Grade: C\n")
+        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         self.assertEqual(result["action"], "check_failed")
@@ -82,7 +82,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_gate5_validated_reaches_done(self):
         self.write_state("check-5")
-        self.write_artifact("SHIP-DECISION.md", "### Decision: SHIP\n")
+        self.write_artifact("SHIP-DECISION.md", PASSING_ARTIFACTS["SHIP-DECISION.md"])
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         apply_transition(state, result, self.sflo_dir)
@@ -90,7 +90,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_qa_failure_loops_inner(self):
         self.write_state("check-3", inner=2)
-        self.write_artifact("QA-REPORT.md", "### Grade: C\n")
+        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -100,7 +100,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_qa_failure_exhausted(self):
         self.write_state("check-3", inner=9)
-        self.write_artifact("QA-REPORT.md", "### Grade: C\n")
+        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -109,7 +109,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_pm_rejection_loops_outer(self):
         self.write_state("check-4", inner=5, outer=1)
-        self.write_artifact("PM-VERIFY.md", "### Verdict: NEEDS CHANGES\n")
+        self.write_artifact("PM-VERIFY.md", "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -119,7 +119,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_pm_rejection_escalates(self):
         self.write_state("check-4", outer=9)
-        self.write_artifact("PM-VERIFY.md", "### Verdict: NEEDS CHANGES\n")
+        self.write_artifact("PM-VERIFY.md", "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)

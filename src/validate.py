@@ -60,6 +60,9 @@ def validate_gate(gate_num, sflo_dir):
     if content is None:
         return False, checks
 
+    # Resolve threshold grade name for error messages
+    _threshold_grade = next((k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?")
+
     if gate_num == 1:
         has_data = bool(re.search(r"##\s*Data Sources", content, re.IGNORECASE))
         checks.append({"name": "has_data_sources", "pass": has_data})
@@ -68,6 +71,17 @@ def validate_gate(gate_num, sflo_dir):
         checks.append({"name": "has_acceptance_criteria", "pass": len(ac_lines) >= 1,
                         "detail": f"{len(ac_lines)} criteria found"})
 
+        has_challenge_analysis = bool(re.search(r"##\s*Challenge Analysis", content, re.IGNORECASE))
+        checks.append({"name": "has_challenge_analysis", "pass": has_challenge_analysis})
+
+        has_what_building = bool(re.search(r"##\s*What We're Building", content, re.IGNORECASE))
+        checks.append({"name": "has_what_building", "pass": has_what_building})
+
+        has_features = bool(re.search(r"##\s*Features", content, re.IGNORECASE))
+        checks.append({"name": "has_features", "pass": has_features})
+
+        has_state_management = bool(re.search(r"##\s*State Management", content, re.IGNORECASE))
+        checks.append({"name": "has_state_management", "pass": has_state_management})
 
     elif gate_num == 2:
         has_success = bool(re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE))
@@ -76,6 +90,12 @@ def validate_gate(gate_num, sflo_dir):
         unchecked = re.findall(r"-\s*\[\s\]", content)
         checks.append({"name": "all_checks_marked", "pass": len(unchecked) == 0,
                         "detail": f"{len(unchecked)} unchecked items"})
+
+        has_core = bool(re.search(r"##\s*(1\.\s*)?Core Functionality", content, re.IGNORECASE))
+        checks.append({"name": "has_core_functionality", "pass": has_core})
+
+        has_a11y = bool(re.search(r"##\s*(2\.\s*)?Accessibility Check", content, re.IGNORECASE))
+        checks.append({"name": "has_accessibility_check", "pass": has_a11y})
 
     elif gate_num == 3:
         grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
@@ -89,8 +109,8 @@ def validate_gate(gate_num, sflo_dir):
                                       f"Valid: {', '.join(sorted(GRADE_MAP.keys()))}"})
         else:
             checks.append({"name": "grade_sufficient", "pass": grade_val >= GRADE_THRESHOLD,
-                            "value": grade_str, "minimum": "B+",
-                            "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else 'below B+'})"})
+                            "value": grade_str, "minimum": _threshold_grade,
+                            "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else f'below {_threshold_grade}'})"})
 
         auto_fail_patterns = [
             (r"mock.data|sample.data", "mock_data"),
@@ -105,6 +125,12 @@ def validate_gate(gate_num, sflo_dir):
                     checks.append({"name": f"auto_fail_{name}", "pass": False,
                                    "detail": f"Auto-fail trigger: {name}"})
 
+        has_test_results = bool(re.search(r"###?\s*Test Results", content, re.IGNORECASE))
+        checks.append({"name": "has_test_results", "pass": has_test_results})
+
+        has_stranger = bool(re.search(r"###?\s*Stranger Test", content, re.IGNORECASE))
+        checks.append({"name": "has_stranger_test", "pass": has_stranger})
+
     elif gate_num == 4:
         verdict = extract_field(content, r"###?\s*Verdict[:\s]*(.+)")
         is_approved = verdict and "APPROVED" in verdict.upper()
@@ -112,6 +138,15 @@ def validate_gate(gate_num, sflo_dir):
                         "value": verdict})
         checks.append({"name": "verdict_approved", "pass": is_approved,
                         "value": verdict})
+
+        has_ac = bool(re.search(r"###?\s*Acceptance Criteria Check", content, re.IGNORECASE))
+        checks.append({"name": "has_ac_check", "pass": has_ac})
+
+        has_scope = bool(re.search(r"###?\s*Scope Alignment", content, re.IGNORECASE))
+        checks.append({"name": "has_scope_alignment", "pass": has_scope})
+
+        has_reflection = bool(re.search(r"##\s*Process Reflection", content, re.IGNORECASE))
+        checks.append({"name": "has_process_reflection", "pass": has_reflection})
 
     elif gate_num == 5:
         decision = extract_field(content, r"###?\s*Decision[:\s]*(.+)")
@@ -121,6 +156,12 @@ def validate_gate(gate_num, sflo_dir):
                         "value": decision})
         checks.append({"name": "decision_valid", "pass": is_valid,
                         "value": decision, "valid_options": valid_decisions})
+
+        has_evidence = bool(re.search(r"###?\s*Pipeline Evidence", content, re.IGNORECASE))
+        checks.append({"name": "has_pipeline_evidence", "pass": has_evidence})
+
+        has_iterations = bool(re.search(r"###?\s*Iterations", content, re.IGNORECASE))
+        checks.append({"name": "has_iterations", "pass": has_iterations})
 
     passed = all(c["pass"] for c in checks)
     return passed, checks

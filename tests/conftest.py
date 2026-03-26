@@ -22,11 +22,35 @@ GATE_ARTIFACTS = {
 
 # Minimal passing artifact content for each gate
 PASSING_ARTIFACTS = {
-    "SCOPE.md": "## Data Sources\nNone\n## Acceptance Criteria\n- [x] AC1\n## Appetite\n30 min\n",
-    "BUILD-STATUS.md": "Build: Success\nZero errors\n- [x] done\n",
-    "QA-REPORT.md": "### Grade: A\n",
-    "PM-VERIFY.md": "### Verdict: APPROVED\n",
-    "SHIP-DECISION.md": "### Decision: SHIP\n",
+    "SCOPE.md": (
+        "## Data Sources\nNone\n"
+        "## Acceptance Criteria\n- [x] AC1\n"
+        "## Challenge Analysis\nSome analysis here.\n"
+        "## What We're Building\nA widget.\n"
+        "## Features\n- Feature 1\n"
+        "## State Management\nLocal state only.\n"
+    ),
+    "BUILD-STATUS.md": (
+        "Build: Success\nZero errors\n- [x] done\n"
+        "## 1. Core Functionality Check\n- [x] works\n"
+        "## 2. Accessibility Check\n- [x] accessible\n"
+    ),
+    "QA-REPORT.md": (
+        "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+        "### Grade: A\n"
+        "### Stranger Test\nYes — clear value.\n"
+    ),
+    "PM-VERIFY.md": (
+        "### Acceptance Criteria Check\n- [x] AC1 met\n"
+        "### Scope Alignment\nIn scope.\n"
+        "### Verdict: APPROVED\n"
+        "## Process Reflection\nWent smoothly.\n"
+    ),
+    "SHIP-DECISION.md": (
+        "### Pipeline Evidence\nAll gates passed.\n"
+        "### Iterations\n1 iteration.\n"
+        "### Decision: SHIP\n"
+    ),
 }
 
 # Standard bindings and assignments for state construction
