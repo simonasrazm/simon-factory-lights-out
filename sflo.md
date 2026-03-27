@@ -1,5 +1,14 @@
 # SFLO — Core Pipeline
 
+## Configuration
+
+SFLO loads pipeline configuration from `pipeline.yaml`. Resolution order:
+1. `./pipeline.yaml` (project root / cwd)
+2. `sflo/pipeline.yaml` (sflo subdir of project root)
+3. `sflo/pipeline.yaml` (built-in defaults, bundled with SFLO)
+
+Override the pipeline by placing your own `pipeline.yaml` in the project root. Private projects can extend the pipeline (add custom gates, change the grade threshold, enable the Guardian) without modifying the submodule.
+
 ## Trigger
 
 When the user says `SFLO: <description>`, run:
@@ -29,7 +38,7 @@ Custom agents can extend any role. Core gate checks are always enforced by the s
 |------|----------|----------------------|
 | 1. Discovery | `SCOPE.md` | Data sources section, acceptance criteria |
 | 2. Build | `BUILD-STATUS.md` | Build success marker, all checks marked |
-| 3. Test | `QA-REPORT.md` | Grade present, grade meets threshold (see `constants.py`), auto-fail patterns |
+| 3. Test | `QA-REPORT.md` | Grade present, grade meets threshold (configured in `pipeline.yaml`), auto-fail patterns |
 | 4. Verify | `PM-VERIFY.md` | Verdict present, verdict = APPROVED |
 | 5. Ship | `SHIP-DECISION.md` | Decision present, decision ∈ {SHIP, HOLD, KILL} |
 
@@ -39,7 +48,7 @@ All artifacts are produced in `.sflo/` — runtime outputs, not source code.
 
 Enforced by the scaffold state machine:
 
-- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `src/constants.py`.)
+- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `pipeline.yaml`, default B+.)
 - **PM rejects:** Outer loop — back to Dev→QA with PM's deviation list. Inner counter resets. Max 10 outer loops.
 - **Limits exhausted:** Scaffold escalates to human. No agent can continue.
 

@@ -1,0 +1,33 @@
+# SFLO Default Pipeline
+# Override by placing pipeline.yaml in your project root (cwd).
+# The scaffold loads cwd/pipeline.yaml first, falls back to this file.
+
+threshold: B+
+
+guardian:
+  enabled: true
+  max_spawns: 50
+  wall_clock_s: 7200
+  circuit_breaker_window: 5
+
+gates:
+  1:
+    artifact: SCOPE.md
+    role: pm
+    gate_doc: gates/discovery.md
+  2:
+    artifact: BUILD-STATUS.md
+    role: dev
+    gate_doc: gates/build.md
+  3:
+    artifact: QA-REPORT.md
+    role: qa
+    gate_doc: gates/test.md
+  4:
+    artifact: PM-VERIFY.md
+    role: pm
+    gate_doc: gates/verify.md
+  5:
+    artifact: SHIP-DECISION.md
+    role: sflo
+    gate_doc: gates/ship.md

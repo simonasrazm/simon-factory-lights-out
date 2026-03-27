@@ -9,6 +9,7 @@ from .constants import (
 )
 from .state import write_state
 from .validate import validate_gate, clean_artifacts_from
+from .guardian import guardian_check, record_gate_failure
 
 
 def resolve_sflo_base():
@@ -27,6 +28,28 @@ def resolve_sflo_base():
     return "sflo"
 
 
+def _sorted_gates():
+    """Return sorted gate keys (supports int and float keys)."""
+    return sorted(GATES.keys())
+
+
+def _next_gate_after(n):
+    """Return the next gate key after n, or None if n is the last gate."""
+    sorted_gates = _sorted_gates()
+    for i, key in enumerate(sorted_gates):
+        if key == n:
+            if i + 1 < len(sorted_gates):
+                return sorted_gates[i + 1]
+            return None
+    return None
+
+
+def _last_gate():
+    """Return the last gate key."""
+    keys = _sorted_gates()
+    return keys[-1] if keys else None
+
+
 def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
     """Build the list of files an agent should read for a gate."""
     info = GATES[gate_num]
@@ -34,9 +57,10 @@ def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
         os.path.join(sflo_base, info["gate_doc"]),
         os.path.join(agent_path, "SOUL.md"),
     ]
-    for prev_gate in range(1, gate_num):
-        prev_artifact = GATES[prev_gate]["artifact"]
-        reads.append(os.path.join(sflo_dir, prev_artifact))
+    for prev_gate in sorted(GATES):
+        if prev_gate < gate_num:
+            prev_artifact = GATES[prev_gate]["artifact"]
+            reads.append(os.path.join(sflo_dir, prev_artifact))
     return reads
 
 
@@ -45,13 +69,17 @@ def auto_transition(state, sflo_dir):
 
     Returns True if a transition was made.
     """
-    gate_match = re.match(r"gate-(\d+)", state["current_state"])
+    gate_match = re.match(r"gate-(\d+\.?\d*)", state["current_state"])
     if gate_match:
-        n = int(gate_match.group(1))
+        n_str = gate_match.group(1)
+        n = float(n_str)
+        n = int(n) if n == int(n) else n
+        if n not in GATES:
+            return False
         artifact = GATES[n]["artifact"]
         artifact_path = os.path.join(sflo_dir, artifact)
         if os.path.isfile(artifact_path):
-            state["current_state"] = f"check-{n}"
+            state["current_state"] = f"check-{n_str}"
             write_state(sflo_dir, state)
             return True
     return False
@@ -62,6 +90,11 @@ def compute_next(state, sflo_dir):
 
     Pure query — does NOT mutate state or write to disk.
     """
+    # Guardian check — runs before anything else
+    guardian_reason = guardian_check(sflo_dir)
+    if guardian_reason:
+        return {"state": "escalate", "action": "ask_human", "reason": guardian_reason}
+
     current = state["current_state"]
     sflo_base = resolve_sflo_base()
     assignments = state.get("assignments", {})
@@ -87,18 +120,32 @@ def compute_next(state, sflo_dir):
             "message": "Run 'assign' command with Scout's agent assignments before proceeding.",
         }
 
-    gate_match = re.match(r"gate-(\d+)", current)
+    gate_match = re.match(r"gate-(\d+\.?\d*)", current)
     if gate_match:
-        n = int(gate_match.group(1))
-        if n == 5:
+        n_str = gate_match.group(1)
+        n = float(n_str)
+        n = int(n) if n == int(n) else n
+
+        if n not in GATES:
+            return {"state": current, "action": "unknown", "error": f"Unknown gate: {n}"}
+
+        last_gate = _last_gate()
+        if n == last_gate:
+            # Last gate — SFLO produces the decision artifact
+            last_info = GATES[last_gate]
+            prior_reads = [
+                os.path.join(sflo_dir, GATES[g]["artifact"])
+                for g in _sorted_gates()
+                if g < last_gate
+            ]
             return {
-                "state": f"gate-{n}",
+                "state": f"gate-{n_str}",
                 "action": "produce_artifact",
-                "role": "sflo",
-                "artifact": GATES[n]["artifact"],
+                "role": last_info.get("role", "sflo"),
+                "artifact": last_info["artifact"],
                 "sflo_dir": sflo_dir,
-                "reads": [os.path.join(sflo_dir, GATES[g]["artifact"]) for g in range(1, 5)],
-                "gate_doc": os.path.join(sflo_base, GATES[n]["gate_doc"]),
+                "reads": prior_reads,
+                "gate_doc": os.path.join(sflo_base, last_info["gate_doc"]),
             }
 
         role = GATES[n]["role"]
@@ -106,7 +153,7 @@ def compute_next(state, sflo_dir):
         role_bindings = bindings.get(role, {})
 
         return {
-            "state": f"gate-{n}",
+            "state": f"gate-{n_str}",
             "action": "spawn_agent",
             "agent": {
                 "role": role,
@@ -117,14 +164,16 @@ def compute_next(state, sflo_dir):
             },
         }
 
-    check_match = re.match(r"check-(\d+)", current)
+    check_match = re.match(r"check-(\d+\.?\d*)", current)
     if check_match:
-        n = int(check_match.group(1))
+        n_str = check_match.group(1)
+        n = float(n_str)
+        n = int(n) if n == int(n) else n
         passed, checks = validate_gate(n, sflo_dir)
 
         if passed:
             return {
-                "state": f"check-{n}",
+                "state": f"check-{n_str}",
                 "action": "validated",
                 "gate": n,
                 "pass": True,
@@ -132,7 +181,7 @@ def compute_next(state, sflo_dir):
             }
         else:
             return {
-                "state": f"check-{n}",
+                "state": f"check-{n_str}",
                 "action": "check_failed",
                 "gate": n,
                 "pass": False,
@@ -166,10 +215,12 @@ def apply_transition(state, result, sflo_dir):
 
     if action == "validated":
         state["gates"][str(n)]["status"] = "done"
-        if n == 5:
+        last_gate = _last_gate()
+        if n == last_gate:
             state["current_state"] = S_DONE
         else:
-            state["current_state"] = f"gate-{n + 1}"
+            next_gate = _next_gate_after(n)
+            state["current_state"] = f"gate-{next_gate}"
         write_state(sflo_dir, state)
 
         next_action = compute_next(state, sflo_dir)
@@ -177,10 +228,21 @@ def apply_transition(state, result, sflo_dir):
         return result
 
     if action == "check_failed":
-        if n == 3:
+        # Get second-to-last and third-to-last gate keys for inner/outer loop logic
+        sorted_gates = _sorted_gates()
+        last_gate = sorted_gates[-1] if sorted_gates else None
+        # Inner loop gate is the one before the last (gate 3 in default pipeline)
+        inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
+        # Outer loop gate is the second to last (gate 4 in default pipeline)
+        outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
+        # Inner loop restart gate is gate 2 in default pipeline
+        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+
+        if n == inner_loop_gate:
             state["inner_loops"] += 1
             if state["inner_loops"] >= INNER_LOOP_MAX:
-                state["current_state"] = "gate-4"
+                next_gate = _next_gate_after(n)
+                state["current_state"] = f"gate-{next_gate}"
                 write_state(sflo_dir, state)
                 return {
                     **result,
@@ -191,8 +253,9 @@ def apply_transition(state, result, sflo_dir):
                     "next": compute_next(state, sflo_dir),
                 }
             else:
-                state["current_state"] = "gate-2"
-                clean_artifacts_from(2, sflo_dir)
+                restart_gate = inner_loop_restart
+                state["current_state"] = f"gate-{restart_gate}"
+                clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {
                     **result,
@@ -203,9 +266,16 @@ def apply_transition(state, result, sflo_dir):
                     "next": compute_next(state, sflo_dir),
                 }
 
-        elif n == 4:
+        elif n == outer_loop_gate:
             state["outer_loops"] += 1
             state["inner_loops"] = 0
+
+            # Record gate failure for guardian circuit breaker
+            trip = record_gate_failure(sflo_dir, n)
+            if trip:
+                state["current_state"] = S_ESCALATE
+                write_state(sflo_dir, state)
+                return {"state": "escalate", "action": "ask_human", "reason": trip}
 
             if state["outer_loops"] >= OUTER_LOOP_MAX:
                 state["current_state"] = S_ESCALATE
@@ -218,8 +288,9 @@ def apply_transition(state, result, sflo_dir):
                     "outer_count": state["outer_loops"],
                 }
             else:
-                state["current_state"] = "gate-2"
-                clean_artifacts_from(2, sflo_dir)
+                restart_gate = inner_loop_restart
+                state["current_state"] = f"gate-{restart_gate}"
+                clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {
                     **result,
@@ -232,6 +303,8 @@ def apply_transition(state, result, sflo_dir):
                 }
 
         else:
+            # Record gate failure for other gates too (for guardian)
+            record_gate_failure(sflo_dir, n)
             result["action"] = "failed"
             result["message"] = f"Gate {n} validation failed. Fix and retry."
             return result

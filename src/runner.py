@@ -27,12 +27,14 @@ if __name__ == "__main__":
     from src.machine import auto_transition, compute_next, apply_transition
     from src.validate import validate_agent_path
     from src.constants import SFLO_ROOT
+    from src.guardian import init_guardian, record_spawn
 else:
     from .bindings import parse_bindings, resolve_bindings_path
     from .state import read_state, write_state, make_initial_state
     from .machine import auto_transition, compute_next, apply_transition
     from .validate import validate_agent_path
     from .constants import SFLO_ROOT
+    from .guardian import init_guardian, record_spawn
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +244,7 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
         return {"ok": False, "error": err}
 
     os.makedirs(sflo_dir, exist_ok=True)
+    init_guardian(sflo_dir)
     state = make_initial_state(roles)
     write_state(sflo_dir, state)
 
@@ -272,6 +275,11 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
                 brief = os.path.join(entry_path, "BRIEF.md")
                 if os.path.isfile(brief):
                     agent_listing += f"\n### {entry} ({d})\n{read_file(brief)}\n"
+
+    trip = record_spawn(sflo_dir)
+    if trip:
+        log(f"  GUARDIAN: {trip}")
+        return {"ok": False, "error": trip, "state": "escalate"}
 
     scout_response = await adapter.spawn_agent(
         model=scout_model,
@@ -337,6 +345,11 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
 
             log(f"  Gate [{role}/{model}] ...")
 
+            trip = record_spawn(sflo_dir)
+            if trip:
+                log(f"  GUARDIAN: {trip}")
+                break
+
             import time
             spawn_start = time.time()
             response = await adapter.spawn_agent(
@@ -396,7 +409,7 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
                     log(f"  Gate {gate_num} ✗")
 
         elif action == "produce_artifact":
-            # Gate 5 — SFLO produces SHIP-DECISION.md
+            # Last gate — SFLO produces decision artifact
             gate_doc = result.get("gate_doc", "")
             reads = result.get("reads", [])
             artifact_name = result.get("artifact", "SHIP-DECISION.md")
@@ -407,6 +420,11 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
             prior = "\n\n---\n\n".join(
                 f"## {os.path.basename(r)}\n\n{read_file(r)}" for r in reads
             )
+
+            trip = record_spawn(sflo_dir)
+            if trip:
+                log(f"  GUARDIAN: {trip}")
+                break
 
             import time
             spawn_start = time.time()

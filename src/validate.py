@@ -29,14 +29,15 @@ def extract_field(content, pattern):
 
 def clean_artifacts_from(start_gate, sflo_dir):
     """Remove artifacts for gates >= start_gate so auto-transition doesn't skip on loop-back."""
-    for g in range(start_gate, 6):
-        artifact = GATES[g]["artifact"]
-        p = os.path.join(sflo_dir, artifact)
-        try:
-            if os.path.isfile(p):
-                os.remove(p)
-        except OSError as e:
-            print(json.dumps({"warning": f"Could not remove {p}: {e}"}), file=sys.stderr)
+    for g in sorted(GATES.keys()):
+        if g >= start_gate:
+            artifact = GATES[g]["artifact"]
+            p = os.path.join(sflo_dir, artifact)
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except OSError as e:
+                print(json.dumps({"warning": f"Could not remove {p}: {e}"}), file=sys.stderr)
 
 
 def validate_agent_path(agent_path):
@@ -50,7 +51,17 @@ def validate_agent_path(agent_path):
 
 
 def validate_gate(gate_num, sflo_dir):
-    """Validate a gate's artifact. Returns (passed, checks_list)."""
+    """Validate a gate's artifact. Returns (passed, checks_list).
+
+    For unknown gates (not in built-in gates 1-5), falls back to
+    file-existence check only via validate_ext registry.
+    """
+    from .validate_ext import get_validator
+
+    if gate_num not in GATES:
+        return False, [{"name": "gate_not_found", "pass": False,
+                         "detail": f"Gate {gate_num} not found in GATES"}]
+
     info = GATES[gate_num]
     checks = []
 
@@ -59,6 +70,11 @@ def validate_gate(gate_num, sflo_dir):
                     "detail": err or "OK"})
     if content is None:
         return False, checks
+
+    # Check for custom validator from registry
+    custom_validator = get_validator(gate_num)
+    if custom_validator is not None:
+        return custom_validator(gate_num, content, sflo_dir, checks)
 
     # Resolve threshold grade name for error messages
     _threshold_grade = next((k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?")

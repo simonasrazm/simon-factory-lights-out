@@ -74,6 +74,28 @@ agents/
 
 Scout will discover your agent automatically on the next pipeline run — no configuration needed.
 
+## Configuration
+
+SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, but you can override it by placing your own `pipeline.yaml` in your project root.
+
+```yaml
+# project-root/pipeline.yaml
+threshold: A-  # Raise the quality bar
+
+guardian:
+  enabled: true   # Enable safety limits
+  max_spawns: 30  # Max agent spawns before escalating
+
+gates:
+  1:
+    artifact: SCOPE.md
+    role: pm
+    gate_doc: sflo/gates/discovery.md
+  # Add custom gates by inserting float keys, e.g. 1.5 for an architecture gate
+```
+
+See `sflo/pipeline.yaml` for the full default configuration with all options documented.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

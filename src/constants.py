@@ -1,20 +1,21 @@
-"""SFLO pipeline constants — gates, grades, limits, state names."""
+"""SFLO pipeline constants — grades, limits, state names, and config-loaded gates."""
 
 import os
 
 # Root of the sflo repo — resolved from this file's location (src/ -> repo root)
 SFLO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-GATES = {
-    1: {"artifact": "SCOPE.md", "role": "pm", "gate_doc": "gates/discovery.md"},
-    2: {"artifact": "BUILD-STATUS.md", "role": "dev", "gate_doc": "gates/build.md"},
-    3: {"artifact": "QA-REPORT.md", "role": "qa", "gate_doc": "gates/test.md"},
-    4: {"artifact": "PM-VERIFY.md", "role": "pm", "gate_doc": "gates/verify.md"},
-    5: {"artifact": "SHIP-DECISION.md", "role": "sflo", "gate_doc": "gates/ship.md"},
-}
+# Load pipeline config (gates, threshold, guardian) from pipeline.yaml
+# Resolution: cwd/pipeline.yaml -> sflo/pipeline.yaml -> built-in defaults
+from .config import load_pipeline_config
+
+_config = load_pipeline_config()
+
+GATES = _config["gates"]
+GRADE_THRESHOLD = _config["grade_threshold"]
+GUARDIAN_CONFIG = _config["guardian"]
 
 GRADE_MAP = {"A": 6, "A-": 5.5, "B+": 5, "B": 4, "B-": 3.5, "C": 3, "D": 2, "F": 1}
-GRADE_THRESHOLD = 5  # B+
 
 INNER_LOOP_MAX = 10
 OUTER_LOOP_MAX = 10
