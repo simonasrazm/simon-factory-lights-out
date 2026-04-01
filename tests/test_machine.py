@@ -133,6 +133,77 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         self.assertEqual(returned, result)
 
 
+class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
+    """Test that QA findings survive the inner loop for dev to use."""
+
+    def test_qa_failure_saves_feedback(self):
+        """When QA gives a low grade, feedback is saved before artifacts are cleaned."""
+        self.write_state("check-3", inner=0)
+        self.write_artifact("QA-REPORT.md",
+            "### Test Results\n| Test | Result |\n| Spacing | FAIL |\n"
+            "### Grade: C\n"
+            "### Issues\n- Missing spacing scale\n- No error states\n"
+            "### Stranger Test\nNo.\n"
+        )
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir)
+        result = apply_transition(state, result, self.sflo_dir)
+        self.assertEqual(result["state"], "loop-inner")
+
+        # QA-REPORT.md should be deleted (cleaned)
+        self.assertFalse(os.path.isfile(os.path.join(self.sflo_dir, "QA-REPORT.md")))
+
+        # But QA-FEEDBACK.md should exist with the findings
+        feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
+        self.assertTrue(os.path.isfile(feedback_path))
+        with open(feedback_path) as f:
+            content = f.read()
+        self.assertIn("Missing spacing scale", content)
+        self.assertIn("No error states", content)
+
+    def test_qa_pass_cleans_feedback(self):
+        """When QA finally passes, feedback file is removed."""
+        self.write_state("check-3")
+        self.write_artifact("QA-REPORT.md", PASSING_ARTIFACTS["QA-REPORT.md"])
+        # Simulate leftover feedback from prior failed round
+        self.write_artifact("QA-FEEDBACK.md", "## QA Round 1\n### QA Grade: C\n")
+
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir)
+        apply_transition(state, result, self.sflo_dir)
+
+        # Feedback should be cleaned up
+        self.assertFalse(os.path.isfile(os.path.join(self.sflo_dir, "QA-FEEDBACK.md")))
+
+    def test_feedback_accumulates_across_retries(self):
+        """Multiple QA failures accumulate findings in QA-FEEDBACK.md."""
+        # First failure
+        self.write_state("check-3", inner=0)
+        self.write_artifact("QA-REPORT.md",
+            "### Grade: C\n### Issues\n- Bug A\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        )
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir)
+        apply_transition(state, result, self.sflo_dir)
+
+        # Second failure
+        self.write_state("check-3", inner=1)
+        self.write_artifact("QA-REPORT.md",
+            "### Grade: B\n### Issues\n- Bug B\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        )
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir)
+        apply_transition(state, result, self.sflo_dir)
+
+        feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
+        with open(feedback_path) as f:
+            content = f.read()
+        self.assertIn("Bug A", content)
+        self.assertIn("Bug B", content)
+        self.assertIn("QA Round 1", content)
+        self.assertIn("QA Round 2", content)
+
+
 class TestAutoTransition(TempDirMixin, unittest.TestCase):
 
     def test_transitions_when_artifact_exists(self):

@@ -8,7 +8,7 @@ import unittest
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from src.validate import validate_gate, extract_field, validate_agent_path
+from src.validate import validate_gate, extract_field, validate_agent_path, extract_qa_feedback, save_qa_feedback
 
 
 class TestExtractField(unittest.TestCase):
@@ -219,6 +219,65 @@ class TestValidateGate(unittest.TestCase):
         self.write("SHIP-DECISION.md", content)
         passed, checks = validate_gate(5, self.tmpdir)
         self.assertFalse(passed)
+
+
+class TestQAFeedback(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def write(self, name, content):
+        with open(os.path.join(self.tmpdir, name), "w") as f:
+            f.write(content)
+
+    def test_extract_feedback_with_issues(self):
+        self.write("QA-REPORT.md",
+            "### Test Results\n| Test | Result |\n| Spacing | FAIL |\n"
+            "### Grade: C\n"
+            "### Issues\n- Missing spacing scale\n- No error states\n"
+            "### Stranger Test\nYes.\n"
+        )
+        feedback = extract_qa_feedback(self.tmpdir)
+        self.assertIn("QA Grade: C", feedback)
+        self.assertIn("Missing spacing scale", feedback)
+        self.assertIn("No error states", feedback)
+        self.assertIn("Test Results", feedback)
+
+    def test_extract_feedback_no_issues(self):
+        self.write("QA-REPORT.md",
+            "### Test Results\n| Test | Result |\n| Core | PASS |\n"
+            "### Grade: A\n"
+            "### Stranger Test\nYes.\n"
+        )
+        feedback = extract_qa_feedback(self.tmpdir)
+        self.assertIsNotNone(feedback)
+        self.assertIn("QA Grade: A", feedback)
+
+    def test_extract_feedback_missing_report(self):
+        feedback = extract_qa_feedback(self.tmpdir)
+        self.assertIsNone(feedback)
+
+    def test_save_accumulates_rounds(self):
+        self.write("QA-REPORT.md",
+            "### Grade: C\n### Issues\n- Bug 1\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        )
+        save_qa_feedback(self.tmpdir)
+
+        self.write("QA-REPORT.md",
+            "### Grade: B\n### Issues\n- Bug 2\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        )
+        save_qa_feedback(self.tmpdir)
+
+        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
+        with open(feedback_path) as f:
+            content = f.read()
+        self.assertIn("QA Round 1", content)
+        self.assertIn("Bug 1", content)
+        self.assertIn("QA Round 2", content)
+        self.assertIn("Bug 2", content)
 
 
 class TestValidateAgentPath(unittest.TestCase):

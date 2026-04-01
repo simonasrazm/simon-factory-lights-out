@@ -27,8 +27,74 @@ def extract_field(content, pattern):
     return val.split()[0] if val else None
 
 
+def extract_qa_feedback(sflo_dir):
+    """Extract Issues section and grade from QA-REPORT.md for dev feedback.
+
+    Returns the feedback text, or None if no QA report or no issues found.
+    """
+    qa_artifact = GATES.get(3, {}).get("artifact", "QA-REPORT.md")
+    content, err = read_artifact(sflo_dir, qa_artifact)
+    if content is None:
+        return None
+
+    parts = []
+
+    # Extract grade
+    grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
+    if grade_str:
+        parts.append(f"### QA Grade: {grade_str}")
+
+    # Extract Issues section (everything between ### Issues and the next ### heading)
+    issues_match = re.search(
+        r"(###?\s*Issues.*?)(?=\n###?\s|\Z)", content,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if issues_match:
+        parts.append(issues_match.group(1).strip())
+
+    # Extract Test Results section
+    test_match = re.search(
+        r"(###?\s*Test Results.*?)(?=\n###?\s|\Z)", content,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if test_match:
+        parts.append(test_match.group(1).strip())
+
+    if not parts:
+        return None
+
+    return "\n\n".join(parts)
+
+
+def save_qa_feedback(sflo_dir):
+    """Save QA findings to QA-FEEDBACK.md so the dev agent can see what to fix.
+
+    Appends to existing feedback to accumulate findings across retries.
+    """
+    feedback = extract_qa_feedback(sflo_dir)
+    if not feedback:
+        return
+
+    feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+    existing = ""
+    if os.path.isfile(feedback_path):
+        with open(feedback_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+
+    # Count existing rounds to label the new one
+    round_count = existing.count("## QA Round")
+    header = f"## QA Round {round_count + 1}\n\n"
+
+    with open(feedback_path, "w", encoding="utf-8") as f:
+        content = existing + header + feedback + "\n\n"
+        f.write(content)
+
+
 def clean_artifacts_from(start_gate, sflo_dir):
-    """Remove artifacts for gates >= start_gate so auto-transition doesn't skip on loop-back."""
+    """Remove artifacts for gates >= start_gate so auto-transition doesn't skip on loop-back.
+
+    Preserves QA feedback (QA-FEEDBACK.md) so the dev agent knows what to fix.
+    """
     for g in sorted(GATES.keys()):
         if g >= start_gate:
             artifact = GATES[g]["artifact"]

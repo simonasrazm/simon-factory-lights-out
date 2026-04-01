@@ -8,7 +8,7 @@ from .constants import (
     S_SCOUT, S_ASSIGN, S_ESCALATE, S_DONE,
 )
 from .state import write_state
-from .validate import validate_gate, clean_artifacts_from
+from .validate import validate_gate, clean_artifacts_from, save_qa_feedback
 from .guardian import guardian_check, record_gate_failure
 
 
@@ -61,6 +61,12 @@ def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
         if prev_gate < gate_num:
             prev_artifact = GATES[prev_gate]["artifact"]
             reads.append(os.path.join(sflo_dir, prev_artifact))
+
+    # Include QA feedback for dev retries so the agent knows what to fix
+    feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+    if os.path.isfile(feedback_path):
+        reads.append(feedback_path)
+
     return reads
 
 
@@ -223,6 +229,14 @@ def apply_transition(state, result, sflo_dir):
             state["current_state"] = f"gate-{next_gate}"
         write_state(sflo_dir, state)
 
+        # Clean up QA feedback once QA gate passes — it has served its purpose
+        sorted_gates = _sorted_gates()
+        inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
+        if n == inner_loop_gate:
+            feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+            if os.path.isfile(feedback_path):
+                os.remove(feedback_path)
+
         next_action = compute_next(state, sflo_dir)
         result["next"] = next_action
         return result
@@ -255,6 +269,7 @@ def apply_transition(state, result, sflo_dir):
             else:
                 restart_gate = inner_loop_restart
                 state["current_state"] = f"gate-{restart_gate}"
+                save_qa_feedback(sflo_dir)
                 clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {
@@ -290,6 +305,7 @@ def apply_transition(state, result, sflo_dir):
             else:
                 restart_gate = inner_loop_restart
                 state["current_state"] = f"gate-{restart_gate}"
+                save_qa_feedback(sflo_dir)
                 clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {
