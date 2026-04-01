@@ -107,6 +107,24 @@ class TestValidateGate(unittest.TestCase):
         self.assertFalse(passed)
         self.assertFalse(checks[0]["pass"])
 
+    def test_gate1_placeholder_data_sources(self):
+        content = self.FULL_SCOPE.replace("## Data Sources\nNone\n",
+                                          "## Data Sources\n[URL] [source]\n")
+        self.write("SCOPE.md", content)
+        passed, checks = validate_gate(1, self.tmpdir)
+        self.assertFalse(passed)
+        placeholder_check = next(c for c in checks if c["name"] == "data_sources_real")
+        self.assertFalse(placeholder_check["pass"])
+
+    def test_gate1_empty_challenge_analysis(self):
+        content = self.FULL_SCOPE.replace("## Challenge Analysis\nSome analysis.\n",
+                                          "## Challenge Analysis\n\n")
+        self.write("SCOPE.md", content)
+        passed, checks = validate_gate(1, self.tmpdir)
+        self.assertFalse(passed)
+        depth_check = next(c for c in checks if c["name"] == "challenge_analysis_depth")
+        self.assertFalse(depth_check["pass"])
+
     # Gate 2
     def test_gate2_valid(self):
         self.write("BUILD-STATUS.md", self.FULL_BUILD)
@@ -122,6 +140,20 @@ class TestValidateGate(unittest.TestCase):
         self.write("BUILD-STATUS.md", "Build: Success\nZero errors\n- [x] done\n## 1. Core Functionality Check\n- [x] ok\n")
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed)
+
+    def test_gate2_no_checked_items(self):
+        self.write("BUILD-STATUS.md", "Build: Success\nZero errors\n## 1. Core Functionality Check\nOK\n## 2. Accessibility Check\nOK\n")
+        passed, checks = validate_gate(2, self.tmpdir)
+        self.assertFalse(passed)
+        checked_check = next(c for c in checks if c["name"] == "has_checked_items")
+        self.assertFalse(checked_check["pass"])
+
+    def test_gate2_empty_core_functionality(self):
+        self.write("BUILD-STATUS.md", "Build: Success\nZero errors\n- [x] done\n## 1. Core Functionality Check\n\n## 2. Accessibility Check\n- [x] ok\n")
+        passed, checks = validate_gate(2, self.tmpdir)
+        self.assertFalse(passed)
+        depth_check = next(c for c in checks if c["name"] == "core_functionality_depth")
+        self.assertFalse(depth_check["pass"])
 
     # Gate 3
     def test_gate3_grade_a(self):
@@ -167,6 +199,24 @@ class TestValidateGate(unittest.TestCase):
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed)
 
+    def test_gate3_heading_only_test_results(self):
+        """Test Results heading exists but no PASS/FAIL entries — scaffolding decoy."""
+        content = "### Test Results\n| Test | Result |\n|------|--------|\n### Grade: A\n### Stranger Test\nYes — clear.\n"
+        self.write("QA-REPORT.md", content)
+        passed, checks = validate_gate(3, self.tmpdir)
+        self.assertFalse(passed)
+        real_check = next(c for c in checks if c["name"] == "test_results_real")
+        self.assertFalse(real_check["pass"])
+
+    def test_gate3_shallow_stranger_test(self):
+        """Stranger Test with single word — not substantive."""
+        content = "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n### Grade: A\n### Stranger Test\nYes.\n"
+        self.write("QA-REPORT.md", content)
+        passed, checks = validate_gate(3, self.tmpdir)
+        self.assertFalse(passed)
+        depth_check = next(c for c in checks if c["name"] == "stranger_test_depth")
+        self.assertFalse(depth_check["pass"])
+
     # Gate 4
     def test_gate4_approved(self):
         self.write("PM-VERIFY.md", self.FULL_PM)
@@ -196,6 +246,24 @@ class TestValidateGate(unittest.TestCase):
         self.write("PM-VERIFY.md", content)
         passed, checks = validate_gate(4, self.tmpdir)
         self.assertFalse(passed)
+
+    def test_gate4_ac_check_no_checked_items(self):
+        """AC Check section with no checked criteria — rubber stamp."""
+        content = "### Acceptance Criteria Check\nLooks good\n### Scope Alignment\nIn scope.\n### Verdict: APPROVED\n## Process Reflection\nFine.\n"
+        self.write("PM-VERIFY.md", content)
+        passed, checks = validate_gate(4, self.tmpdir)
+        self.assertFalse(passed)
+        depth_check = next(c for c in checks if c["name"] == "ac_check_depth")
+        self.assertFalse(depth_check["pass"])
+
+    def test_gate4_empty_scope_alignment(self):
+        """Scope Alignment heading with no real content."""
+        content = "### Acceptance Criteria Check\n- [x] AC1 met\n### Scope Alignment\n\n### Verdict: APPROVED\n## Process Reflection\nFine.\n"
+        self.write("PM-VERIFY.md", content)
+        passed, checks = validate_gate(4, self.tmpdir)
+        self.assertFalse(passed)
+        depth_check = next(c for c in checks if c["name"] == "scope_alignment_depth")
+        self.assertFalse(depth_check["pass"])
 
     # Gate 5
     def test_gate5_ship(self):
