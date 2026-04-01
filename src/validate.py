@@ -45,7 +45,7 @@ def section_body(content, heading_pattern):
 
 # Patterns that indicate template placeholders rather than real content
 PLACEHOLDER_PATTERN = re.compile(
-    r"\[URL\]|\[N/?A\]|\[source\]|\[TODO\]|\[TBD\]|\[INSERT\]|\[PLACEHOLDER\]",
+    r"\[URL\]|\[N/?A\]|\[source\]|\[TODO\]|\[TBD\]|\[INSERT[^\]]*\]|\[PLACEHOLDER[^\]]*\]",
     re.IGNORECASE,
 )
 
