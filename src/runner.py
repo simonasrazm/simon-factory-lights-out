@@ -11,7 +11,7 @@ Usage (called by runtime hook/skill, not directly):
     result = await run_pipeline("Build a click counter", sflo_dir=".sflo")
 
 CLI (for testing):
-    python sflo/src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet]
+    python3 sflo/src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet]
 """
 
 import asyncio
@@ -129,6 +129,71 @@ class OpenClawAdapter(RuntimeAdapter):
             return result.stdout
 
 
+def _find_modern_python():
+    """Find a Python >= 3.10 interpreter on this system."""
+    import shutil
+    for cmd in ("python3.13", "python3.12", "python3.11", "python3.10", "python3"):
+        path = shutil.which(cmd)
+        if not path:
+            continue
+        import subprocess as sp
+        try:
+            result = sp.run([path, "-c", "import sys; print(sys.version_info >= (3, 10))"],
+                            capture_output=True, text=True, timeout=10)
+            if result.stdout.strip() == "True":
+                return path
+        except Exception:
+            continue
+    return None
+
+
+def _try_install_claude_sdk():
+    """Attempt to pip-install claude-agent-sdk, creating a venv if needed."""
+    import subprocess as sp
+
+    # If current Python is >= 3.10, install directly
+    if sys.version_info >= (3, 10):
+        try:
+            sp.run([sys.executable, "-m", "pip", "install", "claude-agent-sdk"],
+                   capture_output=True, timeout=120)
+            from claude_agent_sdk import query  # noqa: F401
+            return True
+        except Exception:
+            pass
+
+    # Current Python is too old — find a modern one and create a venv
+    modern_py = _find_modern_python()
+    if not modern_py:
+        print(json.dumps({
+            "error": "claude-agent-sdk requires Python >= 3.10",
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "fix": "Install Python 3.10+: brew install python3 (macOS) or apt install python3 (Linux)",
+        }), file=sys.stderr)
+        return False
+
+    # Create venv with modern Python, install SDK, re-exec
+    venv_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".venv")
+    if not os.path.isdir(venv_dir):
+        try:
+            sp.run([modern_py, "-m", "venv", venv_dir], check=True, capture_output=True, timeout=60)
+        except Exception:
+            return False
+
+    venv_pip = os.path.join(venv_dir, "bin", "pip")
+    venv_python = os.path.join(venv_dir, "bin", "python3")
+    if os.name == "nt":
+        venv_pip = os.path.join(venv_dir, "Scripts", "pip.exe")
+        venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
+
+    try:
+        sp.run([venv_pip, "install", "claude-agent-sdk"], capture_output=True, timeout=120)
+    except Exception:
+        return False
+
+    # Re-exec this script under the venv Python so imports work
+    os.execv(venv_python, [venv_python] + sys.argv)
+
+
 def detect_runtime():
     """Auto-detect which runtime we're in."""
     import shutil
@@ -138,7 +203,8 @@ def detect_runtime():
         from claude_agent_sdk import query  # noqa: F401
         return "claude-code"
     except ImportError:
-        pass
+        if _try_install_claude_sdk():
+            return "claude-code"
     return None
 
 
@@ -153,8 +219,9 @@ def get_adapter(runtime=None):
         return ClaudeCodeAdapter()
     else:
         raise RuntimeError(
-            "No runtime detected. Run inside Claude Code or OpenClaw, "
-            "or install claude-agent-sdk / openclaw-sdk."
+            "No runtime detected. Could not find or install openclaw or claude-agent-sdk.\n"
+            f"Python version: {sys.version_info.major}.{sys.version_info.minor} "
+            f"(claude-agent-sdk requires >= 3.10)"
         )
 
 

@@ -14,10 +14,10 @@ Override the pipeline by placing your own `pipeline.yaml` in the project root. P
 When the user says `SFLO: <description>`, run:
 
 ```
-python src/runner.py "<description>"
+python3 src/runner.py "<description>"
 ```
 
-The runner handles everything: Scout assignment, agent spawning with correct models, gate validation, fail loops. No manual scaffold calls needed.
+If `python3` is not found, try `python`. The runner handles everything else — it finds a suitable Python (>= 3.10), creates a venv if needed, and installs missing dependencies automatically.
 
 ## Overview
 

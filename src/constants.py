@@ -1,6 +1,8 @@
 """SFLO pipeline constants — grades, limits, state names, and config-loaded gates."""
 
 import os
+import shutil
+import sys
 
 # Root of the sflo repo — resolved from this file's location (src/ -> repo root)
 SFLO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +23,16 @@ INNER_LOOP_MAX = 10
 OUTER_LOOP_MAX = 10
 
 KNOWN_ROLES = {"pm", "dev", "qa", "extra", "sflo-dir"}
+
+def _detect_python():
+    """Return the python command available on this system."""
+    if shutil.which("python3"):
+        return "python3"
+    if shutil.which("python"):
+        return "python"
+    return sys.executable or "python3"
+
+PYTHON_CMD = _detect_python()
 
 S_INIT = "init"
 S_SCOUT = "scout"

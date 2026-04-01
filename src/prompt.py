@@ -1,5 +1,7 @@
 """SFLO prompt generation — translates state machine output to reinjectable instructions."""
 
+from .constants import PYTHON_CMD
+
 
 def format_prompt(action_dict):
     """Translate a compute_next() result into a reinjectable instruction string."""
@@ -35,7 +37,7 @@ def format_prompt(action_dict):
         lines.append("")
         lines.append("Tell the agent to read the files listed above and produce the artifact.")
         lines.append("Do NOT paraphrase gate docs — tell the agent to read them directly.")
-        lines.append("After the agent finishes, run: python sflo/src/scaffold.py next")
+        lines.append(f"After the agent finishes, run: {PYTHON_CMD} sflo/src/scaffold.py next")
         return "\n".join(lines)
 
     if action == "produce_artifact":
@@ -51,7 +53,7 @@ def format_prompt(action_dict):
             reads_str,
             "",
             f"Produce the artifact in .sflo/{artifact} following the gate doc template.",
-            "After writing the artifact, run: python sflo/src/scaffold.py next",
+            f"After writing the artifact, run: {PYTHON_CMD} sflo/src/scaffold.py next",
         ]
         return "\n".join(lines)
 
@@ -85,4 +87,4 @@ def format_prompt(action_dict):
             lines.append(next_prompt)
         return "\n".join(lines)
 
-    return "SFLO PIPELINE — continue. Run: python sflo/src/scaffold.py next"
+    return f"SFLO PIPELINE — continue. Run: {PYTHON_CMD} sflo/src/scaffold.py next"

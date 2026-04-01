@@ -5,18 +5,18 @@ The scaffold IS the pipeline authority. This file is the CLI interface;
 logic lives in separate modules (machine, validate, state, etc.).
 
 Usage:
-    python sflo/src/scaffold.py init [--bindings PATH] [--sflo-dir PATH]
-    python sflo/src/scaffold.py assign --pm PATH --dev PATH --qa PATH [--extra role=path ...]
-    python sflo/src/scaffold.py next [--sflo-dir PATH]
-    python sflo/src/scaffold.py prompt [--sflo-dir PATH]
-    python sflo/src/scaffold.py status [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py init [--bindings PATH] [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py assign --pm PATH --dev PATH --qa PATH [--extra role=path ...]
+    python3 sflo/src/scaffold.py next [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py prompt [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py status [--sflo-dir PATH]
 """
 
 import sys
 import os
 import json
 
-# Allow running as script (python sflo/src/scaffold.py) or as module
+# Allow running as script (python3 sflo/src/scaffold.py) or as module
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from src.constants import KNOWN_ROLES
