@@ -258,6 +258,37 @@ print('  ✓ Created .claude/settings.json with Stop hook')
   fi
 fi
 
+# --- Provision venv for Claude Code (claude-agent-sdk) ---
+
+if [[ "$RUNTIME" == "claude-code" ]]; then
+  VENV_DIR="$WORKSPACE/.sflo/.venv"
+  if "$PYTHON_CMD" -c "import claude_agent_sdk" 2>/dev/null; then
+    echo "  ✓ claude-agent-sdk available"
+  else
+    echo "  Provisioning venv for claude-agent-sdk..."
+    # Find Python 3.10+ (SDK requirement)
+    VENV_PYTHON=""
+    for candidate in python3.12 python3.11 python3.10 python3 "$PYTHON_CMD"; do
+      if command -v "$candidate" &>/dev/null; then
+        ver=$("$candidate" -c "import sys; print(sys.version_info >= (3, 10))" 2>/dev/null || echo "False")
+        if [[ "$ver" == "True" ]]; then
+          VENV_PYTHON="$candidate"
+          break
+        fi
+      fi
+    done
+    if [[ -n "$VENV_PYTHON" ]]; then
+      mkdir -p "$(dirname "$VENV_DIR")"
+      "$VENV_PYTHON" -m venv "$VENV_DIR"
+      "$VENV_DIR/bin/pip" install -q claude-agent-sdk
+      echo "  ✓ venv created at $VENV_DIR with claude-agent-sdk"
+      echo "  Note: run the pipeline with $VENV_DIR/bin/python3 sflo/src/runner.py"
+    else
+      echo "  ⚠ Python 3.10+ not found — claude-agent-sdk requires it. Install manually."
+    fi
+  fi
+fi
+
 # --- Verify bindings exist ---
 
 BINDINGS_FILE="$SFLO_PATH/bindings.yaml"
