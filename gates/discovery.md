@@ -18,6 +18,10 @@
 2. [Must-have] ...
 3. [Nice-to-have] ...
 
+## Challenge Analysis
+- [Risk/constraint]: [impact] — [mitigation]
+- [Risk/constraint]: [impact] — [mitigation]
+
 ## Acceptance Criteria
 - [ ] AC1: [specific, testable]
 - [ ] AC2: [specific, testable]

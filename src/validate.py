@@ -197,9 +197,6 @@ def validate_gate(gate_num, sflo_dir):
         has_features = bool(re.search(r"##\s*Features", content, re.IGNORECASE))
         checks.append({"name": "has_features", "pass": has_features})
 
-        has_state_management = bool(re.search(r"##\s*State Management", content, re.IGNORECASE))
-        checks.append({"name": "has_state_management", "pass": has_state_management})
-
     elif gate_num == 2:
         has_success = bool(re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE))
         checks.append({"name": "build_success", "pass": has_success})
