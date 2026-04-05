@@ -11,6 +11,14 @@ Read these files in order:
 1. `gates/build.md` — the gate definition and BUILD-STATUS.md template
 2. `SCOPE.md` — requirements and data sources from the PM
 
+## Context Budget
+
+You run inside a fixed context window. Large file reads consume it fast.
+
+- **Files > 1500 lines:** Use `Read` with `offset`/`limit` to read only relevant sections. Use `Grep` to find the section first, then read it.
+- **Never read a full file just to find one function.** `Grep` for the function name, note the line number, then `Read` with offset.
+- **Template/HTML files:** Read only the section you're editing (use `Grep` to locate it), not the whole file.
+
 ## Process
 
 1. Read SCOPE.md — understand requirements and data sources

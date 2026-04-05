@@ -62,28 +62,35 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             )
 
         stderr_lines = []
+        self._last_stderr = []  # Preserve for crash diagnostics
 
         def capture_stderr(line):
             stderr_lines.append(line)
 
         result_text = ""
-        async for message in query(
-            prompt=user_prompt,
-            options=ClaudeAgentOptions(
-                system_prompt=system_prompt,
-                model=model,
-                allowed_tools=["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
-                permission_mode="bypassPermissions",
-                max_turns=20,
-                stderr=capture_stderr,
-            ),
-        ):
-            if hasattr(message, "result") and message.result:
-                result_text = message.result
-            elif hasattr(message, "content") and message.content:
-                for block in message.content:
-                    if hasattr(block, "text") and block.text:
-                        result_text += block.text
+        try:
+            async for message in query(
+                prompt=user_prompt,
+                options=ClaudeAgentOptions(
+                    system_prompt=system_prompt,
+                    model=model,
+                    allowed_tools=["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
+                    permission_mode="bypassPermissions",
+                    max_turns=50,
+                    stderr=capture_stderr,
+                ),
+            ):
+                if hasattr(message, "result") and message.result:
+                    result_text = message.result
+                elif hasattr(message, "content") and message.content:
+                    for block in message.content:
+                        if hasattr(block, "text") and block.text:
+                            result_text += block.text
+        except Exception:
+            # Preserve stderr before re-raising — this is the only
+            # diagnostic data for exit code 1 crashes
+            self._last_stderr = list(stderr_lines)
+            raise
 
         if stderr_lines:
             print(f"  [Agent stderr: {len(stderr_lines)} lines]", file=sys.stderr)
@@ -318,6 +325,8 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
     agent_listing = ""
     for d in agent_dirs:
         for entry in sorted(os.listdir(d)):
+            if entry.startswith("_"):
+                continue
             entry_path = os.path.join(d, entry)
             if os.path.isdir(entry_path):
                 brief = os.path.join(entry_path, "BRIEF.md")
@@ -424,6 +433,14 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
                     import traceback
                     log(f"  Gate [{role}] agent crashed: {e}")
                     log(f"  {traceback.format_exc()}")
+                    # Log stderr from the crashed CLI process — this is the
+                    # only diagnostic data for exit code 1 crashes. The SDK's
+                    # "Check stderr output for details" is a hardcoded string,
+                    # not actual stderr. The real stderr is in adapter's callback.
+                    if hasattr(adapter, '_last_stderr') and adapter._last_stderr:
+                        log(f"  [CLI stderr ({len(adapter._last_stderr)} lines):]")
+                        for sl in adapter._last_stderr[-20:]:
+                            log(f"    {sl.rstrip()}")
                     if attempt < 2:
                         crash_context = (
                             f"\n\n---\n\n## IMPORTANT: Previous attempt crashed\n\n"

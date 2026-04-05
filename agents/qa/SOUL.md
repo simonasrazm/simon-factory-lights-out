@@ -16,6 +16,14 @@ Read these files in order:
 
 Every test MUST use REAL production data, not samples.
 
+## Context Budget
+
+You run inside a fixed context window. Large file reads consume it fast.
+
+- **Files > 1500 lines:** Use `Read` with `offset`/`limit` to read only the sections you're testing. Use `Grep` to locate relevant code first.
+- **Never read a full 1500+ line file** to check one feature. Target your reads.
+- **Test with Bash snippets** (e.g., `python -c "from app import app; ..."`) instead of reading entire files when verifying runtime behavior.
+
 ## Mandatory Tests
 
 ### 1. Real Data Test

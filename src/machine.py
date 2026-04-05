@@ -8,7 +8,7 @@ from .constants import (
     S_SCOUT, S_ASSIGN, S_ESCALATE, S_DONE,
 )
 from .state import write_state
-from .validate import validate_gate, clean_artifacts_from, save_qa_feedback
+from .validate import validate_gate, clean_artifacts_from, save_qa_feedback, save_pm_rejection
 from .guardian import guardian_check, record_gate_failure
 
 
@@ -62,9 +62,13 @@ def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
             prev_artifact = GATES[prev_gate]["artifact"]
             reads.append(os.path.join(sflo_dir, prev_artifact))
 
-    # Include QA feedback for dev retries so the agent knows what to fix
+    # Outer loop: PM rejection takes priority (QA report is stale after PM rejects)
+    # Inner loop: QA feedback guides dev fixes
+    rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
     feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-    if os.path.isfile(feedback_path):
+    if os.path.isfile(rejection_path):
+        reads.append(rejection_path)
+    elif os.path.isfile(feedback_path):
         reads.append(feedback_path)
 
     return reads
@@ -229,9 +233,18 @@ def apply_transition(state, result, sflo_dir):
             state["current_state"] = f"gate-{next_gate}"
         write_state(sflo_dir, state)
 
-        # Clean up QA feedback once QA gate passes — it has served its purpose
+        # Clean up feedback files once they've served their purpose
         sorted_gates = _sorted_gates()
+        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
+
+        # PM rejection served its purpose once dev passes gate 2
+        if n == inner_loop_restart:
+            rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
+            if os.path.isfile(rejection_path):
+                os.remove(rejection_path)
+
+        # QA feedback served its purpose once QA gate passes
         if n == inner_loop_gate:
             feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
             if os.path.isfile(feedback_path):
@@ -305,7 +318,12 @@ def apply_transition(state, result, sflo_dir):
             else:
                 restart_gate = inner_loop_restart
                 state["current_state"] = f"gate-{restart_gate}"
-                save_qa_feedback(sflo_dir)
+                # Save PM's rejection verdict before artifacts are cleaned
+                save_pm_rejection(sflo_dir)
+                # QA feedback is stale after PM rejects — remove it
+                qa_feedback = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+                if os.path.isfile(qa_feedback):
+                    os.remove(qa_feedback)
                 clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {

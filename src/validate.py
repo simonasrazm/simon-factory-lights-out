@@ -113,6 +113,26 @@ def save_qa_feedback(sflo_dir):
         f.write(content)
 
 
+def save_pm_rejection(sflo_dir):
+    """Save PM's rejection verdict as PM-REJECTION.md before artifacts are cleaned.
+
+    On outer loop (PM rejects), PM-VERIFY.md is about to be deleted by
+    clean_artifacts_from(). This function preserves it as PM-REJECTION.md
+    so the dev agent knows exactly what PM rejected and why.
+    """
+    pm_artifact = GATES.get(4, {}).get("artifact", "PM-VERIFY.md")
+    content, err = read_artifact(sflo_dir, pm_artifact)
+    if content is None:
+        return
+
+    rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
+    with open(rejection_path, "w", encoding="utf-8") as f:
+        f.write(f"# PM Rejection — Fix Required\n\n"
+                f"PM reviewed the build and REJECTED it. "
+                f"You MUST address the issues below before the next review.\n\n"
+                f"---\n\n{content}")
+
+
 def clean_artifacts_from(start_gate, sflo_dir):
     """Remove artifacts for gates >= start_gate so auto-transition doesn't skip on loop-back.
 
