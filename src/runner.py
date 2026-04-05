@@ -61,6 +61,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "Run setup.sh or: pip install claude-agent-sdk"
             )
 
+        stderr_lines = []
+
+        def capture_stderr(line):
+            stderr_lines.append(line)
+
         result_text = ""
         async for message in query(
             prompt=user_prompt,
@@ -68,15 +73,22 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 system_prompt=system_prompt,
                 model=model,
                 allowed_tools=["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
+                permission_mode="bypassPermissions",
                 max_turns=20,
+                stderr=capture_stderr,
             ),
         ):
-            if hasattr(message, "result"):
+            if hasattr(message, "result") and message.result:
                 result_text = message.result
-            elif hasattr(message, "content"):
+            elif hasattr(message, "content") and message.content:
                 for block in message.content:
-                    if hasattr(block, "text"):
+                    if hasattr(block, "text") and block.text:
                         result_text += block.text
+
+        if stderr_lines:
+            print(f"  [Agent stderr: {len(stderr_lines)} lines]", file=sys.stderr)
+            for line in stderr_lines[-10:]:  # last 10 lines
+                print(f"    {line.rstrip()}", file=sys.stderr)
 
         return result_text
 
@@ -171,6 +183,42 @@ def read_file(path):
         return f"[ERROR reading {path}: {e}]"
 
 
+def make_logger(sflo_dir, verbose=True):
+    """Create a logger that writes to stderr and .sflo/pipeline.log."""
+    os.makedirs(sflo_dir, exist_ok=True)
+    log_path = os.path.join(sflo_dir, "pipeline.log")
+    log_file = open(log_path, "a", encoding="utf-8")
+
+    def log(msg):
+        import datetime
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        log_file.write(line + "\n")
+        log_file.flush()
+        if verbose:
+            print(msg, file=sys.stderr)
+
+    log._file = log_file  # keep reference to close later
+    return log
+
+
+def format_validation_feedback(checks):
+    """Format failed validation checks into actionable feedback for the agent."""
+    failed = [c for c in checks if not c.get("pass")]
+    if not failed:
+        return ""
+    lines = ["## Validation Errors — Fix These\n",
+             "Your artifact failed the following automated checks:\n"]
+    for c in failed:
+        name = c.get("name", "unknown")
+        detail = c.get("detail", "")
+        lines.append(f"- **{name}**: {detail}" if detail else f"- **{name}**")
+    lines.append("\nRevise the artifact to pass all checks. "
+                 "Write it to the EXACT same path. "
+                 "Do NOT remove sections that already pass.")
+    return "\n".join(lines)
+
+
 def build_agent_prompt(agent_info, user_prompt, sflo_dir):
     """Build system prompt and user prompt for a gate agent."""
     reads = agent_info.get("reads", [])
@@ -232,7 +280,7 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
         dict with final state, artifacts, and pipeline summary.
     """
     adapter = get_adapter(runtime)
-    log = (lambda msg: print(msg, file=sys.stderr)) if verbose else (lambda msg: None)
+    log = make_logger(sflo_dir, verbose)
 
     # --- Init ---
     bindings_path = resolve_bindings_path()
@@ -281,16 +329,22 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
         log(f"  GUARDIAN: {trip}")
         return {"ok": False, "error": trip, "state": "escalate"}
 
-    scout_response = await adapter.spawn_agent(
-        model=scout_model,
-        system_prompt=scout_soul,
-        user_prompt=(
-            f"User prompt: {user_prompt}\n\n"
-            f"Available agents:\n{agent_listing}\n\n"
-            f"Return a JSON object with role assignments: "
-            f'{{"pm": "<agent_path>", "dev": "<agent_path>", "qa": "<agent_path>"}}'
-        ),
-    )
+    try:
+        scout_response = await adapter.spawn_agent(
+            model=scout_model,
+            system_prompt=scout_soul,
+            user_prompt=(
+                f"User prompt: {user_prompt}\n\n"
+                f"Available agents:\n{agent_listing}\n\n"
+                f"Return a JSON object with role assignments: "
+                f'{{"pm": "<agent_path>", "dev": "<agent_path>", "qa": "<agent_path>"}}'
+            ),
+        )
+    except Exception as e:
+        import traceback
+        log(f"  Scout failed: {e}")
+        log(f"  {traceback.format_exc()}")
+        scout_response = ""
 
     # Parse Scout's assignments
     try:
@@ -343,20 +397,48 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
 
             system_prompt, user_msg = build_agent_prompt(agent, user_prompt, sflo_dir)
 
-            log(f"  Gate [{role}/{model}] ...")
-
-            trip = record_spawn(sflo_dir)
-            if trip:
-                log(f"  GUARDIAN: {trip}")
-                break
-
             import time
-            spawn_start = time.time()
-            response = await adapter.spawn_agent(
-                model=model,
-                system_prompt=system_prompt,
-                user_prompt=user_msg,
-            )
+            response = None
+            crash_context = ""
+
+            for attempt in range(3):
+                if attempt > 0:
+                    log(f"  Gate [{role}/{model}] resume attempt {attempt + 1}/3 ...")
+                else:
+                    log(f"  Gate [{role}/{model}] ...")
+
+                trip = record_spawn(sflo_dir)
+                if trip:
+                    log(f"  GUARDIAN: {trip}")
+                    break
+
+                spawn_start = time.time()
+                try:
+                    response = await adapter.spawn_agent(
+                        model=model,
+                        system_prompt=system_prompt,
+                        user_prompt=user_msg + crash_context,
+                    )
+                    break  # success
+                except Exception as e:
+                    import traceback
+                    log(f"  Gate [{role}] agent crashed: {e}")
+                    log(f"  {traceback.format_exc()}")
+                    if attempt < 2:
+                        crash_context = (
+                            f"\n\n---\n\n## IMPORTANT: Previous attempt crashed\n\n"
+                            f"Your previous attempt crashed with this error:\n"
+                            f"```\n{e}\n```\n"
+                            f"Your partial work (files on disk) is still intact. "
+                            f"Read the existing files to understand what was already done. "
+                            f"Do NOT start from scratch — continue from where the crash happened. "
+                            f"Avoid the command or approach that caused the crash. "
+                            f"If a CLI tool failed, check its help/docs before retrying."
+                        )
+                        log(f"  Resuming with crash context...")
+                    else:
+                        log(f"  All resume attempts exhausted — gate will fail validation")
+                        response = f"[Agent error after 3 attempts: {e}]"
 
             # Verify agent wrote the artifact
             produces = agent.get("produces", "")
@@ -378,13 +460,11 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
                             break
 
                     if found:
-                        # Move to expected location
                         os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
                         import shutil
                         shutil.move(found, produces)
                         log(f"  {artifact_name} ✓ (moved from {found})")
                     else:
-                        # Last resort — write response as artifact
                         os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
                         with open(produces, "w", encoding="utf-8") as f:
                             f.write(response)
@@ -402,11 +482,18 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
             if passed and gate_num:
                 log(f"  Gate {gate_num} ✓")
             elif not passed and gate_num:
+                checks = result.get("checks", [])
                 loop_action = result.get("action", "")
                 if "loop" in loop_action:
                     log(f"  Gate {gate_num} ✗ — looping back")
                 else:
-                    log(f"  Gate {gate_num} ✗")
+                    # Log why it failed
+                    failed = [c for c in checks if not c.get("pass")]
+                    if failed:
+                        details = ", ".join(c.get("name", "?") for c in failed)
+                        log(f"  Gate {gate_num} ✗ — failed: {details}")
+                    else:
+                        log(f"  Gate {gate_num} ✗")
 
         elif action == "produce_artifact":
             # Last gate — SFLO produces decision artifact
@@ -428,14 +515,22 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
 
             import time
             spawn_start = time.time()
-            response = await adapter.spawn_agent(
-                model=roles.get("sflo", {}).get("model", "opus"),
-                system_prompt=system_prompt,
-                user_prompt=f"## User Request\n\n{user_prompt}\n\n{prior}\n\n"
+            gate5_prompt = (f"## User Request\n\n{user_prompt}\n\n{prior}\n\n"
                             f"Write {artifact_name} to this EXACT path: {abs_artifact}\n"
                             f"Use the Write tool. Follow the template EXACTLY. "
-                            f"Create the parent directory if needed.",
-            )
+                            f"Create the parent directory if needed.")
+            try:
+                response = await adapter.spawn_agent(
+                    model=roles.get("sflo", {}).get("model", "opus"),
+                    system_prompt=system_prompt,
+                    user_prompt=gate5_prompt,
+                )
+            except Exception as e:
+                import traceback
+                log(f"  Gate 5 [SFLO] agent crashed: {e}")
+                log(f"  {traceback.format_exc()}")
+                log(f"  Gate 5 will fail validation")
+                response = f"[Agent error: {e}]"
 
             # Verify agent wrote it (same logic as spawn_agent gates)
             if os.path.isfile(artifact_path) and os.path.getmtime(artifact_path) > spawn_start:
@@ -500,14 +595,20 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="SFLO Runner — enforced pipeline execution")
-    parser.add_argument("prompt", help="What to build")
+    parser.add_argument("prompt", nargs="?", default=None, help="What to build (or pass via stdin)")
     parser.add_argument("--sflo-dir", default=".sflo", help="Pipeline state directory")
     parser.add_argument("--runtime", choices=["openclaw", "claude-code"], default=None)
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
+    prompt = args.prompt
+    if not prompt or prompt == "-":
+        prompt = sys.stdin.read().strip()
+    if not prompt:
+        parser.error("No prompt provided. Pass as argument or via stdin.")
+
     result = asyncio.run(run_pipeline(
-        user_prompt=args.prompt,
+        user_prompt=prompt,
         sflo_dir=args.sflo_dir,
         runtime=args.runtime,
         verbose=not args.quiet,

@@ -14,10 +14,12 @@ Override the pipeline by placing your own `pipeline.yaml` in the project root. P
 When the user says `SFLO: <description>`, run:
 
 ```
-python3 src/runner.py "<description>"
+echo '<description>' | python3 src/runner.py
 ```
 
-If `python3` is not found, try `python`. The runner handles everything else — it finds a suitable Python (>= 3.10), creates a venv if needed, and installs missing dependencies automatically.
+Always pipe the prompt via stdin — never pass it as a CLI argument. User prompts contain special characters that break shell escaping.
+
+If `python3` is not found, try `python`. The runner handles everything else.
 
 ## Overview
 

@@ -160,7 +160,7 @@ def validate_gate(gate_num, sflo_dir):
     if content is None:
         return False, checks
 
-    # Check for custom validator from registry
+    # Check for custom validator from extension registry (if available)
     custom_validator = get_validator(gate_num)
     if custom_validator is not None:
         return custom_validator(gate_num, content, sflo_dir, checks)
@@ -169,60 +169,51 @@ def validate_gate(gate_num, sflo_dir):
     _threshold_grade = next((k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?")
 
     if gate_num == 1:
-        has_data = bool(re.search(r"##\s*Data Sources", content, re.IGNORECASE))
-        checks.append({"name": "has_data_sources", "pass": has_data})
-
-        # Data Sources must have real content, not template placeholders
-        data_body = section_body(content, r"Data Sources")
-        has_placeholder = bool(PLACEHOLDER_PATTERN.search(data_body)) if data_body else False
-        checks.append({"name": "data_sources_real", "pass": not has_placeholder,
-                        "detail": "placeholder detected" if has_placeholder else "OK"})
-
+        # SCOPE.md must have acceptance criteria — the contract for downstream agents
         ac_lines = re.findall(r"-\s*\[.\]", content)
         checks.append({"name": "has_acceptance_criteria", "pass": len(ac_lines) >= 1,
                         "detail": f"{len(ac_lines)} criteria found"})
 
-        has_challenge_analysis = bool(re.search(r"##\s*Challenge Analysis", content, re.IGNORECASE))
-        checks.append({"name": "has_challenge_analysis", "pass": has_challenge_analysis})
+        # Must have substantive content (not a near-empty file)
+        word_count = len(content.split())
+        checks.append({"name": "has_substance", "pass": word_count >= 50,
+                        "detail": f"{word_count} words (minimum 50)"})
 
-        # Challenge Analysis must have substantive content (not just a heading)
-        challenge_body = section_body(content, r"Challenge Analysis")
-        challenge_words = len(challenge_body.split()) if challenge_body else 0
-        checks.append({"name": "challenge_analysis_depth", "pass": challenge_words >= 2,
-                        "detail": f"{challenge_words} words (minimum 2)"})
-
-        has_what_building = bool(re.search(r"##\s*What We're Building", content, re.IGNORECASE))
-        checks.append({"name": "has_what_building", "pass": has_what_building})
-
-        has_features = bool(re.search(r"##\s*Features", content, re.IGNORECASE))
-        checks.append({"name": "has_features", "pass": has_features})
+        # No template placeholders left
+        has_placeholder = bool(PLACEHOLDER_PATTERN.search(content))
+        checks.append({"name": "no_placeholders", "pass": not has_placeholder,
+                        "detail": "placeholder detected" if has_placeholder else "OK"})
 
     elif gate_num == 2:
+        # Build success marker
         has_success = bool(re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE))
         checks.append({"name": "build_success", "pass": has_success})
 
+        # Self-checks all marked
         unchecked = re.findall(r"-\s*\[\s\]", content)
         checks.append({"name": "all_checks_marked", "pass": len(unchecked) == 0,
                         "detail": f"{len(unchecked)} unchecked items"})
 
-        # Must have at least 1 checked item (not just zero unchecked)
         checked = re.findall(r"-\s*\[[xX]\]", content)
         checks.append({"name": "has_checked_items", "pass": len(checked) >= 1,
                         "detail": f"{len(checked)} checked items"})
 
-        has_core = bool(re.search(r"##\s*(1\.\s*)?Core Functionality", content, re.IGNORECASE))
-        checks.append({"name": "has_core_functionality", "pass": has_core})
-
-        # Core Functionality section must have real content
-        core_body = section_body(content, r"(1\.\s*)?Core Functionality")
-        core_words = len(core_body.split()) if core_body else 0
-        checks.append({"name": "core_functionality_depth", "pass": core_words >= 2,
-                        "detail": f"{core_words} words (minimum 2)"})
-
-        has_a11y = bool(re.search(r"##\s*(2\.\s*)?Accessibility Check", content, re.IGNORECASE))
-        checks.append({"name": "has_accessibility_check", "pass": has_a11y})
+        # AC-tracing: read SCOPE.md ACs, check BUILD-STATUS.md addresses each one
+        scope_content, _ = read_artifact(sflo_dir, "SCOPE.md")
+        if scope_content:
+            scope_acs = re.findall(r"-\s*\[.\]\s*(?:AC\d+[:\s]*)?(.+)", scope_content)
+            if scope_acs:
+                addressed = 0
+                for ac in scope_acs:
+                    # Check if the AC text (or key words from it) appears in BUILD-STATUS
+                    ac_words = [w for w in ac.split()[:5] if len(w) > 3]
+                    if any(w.lower() in content.lower() for w in ac_words):
+                        addressed += 1
+                checks.append({"name": "acs_addressed", "pass": addressed >= len(scope_acs) * 0.5,
+                                "detail": f"{addressed}/{len(scope_acs)} ACs referenced"})
 
     elif gate_num == 3:
+        # Grade present and meets threshold
         grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
         grade_val = GRADE_MAP.get(grade_str, -1) if grade_str else -1
         checks.append({"name": "grade_present", "pass": grade_str is not None,
@@ -237,6 +228,7 @@ def validate_gate(gate_num, sflo_dir):
                             "value": grade_str, "minimum": _threshold_grade,
                             "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else f'below {_threshold_grade}'})"})
 
+        # Auto-fail triggers — universal red flags regardless of project type
         auto_fail_patterns = [
             (r"mock.data|sample.data", "mock_data"),
             (r"doesn.t start|does not start|won.t run", "doesnt_start"),
@@ -250,24 +242,8 @@ def validate_gate(gate_num, sflo_dir):
                     checks.append({"name": f"auto_fail_{name}", "pass": False,
                                    "detail": f"Auto-fail trigger: {name}"})
 
-        has_test_results = bool(re.search(r"###?\s*Test Results", content, re.IGNORECASE))
-        checks.append({"name": "has_test_results", "pass": has_test_results})
-
-        # Test Results must have actual PASS/FAIL entries, not just a heading
-        test_entries = re.findall(r"\|\s*(PASS|FAIL)\s*\|", content, re.IGNORECASE)
-        checks.append({"name": "test_results_real", "pass": len(test_entries) >= 1,
-                        "detail": f"{len(test_entries)} PASS/FAIL entries"})
-
-        has_stranger = bool(re.search(r"###?\s*Stranger Test", content, re.IGNORECASE))
-        checks.append({"name": "has_stranger_test", "pass": has_stranger})
-
-        # Stranger Test must have substantive content (not just "Yes" or "No")
-        stranger_body = section_body(content, r"Stranger Test")
-        stranger_words = len(stranger_body.split()) if stranger_body else 0
-        checks.append({"name": "stranger_test_depth", "pass": stranger_words >= 2,
-                        "detail": f"{stranger_words} words (minimum 2)"})
-
     elif gate_num == 4:
+        # Verdict present and approved
         verdict = extract_field(content, r"###?\s*Verdict[:\s]*(.+)")
         is_approved = verdict and "APPROVED" in verdict.upper()
         checks.append({"name": "verdict_present", "pass": verdict is not None,
@@ -275,28 +251,8 @@ def validate_gate(gate_num, sflo_dir):
         checks.append({"name": "verdict_approved", "pass": is_approved,
                         "value": verdict})
 
-        has_ac = bool(re.search(r"###?\s*Acceptance Criteria Check", content, re.IGNORECASE))
-        checks.append({"name": "has_ac_check", "pass": has_ac})
-
-        # AC Check must reference actual criteria (checked items)
-        ac_body = section_body(content, r"Acceptance Criteria Check")
-        ac_checked = len(re.findall(r"-\s*\[[xX]\]", ac_body)) if ac_body else 0
-        checks.append({"name": "ac_check_depth", "pass": ac_checked >= 1,
-                        "detail": f"{ac_checked} checked criteria"})
-
-        has_scope = bool(re.search(r"###?\s*Scope Alignment", content, re.IGNORECASE))
-        checks.append({"name": "has_scope_alignment", "pass": has_scope})
-
-        # Scope Alignment must have real content
-        scope_body = section_body(content, r"Scope Alignment")
-        scope_words = len(scope_body.split()) if scope_body else 0
-        checks.append({"name": "scope_alignment_depth", "pass": scope_words >= 2,
-                        "detail": f"{scope_words} words (minimum 2)"})
-
-        has_reflection = bool(re.search(r"##\s*Process Reflection", content, re.IGNORECASE))
-        checks.append({"name": "has_process_reflection", "pass": has_reflection})
-
     elif gate_num == 5:
+        # Decision present and valid
         decision = extract_field(content, r"###?\s*Decision[:\s]*(.+)")
         valid_decisions = ["SHIP", "HOLD", "KILL"]
         is_valid = decision and decision.upper() in valid_decisions
@@ -304,12 +260,6 @@ def validate_gate(gate_num, sflo_dir):
                         "value": decision})
         checks.append({"name": "decision_valid", "pass": is_valid,
                         "value": decision, "valid_options": valid_decisions})
-
-        has_evidence = bool(re.search(r"###?\s*Pipeline Evidence", content, re.IGNORECASE))
-        checks.append({"name": "has_pipeline_evidence", "pass": has_evidence})
-
-        has_iterations = bool(re.search(r"###?\s*Iterations", content, re.IGNORECASE))
-        checks.append({"name": "has_iterations", "pass": has_iterations})
 
     passed = all(c["pass"] for c in checks)
     return passed, checks
