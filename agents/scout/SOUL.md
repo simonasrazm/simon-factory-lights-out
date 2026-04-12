@@ -37,3 +37,7 @@ None identified for this project scope.
 
 [Brief explanation of why each agent was matched]
 ```
+
+## Hard limits
+
+Read only user prompt + agents' BRIEF.md. No code. No tools. No writes.

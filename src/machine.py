@@ -8,8 +8,7 @@ from .constants import (
     S_SCOUT, S_ASSIGN, S_ESCALATE, S_DONE,
 )
 from .state import write_state
-from .validate import validate_gate, clean_artifacts_from, save_qa_feedback, save_pm_rejection
-from .guardian import guardian_check, record_gate_failure
+from .validate import validate_gate, clean_artifacts_from, save_qa_feedback, save_pm_feedback
 
 
 def resolve_sflo_base():
@@ -51,27 +50,67 @@ def _last_gate():
 
 
 def agent_reads(gate_num, agent_path, sflo_base, sflo_dir):
-    """Build the list of files an agent should read for a gate."""
+    """Minimal reads list — gate doc + SOUL only.
+
+    Agents pull all other context on demand using the context map
+    injected by build_agent_prompt. This keeps the prompt small and
+    lets agents load only what they need (e.g. skip 71KB SCOPE on
+    rebuild when only QA feedback matters).
+    """
     info = GATES[gate_num]
-    reads = [
+    return [
         os.path.join(sflo_base, info["gate_doc"]),
         os.path.join(agent_path, "SOUL.md"),
     ]
+
+
+def build_context_map(gate_num, sflo_dir):
+    """Build a context map for the agent — pointers to relevant files.
+
+    The map tells the agent what files exist and why they matter,
+    without injecting their content. Agent reads them on demand.
+    Returns (mode, context_lines) where mode is "fresh" or "rebuild".
+    """
+    feedback_files = []
+    qa_feedback = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+    pm_feedback = os.path.join(sflo_dir, "PM-FEEDBACK.md")
+    if os.path.isfile(pm_feedback):
+        feedback_files.append(
+            f"  - {pm_feedback} (PM reviewed and requested changes)"
+        )
+    if os.path.isfile(qa_feedback):
+        feedback_files.append(
+            f"  - {qa_feedback} (QA found issues in your code)"
+        )
+
+    is_rebuild = len(feedback_files) > 0
+
+    # Prior gate artifacts that exist on disk
+    prior_artifacts = []
     for prev_gate in sorted(GATES):
         if prev_gate < gate_num:
-            prev_artifact = GATES[prev_gate]["artifact"]
-            reads.append(os.path.join(sflo_dir, prev_artifact))
+            artifact = GATES[prev_gate]["artifact"]
+            path = os.path.join(sflo_dir, artifact)
+            if os.path.isfile(path):
+                prior_artifacts.append(f"  - {path}")
 
-    # Outer loop: PM rejection takes priority (QA report is stale after PM rejects)
-    # Inner loop: QA feedback guides dev fixes
-    rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
-    feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-    if os.path.isfile(rejection_path):
-        reads.append(rejection_path)
-    elif os.path.isfile(feedback_path):
-        reads.append(feedback_path)
+    scope_path = os.path.join(sflo_dir, "SCOPE.md")
 
-    return reads
+    lines = ["## Context\n"]
+    if is_rebuild:
+        lines.append("Mode: rebuild\n")
+        lines.append("Feedback to address:")
+        lines.extend(feedback_files)
+        lines.append(f"\nScope: {scope_path} (read only if you need AC details)")
+    else:
+        lines.append("Mode: fresh\n")
+        lines.append(f"Scope: {scope_path}")
+
+    if prior_artifacts:
+        lines.append("\nPrior artifacts on disk:")
+        lines.extend(prior_artifacts)
+
+    return "rebuild" if is_rebuild else "fresh", "\n".join(lines)
 
 
 def auto_transition(state, sflo_dir):
@@ -100,11 +139,6 @@ def compute_next(state, sflo_dir):
 
     Pure query — does NOT mutate state or write to disk.
     """
-    # Guardian check — runs before anything else
-    guardian_reason = guardian_check(sflo_dir)
-    if guardian_reason:
-        return {"state": "escalate", "action": "ask_human", "reason": guardian_reason}
-
     current = state["current_state"]
     sflo_base = resolve_sflo_base()
     assignments = state.get("assignments", {})
@@ -171,6 +205,7 @@ def compute_next(state, sflo_dir):
                 "model": role_bindings.get("model", "sonnet"),
                 "reads": agent_reads(n, agent_path, sflo_base, sflo_dir),
                 "produces": os.path.join(sflo_dir, GATES[n]["artifact"]),
+                "gate_num": n,
             },
         }
 
@@ -202,11 +237,24 @@ def compute_next(state, sflo_dir):
         return {"state": "done", "action": "pipeline_complete"}
 
     if current == S_ESCALATE:
+        # Escalation reason + options are stored in state by whichever branch
+        # escalated. Default messaging is for outer-loop PM-rejection exhaustion
+        # (the original escalation source); other branches (gate 1/5 validation
+        # failure, non-progress guard) set their own.
+        reason = state.get("escalate_reason") or (
+            f"PM rejected {state['outer_loops']} times. Human decision needed."
+        )
+        options = state.get("escalate_options") or [
+            "continue (reset counters)",
+            "ship anyway (override)",
+            "kill project",
+        ]
         return {
             "state": "escalate",
             "action": "ask_human",
-            "reason": f"PM rejected {state['outer_loops']} times. Human decision needed.",
-            "options": ["continue (reset counters)", "ship anyway (override)", "kill project"],
+            "reason": reason,
+            "options": options,
+            "failed_checks": state.get("escalate_failed_checks", []),
         }
 
     return {"state": current, "action": "unknown", "error": f"Unknown state: {current}"}
@@ -238,17 +286,16 @@ def apply_transition(state, result, sflo_dir):
         inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
 
-        # PM rejection served its purpose once dev passes gate 2
+        # Archive feedback files to logs/ once they've served their purpose
+        from .archive import archive_to_logs
         if n == inner_loop_restart:
-            rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
-            if os.path.isfile(rejection_path):
-                os.remove(rejection_path)
-
-        # QA feedback served its purpose once QA gate passes
+            pm_fb = os.path.join(sflo_dir, "PM-FEEDBACK.md")
+            if os.path.isfile(pm_fb):
+                archive_to_logs(sflo_dir, [pm_fb])
         if n == inner_loop_gate:
-            feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-            if os.path.isfile(feedback_path):
-                os.remove(feedback_path)
+            qa_fb = os.path.join(sflo_dir, "QA-FEEDBACK.md")
+            if os.path.isfile(qa_fb):
+                archive_to_logs(sflo_dir, [qa_fb])
 
         next_action = compute_next(state, sflo_dir)
         result["next"] = next_action
@@ -298,13 +345,6 @@ def apply_transition(state, result, sflo_dir):
             state["outer_loops"] += 1
             state["inner_loops"] = 0
 
-            # Record gate failure for guardian circuit breaker
-            trip = record_gate_failure(sflo_dir, n)
-            if trip:
-                state["current_state"] = S_ESCALATE
-                write_state(sflo_dir, state)
-                return {"state": "escalate", "action": "ask_human", "reason": trip}
-
             if state["outer_loops"] >= OUTER_LOOP_MAX:
                 state["current_state"] = S_ESCALATE
                 write_state(sflo_dir, state)
@@ -318,12 +358,11 @@ def apply_transition(state, result, sflo_dir):
             else:
                 restart_gate = inner_loop_restart
                 state["current_state"] = f"gate-{restart_gate}"
-                # Save PM's rejection verdict before artifacts are cleaned
-                save_pm_rejection(sflo_dir)
-                # QA feedback is stale after PM rejects — remove it
-                qa_feedback = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-                if os.path.isfile(qa_feedback):
-                    os.remove(qa_feedback)
+                # Save PM's verdict as PM-FEEDBACK.md before cleanup
+                # deletes PM-VERIFY.md. Same pattern as QA-FEEDBACK.md:
+                # gate artifact deleted for auto_transition, feedback
+                # copy persists for dev's context map.
+                save_pm_feedback(sflo_dir)
                 clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
                 return {
@@ -337,10 +376,63 @@ def apply_transition(state, result, sflo_dir):
                 }
 
         else:
-            # Record gate failure for other gates too (for guardian)
-            record_gate_failure(sflo_dir, n)
-            result["action"] = "failed"
-            result["message"] = f"Gate {n} validation failed. Fix and retry."
-            return result
+            # Gate failure on a non-loop gate (e.g. gate 1, 2, or 5).
+            #
+            # Retry the responsible agent with the validation error as
+            # context — same pattern as the inner/outer loops but using
+            # gate_retries counter and INNER_LOOP_MAX as cap. The agent
+            # gets another chance to fix its artifact, with the failed
+            # checks surfaced in state so the runner's crash_context or
+            # prompt rebuild includes them.
+            #
+            # Only escalate after INNER_LOOP_MAX retries — dark factory
+            # should self-heal on fixable validation issues (e.g. dev
+            # missing a checklist item in BUILD-STATUS.md).
+            gate_retries = state.get("gate_retries", {})
+            gate_key = str(n)
+            gate_retries[gate_key] = gate_retries.get(gate_key, 0) + 1
+            state["gate_retries"] = gate_retries
+
+            if gate_retries[gate_key] >= INNER_LOOP_MAX:
+                failed_checks = [c for c in result.get("checks", []) if not c.get("pass", True)]
+                failed_names = [c.get("name", "?") for c in failed_checks]
+                artifact_name = GATES[n]["artifact"] if n in GATES else f"gate-{n}"
+                state["current_state"] = S_ESCALATE
+                state["escalate_reason"] = (
+                    f"Gate {n} ({artifact_name}) failed validation "
+                    f"{gate_retries[gate_key]} times: "
+                    f"{', '.join(failed_names) or 'unknown'}. "
+                    f"Escalating to human."
+                )
+                state["escalate_options"] = [
+                    f"fix {artifact_name} manually and retry",
+                    f"delete {sflo_dir}/ and retry",
+                    "override validation (not recommended)",
+                ]
+                state["escalate_failed_checks"] = failed_checks
+                write_state(sflo_dir, state)
+                return compute_next(state, sflo_dir)
+            else:
+                # Loop back: re-run the gate's agent with the failed
+                # artifact deleted so it rebuilds from scratch.
+                failed_checks = [c for c in result.get("checks", []) if not c.get("pass", True)]
+                failed_names = [c.get("name", "?") for c in failed_checks]
+                artifact_name = GATES[n]["artifact"] if n in GATES else f"gate-{n}"
+                artifact_path = os.path.join(sflo_dir, artifact_name)
+                if os.path.isfile(artifact_path):
+                    from .archive import archive_to_logs
+                    archive_to_logs(sflo_dir, [artifact_path])
+                state["gates"][gate_key]["status"] = "pending"
+                state["current_state"] = f"gate-{n}"
+                write_state(sflo_dir, state)
+                return {
+                    **result,
+                    "state": f"gate-retry-{n}",
+                    "action": "loop_back",
+                    "gate_retry_count": gate_retries[gate_key],
+                    "max": INNER_LOOP_MAX,
+                    "failed_checks": failed_names,
+                    "next": compute_next(state, sflo_dir),
+                }
 
     return result

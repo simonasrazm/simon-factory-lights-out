@@ -29,12 +29,6 @@ class TestParsePipelineYaml(unittest.TestCase):
     def test_parse_default_pipeline(self):
         yaml = """threshold: B+
 
-guardian:
-  enabled: false
-  max_spawns: 50
-  wall_clock_s: 7200
-  circuit_breaker_window: 5
-
 gates:
   1:
     artifact: SCOPE.md
@@ -50,10 +44,8 @@ gates:
         self.assertIsNone(err)
         self.assertIsNotNone(config)
         self.assertEqual(config["threshold"], "B+")
-        self.assertFalse(config["guardian"]["enabled"])
-        self.assertEqual(config["guardian"]["max_spawns"], 50)
-        self.assertEqual(config["guardian"]["wall_clock_s"], 7200)
-        self.assertEqual(config["guardian"]["circuit_breaker_window"], 5)
+        # Guardian removed — config should NOT have guardian key
+        self.assertNotIn("guardian", config)
         self.assertIn(1, config["gates"])
         self.assertIn(2, config["gates"])
         self.assertEqual(config["gates"][1]["artifact"], "SCOPE.md")
@@ -88,12 +80,6 @@ gates:
         yaml = """# This is a comment
 threshold: A  # inline ignored
 
-# Another comment
-guardian:
-  # Guardian settings
-  enabled: false
-  max_spawns: 10
-
 gates:
   1:
     # gate 1
@@ -105,7 +91,6 @@ gates:
         config, err = parse_pipeline_yaml(path)
         self.assertIsNone(err)
         self.assertEqual(config["threshold"], "A")
-        self.assertEqual(config["guardian"]["max_spawns"], 10)
         self.assertEqual(config["gates"][1]["artifact"], "SCOPE.md")
 
     def test_file_not_found(self):
@@ -113,18 +98,17 @@ gates:
         self.assertIsNone(config)
         self.assertIn("not found", err)
 
-    def test_guardian_enabled_true(self):
+    def test_guardian_section_ignored(self):
+        """Guardian section in YAML is silently ignored (guardian removed)."""
         yaml = """guardian:
   enabled: true
   max_spawns: 20
-  wall_clock_s: 3600
-  circuit_breaker_window: 3
 """
         path = self.write_yaml(yaml)
         config, err = parse_pipeline_yaml(path)
         self.assertIsNone(err)
-        self.assertTrue(config["guardian"]["enabled"])
-        self.assertEqual(config["guardian"]["max_spawns"], 20)
+        # Guardian is no longer parsed — unknown top-level keys are ignored
+        self.assertNotIn("guardian", config)
 
 
 class TestLoadPipelineConfig(unittest.TestCase):
@@ -150,7 +134,8 @@ class TestLoadPipelineConfig(unittest.TestCase):
         config = load_pipeline_config(default_path)
         self.assertIn("gates", config)
         self.assertIn("grade_threshold", config)
-        self.assertIn("guardian", config)
+        # Guardian removed — load_pipeline_config returns only {gates, grade_threshold}
+        self.assertNotIn("guardian", config)
         self.assertIsInstance(config["grade_threshold"], (int, float))
         # Default threshold B+ = 5
         self.assertEqual(config["grade_threshold"], 5)
@@ -205,16 +190,17 @@ class TestLoadPipelineConfig(unittest.TestCase):
         self.assertIn(1, config["gates"])
         self.assertIn(5, config["gates"])
         self.assertEqual(config["grade_threshold"], 5)
-        self.assertFalse(config["guardian"]["enabled"])
+        # Guardian removed — not in config
+        self.assertNotIn("guardian", config)
 
-    def test_guardian_merged_with_defaults(self):
-        """Partial guardian config is merged with defaults."""
+    def test_guardian_section_not_in_loaded_config(self):
+        """Guardian section in YAML is ignored — load_pipeline_config returns only gates+threshold."""
         path = self.write_yaml("guardian:\n  enabled: true\n  max_spawns: 10\n")
         config = load_pipeline_config(path)
-        self.assertTrue(config["guardian"]["enabled"])
-        self.assertEqual(config["guardian"]["max_spawns"], 10)
-        # wall_clock_s should still have default
-        self.assertEqual(config["guardian"]["wall_clock_s"], 7200)
+        self.assertNotIn("guardian", config)
+        # Should still have the default gates and threshold
+        self.assertIn("gates", config)
+        self.assertIn("grade_threshold", config)
 
     def test_cwd_override(self):
         """When pipeline.yaml in cwd, it takes priority."""

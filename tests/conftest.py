@@ -22,13 +22,18 @@ GATE_ARTIFACTS = {
 
 # Minimal passing artifact content for each gate
 PASSING_ARTIFACTS = {
+    # SCOPE.md must have ≥1 AC line, ≥50 words, and no template placeholders
+    # in order to pass the current gate 1 validator.
     "SCOPE.md": (
-        "## Data Sources\nNone\n"
-        "## Acceptance Criteria\n- [x] AC1\n"
-        "## Challenge Analysis\nSome analysis here.\n"
-        "## What We're Building\nA widget.\n"
-        "## Features\n- Feature 1\n"
-        "## State Management\nLocal state only.\n"
+        "# Widget Project Scope\n\n"
+        "## Summary\n"
+        "Build a small widget with a clickable button that increments a "
+        "counter displayed in the page. Single HTML file, inline styles "
+        "and script, no build step, no external dependencies. A single "
+        "page, a single button, a single visible number.\n\n"
+        "## Acceptance Criteria\n"
+        "- [x] AC1: clicking the button increments the counter\n"
+        "- [x] AC2: page loads without console errors\n"
     ),
     "BUILD-STATUS.md": (
         "Build: Success\nZero errors\n- [x] done\n"

@@ -1,4 +1,4 @@
-.sflo/
+.sflo*/
 __pycache__/
 *.pyc
 *.lock

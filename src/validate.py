@@ -43,9 +43,42 @@ def section_body(content, heading_pattern):
     return body.strip()
 
 
-# Patterns that indicate template placeholders rather than real content
+# Patterns that indicate template placeholders rather than real content.
+#
+# Detection is context-aware. A bracket-wrapped token like [URL] or [TBD] is
+# only treated as a placeholder when it appears in a template position:
+#
+#   (a) Alone on a line (ignoring leading/trailing whitespace), e.g.
+#           [TBD]
+#       or
+#           <whitespace>[URL]<whitespace>
+#
+#   (b) Immediately after a field label, e.g.
+#           Grade: [TODO]
+#           Owner:[N/A]
+#
+# Bracketed tokens appearing inline in prose are NOT flagged. Example:
+#     "a small [source] link next to each data point"   -> legit prose
+#     "the [URL] field is validated"                    -> legit prose
+#     "add [TODO] comments where needed"                -> legit prose
+#
+# Two forms are ALWAYS flagged regardless of context — they are never
+# legitimate prose:
+#     [INSERT anything]       -> explicit insertion marker
+#     [PLACEHOLDER anything]  -> explicit placeholder marker
+#
+# This removes the false positive on literal UI markup like "[source]" that
+# appeared in real SCOPE.md prose describing source-link affordances.
+_SIMPLE_TOKENS = r"URL|TODO|TBD|N/?A|FILL[\s_-]?IN|SOURCE"
 PLACEHOLDER_PATTERN = re.compile(
-    r"\[URL\]|\[N/?A\]|\[source\]|\[TODO\]|\[TBD\]|\[INSERT[^\]]*\]|\[PLACEHOLDER[^\]]*\]",
+    # alone-on-line form
+    rf"(?:^|\n)[ \t]*\[(?:{_SIMPLE_TOKENS})\][ \t]*(?=$|\n)"
+    r"|"
+    # field-label-colon form (e.g. "Grade: [TBD]")
+    rf"\b\w[\w\s-]*:[ \t]*\[(?:{_SIMPLE_TOKENS})\]"
+    r"|"
+    # explicit insert/placeholder forms (always flagged)
+    r"\[INSERT[^\]]*\]|\[PLACEHOLDER[^\]]*\]",
     re.IGNORECASE,
 )
 
@@ -113,40 +146,47 @@ def save_qa_feedback(sflo_dir):
         f.write(content)
 
 
-def save_pm_rejection(sflo_dir):
-    """Save PM's rejection verdict as PM-REJECTION.md before artifacts are cleaned.
+def save_pm_feedback(sflo_dir):
+    """Copy PM-VERIFY.md to PM-FEEDBACK.md before it's deleted by cleanup.
 
-    On outer loop (PM rejects), PM-VERIFY.md is about to be deleted by
-    clean_artifacts_from(). This function preserves it as PM-REJECTION.md
-    so the dev agent knows exactly what PM rejected and why.
+    Same pattern as save_qa_feedback: gate artifact is deleted for
+    auto_transition, but a feedback copy persists for dev's context map.
     """
     pm_artifact = GATES.get(4, {}).get("artifact", "PM-VERIFY.md")
     content, err = read_artifact(sflo_dir, pm_artifact)
     if content is None:
         return
 
-    rejection_path = os.path.join(sflo_dir, "PM-REJECTION.md")
-    with open(rejection_path, "w", encoding="utf-8") as f:
-        f.write(f"# PM Rejection — Fix Required\n\n"
-                f"PM reviewed the build and REJECTED it. "
-                f"You MUST address the issues below before the next review.\n\n"
-                f"---\n\n{content}")
+    feedback_path = os.path.join(sflo_dir, "PM-FEEDBACK.md")
+    with open(feedback_path, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
-def clean_artifacts_from(start_gate, sflo_dir):
-    """Remove artifacts for gates >= start_gate so auto-transition doesn't skip on loop-back.
+def clean_artifacts_from(start_gate, sflo_dir, preserve=None):
+    """Archive gate OUTPUT artifacts >= start_gate to logs/ so auto-transition rebuilds them.
 
-    Preserves QA feedback (QA-FEEDBACK.md) so the dev agent knows what to fix.
+    Feedback files (QA-FEEDBACK.md, PM-FEEDBACK.md) are preserved in place —
+    they're context for the next agent, not gate outputs to regenerate.
+    Gate artifacts (including PM-VERIFY.md) are moved to logs/ for debugging.
     """
+    from .archive import archive_to_logs
+
+    preserve_names = {"QA-FEEDBACK.md", "PM-FEEDBACK.md"}
+    if preserve:
+        preserve_names.update(preserve)
+
+    to_archive = []
     for g in sorted(GATES.keys()):
         if g >= start_gate:
             artifact = GATES[g]["artifact"]
+            if artifact in preserve_names:
+                continue
             p = os.path.join(sflo_dir, artifact)
-            try:
-                if os.path.isfile(p):
-                    os.remove(p)
-            except OSError as e:
-                print(json.dumps({"warning": f"Could not remove {p}: {e}"}), file=sys.stderr)
+            if os.path.isfile(p):
+                to_archive.append(p)
+
+    if to_archive:
+        archive_to_logs(sflo_dir, to_archive)
 
 
 def validate_agent_path(agent_path):

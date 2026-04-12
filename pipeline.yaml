@@ -4,12 +4,6 @@
 
 threshold: B+
 
-guardian:
-  enabled: true
-  max_spawns: 50
-  wall_clock_s: 7200
-  circuit_breaker_window: 5
-
 gates:
   1:
     artifact: SCOPE.md

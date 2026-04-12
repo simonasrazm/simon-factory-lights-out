@@ -10,6 +10,7 @@ Usage:
     python3 sflo/src/scaffold.py next [--sflo-dir PATH]
     python3 sflo/src/scaffold.py prompt [--sflo-dir PATH]
     python3 sflo/src/scaffold.py status [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py clean [--sflo-dir PATH]
 """
 
 import sys
@@ -25,6 +26,7 @@ if __name__ == "__main__":
     from src.validate import validate_agent_path, read_artifact, extract_field
     from src.machine import auto_transition, compute_next, apply_transition
     from src.prompt import format_prompt
+    from src.archive import archive_to_logs
 else:
     from .constants import KNOWN_ROLES
     from .bindings import parse_bindings, resolve_bindings_path
@@ -32,6 +34,7 @@ else:
     from .validate import validate_agent_path, read_artifact, extract_field
     from .machine import auto_transition, compute_next, apply_transition
     from .prompt import format_prompt
+    from .archive import archive_to_logs
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +222,83 @@ def cmd_status(args):
     })
 
 
+def cmd_clean(args):
+    """Wipe pipeline state and gate artifacts for a fresh run.
+
+    Removes: state.json, all gate artifacts (SCOPE.md, BUILD-STATUS.md,
+    QA-REPORT.md, PM-VERIFY.md, SHIP-DECISION.md), feedback files
+    (QA-FEEDBACK.md, PM-FEEDBACK.md), and pipeline.log.
+
+    Preserves: anything else in sflo_dir (e.g. .venv, user-provided files).
+
+    Bounded allow-list, regenerable artifacts — no flags, no ceremony.
+    Run `ls .sflo/` first if you want to preview.
+    """
+    sflo_dir, _, unknown = parse_args(args)
+
+    if unknown:
+        output({"ok": False, "error": f"Unknown arguments: {' '.join(unknown)}"})
+        return
+
+    if not os.path.isdir(sflo_dir):
+        output({"ok": False, "error": f"{sflo_dir} does not exist — nothing to clean"})
+        return
+
+    # Known SFLO-owned entries at the top level of sflo_dir
+    known_files = {
+        "state.json",
+        "pipeline.log",
+        "SCOPE.md",
+        "BUILD-STATUS.md",
+        "QA-REPORT.md",
+        "PM-VERIFY.md",
+        "SHIP-DECISION.md",
+        "QA-FEEDBACK.md",
+        "PM-FEEDBACK.md",
+    }
+    known_dirs = set()
+
+    to_remove = []
+    try:
+        for entry in sorted(os.listdir(sflo_dir)):
+            full = os.path.join(sflo_dir, entry)
+            if entry in known_files and os.path.isfile(full):
+                to_remove.append(full)
+            elif entry in known_dirs and os.path.isdir(full):
+                to_remove.append(full)
+    except OSError as e:
+        output({"ok": False, "error": f"Cannot list {sflo_dir}: {e}"})
+        return
+
+    if not to_remove:
+        output({
+            "ok": True,
+            "sflo_dir": sflo_dir,
+            "removed": [],
+            "note": "Nothing to clean — directory contains no SFLO artifacts.",
+        })
+        return
+
+    archived = []
+    errors = []
+    try:
+        archived = archive_to_logs(sflo_dir, to_remove)
+    except OSError as e:
+        errors.append({"path": "<archive>", "error": str(e)})
+
+    output({
+        "ok": len(errors) == 0,
+        "sflo_dir": sflo_dir,
+        "archived_to": os.path.join(sflo_dir, "logs"),
+        "archived": archived,
+        "errors": errors,
+        "note": (
+            "Fresh run ready. Removed artifacts moved to logs/ for inspection. "
+            "Invoke pipeline with a new user prompt."
+        ) if not errors else None,
+    })
+
+
 def cmd_prompt(args):
     """Generate reinjectable prompt for stop hook."""
     sflo_dir, _, _ = parse_args(args)
@@ -258,6 +338,7 @@ COMMANDS = {
     "next": cmd_next,
     "status": cmd_status,
     "prompt": cmd_prompt,
+    "clean": cmd_clean,
 }
 
 

@@ -16,13 +16,48 @@ Read these files in order:
 
 Every test MUST use REAL production data, not samples.
 
-## Context Budget
+## Context Budget & Subagent Strategy
 
-You run inside a fixed context window. Large file reads consume it fast.
+You run inside a fixed context window. **Do NOT read large project files directly.** Instead, delegate testing to focused subagents using the Agent tool.
 
-- **Files > 1500 lines:** Use `Read` with `offset`/`limit` to read only the sections you're testing. Use `Grep` to locate relevant code first.
-- **Never read a full 1500+ line file** to check one feature. Target your reads.
-- **Test with Bash snippets** (e.g., `python -c "from app import app; ..."`) instead of reading entire files when verifying runtime behavior.
+### When to use subagents
+
+**Always use subagents when project files exceed 1000 lines total.** Check with `wc -l` first.
+
+### How to delegate
+
+Spawn subagents for each test category. Each subagent gets a focused prompt with:
+- The specific ACs or test cases to verify
+- Which files/sections to read (use Grep to locate, then read with offset/limit)
+- What evidence to return (pass/fail, output, exact findings)
+
+**Recommended subagent split:**
+
+1. **Build & syntax validator** — "Check that these files parse without errors. Run: `python3 -c \"import ast; ast.parse(open('file.py').read())\"`. Check template syntax. Report pass/fail with any errors."
+
+2. **AC verifier** (one subagent per 3-5 ACs) — "Verify these acceptance criteria from SCOPE.md: [list ACs]. Read the relevant code sections using Grep to find them first. For each AC, report PASS/FAIL with evidence."
+
+3. **Live data tester** — "Test these API endpoints and data sources using curl/python. Verify data is real and current, not mock. Report what you found."
+
+4. **UX / stranger test** — "Read the main template structure (headings, navigation, layout). Could a random person figure out what this does in 5 seconds? Report your assessment."
+
+### Subagent rules
+
+- Give each subagent a **clear, self-contained prompt** — it has no access to your context
+- Include the file paths and line ranges to check
+- Ask for **structured output** (PASS/FAIL per item, with evidence)
+- Subagents should use `model: "haiku"` for simple checks, `model: "sonnet"` for complex verification
+- Run independent subagents in parallel (multiple Agent calls in one message)
+
+### What YOU do (orchestrator)
+
+1. Read SCOPE.md, BUILD-STATUS.md, and the gate doc (small files — safe to read directly)
+2. Plan which subagents to spawn based on the ACs
+3. Spawn subagents and collect their results
+4. Fix minor issues yourself (small targeted edits)
+5. Aggregate results into QA-REPORT.md with the grade
+
+**Never read the full project source files yourself.** That's what subagents are for.
 
 ## Mandatory Tests
 

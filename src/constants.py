@@ -7,7 +7,7 @@ import sys
 # Root of the sflo repo — resolved from this file's location (src/ -> repo root)
 SFLO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Load pipeline config (gates, threshold, guardian) from pipeline.yaml
+# Load pipeline config (gates, threshold) from pipeline.yaml
 # Resolution: cwd/pipeline.yaml -> sflo/pipeline.yaml -> built-in defaults
 from .config import load_pipeline_config
 
@@ -15,7 +15,6 @@ _config = load_pipeline_config()
 
 GATES = _config["gates"]
 GRADE_THRESHOLD = _config["grade_threshold"]
-GUARDIAN_CONFIG = _config["guardian"]
 
 GRADE_MAP = {"A": 6, "A-": 5.5, "B+": 5, "B": 4, "B-": 3.5, "C": 3, "D": 2, "F": 1}
 
