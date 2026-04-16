@@ -4,8 +4,10 @@ import os
 import shutil
 import sys
 
-# Root of the sflo repo — resolved from this file's location (src/ -> repo root)
-SFLO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Root of the sflo repo.
+# SFLO_ROOT env var (set by SimonFactory app to vault path) takes precedence.
+# Falls back to __file__-derived path for CLI / dev use.
+SFLO_ROOT = os.environ.get("SFLO_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Load pipeline config (gates, threshold) from pipeline.yaml
 # Resolution: cwd/pipeline.yaml -> sflo/pipeline.yaml -> built-in defaults

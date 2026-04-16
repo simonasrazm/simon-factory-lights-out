@@ -82,37 +82,35 @@ def preflight_check(assignments, sflo_dir=None):
     all_issues = []
 
     for role, agent_path in (assignments or {}).items():
-        if not agent_path or not os.path.isdir(agent_path):
+        if not agent_path:
             all_issues.append(f"{role}: agent path not found: {agent_path}")
             continue
+        # Normalize: strip trailing slash, try progressively shorter prefixes.
+        # Handles garbled paths like "agents/pm/users/..." → "agents/pm"
+        clean_path = agent_path.rstrip("/")
+        if not os.path.isdir(clean_path):
+            found = False
+            # Try prepending / (missing leading slash)
+            if not clean_path.startswith("/") and os.path.isdir("/" + clean_path):
+                clean_path = "/" + clean_path
+                found = True
+            else:
+                # Try progressively shorter path prefixes
+                parts = clean_path.split("/")
+                for i in range(2, len(parts)):
+                    candidate = "/".join(parts[:i])
+                    if os.path.isdir(candidate):
+                        clean_path = candidate
+                        found = True
+                        break
+            if not found:
+                all_issues.append(f"{role}: agent path not found: {agent_path}")
+                continue
+        assignments[role] = clean_path
         issues = check_agent_soul(role, agent_path)
         all_issues.extend(issues)
 
     return all_issues
-
-
-def check_chrome_devtools_mcp():
-    """Check if chrome-devtools MCP is configured in ~/.claude.json.
-
-    Returns (installed: bool, message: str). If not installed, message
-    includes the install command as a recommendation.
-    """
-    config_path = os.path.join(os.path.expanduser("~"), ".claude.json")
-    if not os.path.isfile(config_path):
-        return (False, "~/.claude.json not found. Install chrome-devtools MCP: "
-                       "claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest")
-    try:
-        import json
-        with open(config_path, "r") as f:
-            data = json.load(f)
-        mcp = data.get("mcpServers", {})
-        if "chrome-devtools" in mcp:
-            return (True, "chrome-devtools MCP configured")
-        else:
-            return (False, "chrome-devtools MCP not found. Recommended for browser testing. "
-                           "Install: claude mcp add chrome-devtools --scope user npx chrome-devtools-mcp@latest")
-    except Exception as e:
-        return (False, f"Cannot read ~/.claude.json: {e}")
 
 
 def check_browser():

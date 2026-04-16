@@ -63,7 +63,7 @@ if __name__ == "__main__":
     from src.state import read_state, write_state, make_initial_state
     from src.machine import auto_transition, compute_next, apply_transition, build_context_map
     from src.validate import validate_agent_path
-    from src.constants import SFLO_ROOT
+    from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE
     from src.archive import archive_to_logs
     from src.preflight import preflight_check, check_browser
 else:
@@ -74,357 +74,25 @@ else:
     from .state import read_state, write_state, make_initial_state
     from .machine import auto_transition, compute_next, apply_transition, build_context_map
     from .validate import validate_agent_path
-    from .constants import SFLO_ROOT
+    from .constants import SFLO_ROOT, S_DONE, S_ESCALATE
     from .archive import archive_to_logs
     from .preflight import preflight_check, check_browser
 
 
 # ---------------------------------------------------------------------------
-# Runtime Adapters
+# Runtime Adapters — imported from adapters package
 # ---------------------------------------------------------------------------
 
-class RuntimeAdapter:
-    """Base class — spawn an agent and return its response text."""
-
-    # MCP server configs — shared across all adapters via configure_mcp().
-    # Each adapter subclass honors what it can.
-    _mcp_servers = None
-    _extra_cli_args = {}
-
-    @classmethod
-    def configure_mcp(cls, mcp_servers=None, extra_cli_args=None, load_user_mcp=False):
-        """Configure MCP servers and extra CLI flags for all agent spawns.
-
-        Runtime-agnostic: sets class-level config on RuntimeAdapter so all
-        subclasses (ClaudeCodeAdapter, OpenClawAdapter, future adapters)
-        can read it. Each adapter decides how to forward the config.
-
-        Args:
-            mcp_servers: dict of MCP server configs, or path to JSON config.
-            extra_cli_args: dict of extra CLI flags, e.g. {"chrome": None}.
-            load_user_mcp: if True, read ~/.claude.json mcpServers and
-                merge with any explicitly passed mcp_servers.
-        """
-        if load_user_mcp:
-            user_mcp = cls._load_user_mcp_servers()
-            if user_mcp:
-                if mcp_servers and isinstance(mcp_servers, dict):
-                    user_mcp.update(mcp_servers)
-                mcp_servers = user_mcp
-        if mcp_servers is not None:
-            cls._mcp_servers = mcp_servers
-        if extra_cli_args is not None:
-            cls._extra_cli_args = extra_cli_args
-
-    # MCP defaults loaded from config file at runtime.
-    _mcp_defaults = None
-
-    @classmethod
-    def _load_mcp_defaults(cls):
-        """Load MCP defaults from mcp-defaults.json.
-
-        Resolution: cwd → cwd/sflo → SFLO_PARENT → SFLO_ROOT.
-        Same walk-up pattern as bindings.yaml.
-        """
-        if cls._mcp_defaults is not None:
-            return cls._mcp_defaults
-
-        cwd = os.getcwd()
-        sflo_parent = os.path.dirname(SFLO_ROOT)
-        for candidate in [
-            os.path.join(cwd, "mcp-defaults.json"),
-            os.path.join(cwd, "sflo", "mcp-defaults.json"),
-            os.path.join(sflo_parent, "mcp-defaults.json"),
-            os.path.join(SFLO_ROOT, "mcp-defaults.json"),
-        ]:
-            if os.path.isfile(candidate):
-                try:
-                    with open(candidate, "r") as f:
-                        cls._mcp_defaults = json.load(f)
-                    return cls._mcp_defaults
-                except (OSError, json.JSONDecodeError):
-                    continue
-
-        cls._mcp_defaults = {}
-        return cls._mcp_defaults
-
-    @classmethod
-    def _load_user_mcp_servers(cls):
-        """Read MCP servers from ~/.claude.json and apply safe defaults."""
-        config_path = os.path.join(os.path.expanduser("~"), ".claude.json")
-        if not os.path.isfile(config_path):
-            return {}
-        try:
-            with open(config_path, "r") as f:
-                data = json.load(f)
-            servers = data.get("mcpServers", {})
-
-            defaults = cls._load_mcp_defaults()
-            for name, defs in defaults.items():
-                if name in servers:
-                    args = servers[name].get("args", [])
-                    for req_arg in defs.get("required_args", []):
-                        if req_arg.startswith("--") and req_arg not in args:
-                            args.append(req_arg)
-                            idx = defs["required_args"].index(req_arg)
-                            if idx + 1 < len(defs["required_args"]):
-                                val = defs["required_args"][idx + 1]
-                                if not val.startswith("--"):
-                                    args.append(val)
-                    servers[name]["args"] = args
-            return servers
-        except (OSError, json.JSONDecodeError):
-            return {}
-
-    async def spawn_agent(self, model, system_prompt, user_prompt):
-        """Spawn agent via runtime. Returns response text (str)."""
-        raise NotImplementedError
-
-
-class ClaudeCodeAdapter(RuntimeAdapter):
-    """Uses Claude Agent SDK — runs inside Claude Code, no API key needed."""
-
-    # Default: None = use all tools available in the session (MCP, browser, etc.)
-    # Per-role overrides (e.g. scout read-only) are passed via allowed_tools kwarg.
-    ALLOWED_TOOLS = None
-
-    async def spawn_agent(self, model, system_prompt, user_prompt, role=None,
-                          allowed_tools=None):
-        return await self._run_agent(
-            model, system_prompt, user_prompt,
-            allowed_tools=allowed_tools, role=role,
-        )
-
-    # Max seconds to wait for MCP servers to connect.
-    MCP_READY_TIMEOUT = 30
-
-    async def _run_agent(self, model, system_prompt, user_prompt,
-                         allowed_tools=None, role=None):
-        try:
-            from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
-        except ImportError:
-            raise RuntimeError(
-                "claude_agent_sdk not available. "
-                "Run setup.sh or: pip install claude-agent-sdk"
-            )
-
-        stderr_lines = []
-        self._last_stderr = []  # Preserve for crash diagnostics
-
-        def capture_stderr(line):
-            stderr_lines.append(line)
-
-        # Build options with MCP and extra args if configured.
-        # MCP servers are only forwarded to roles that need them.
-        # Scout is restricted to Read/Glob — no MCP, no browser tools.
-        opts = dict(
-            system_prompt=system_prompt,
-            model=model,
-            allowed_tools=allowed_tools if allowed_tools is not None else self.ALLOWED_TOOLS,
-            permission_mode="bypassPermissions",
-            stderr=capture_stderr,
-        )
-        needs_mcp = role != "scout"
-        if self._mcp_servers and needs_mcp:
-            opts["mcp_servers"] = self._mcp_servers
-            # Append tool usage notes from mcp-defaults.json
-            defaults = self._load_mcp_defaults()
-            prompts = []
-            for name in self._mcp_servers:
-                note = defaults.get(name, {}).get("system_prompt_append")
-                if note:
-                    prompts.append(note)
-            if prompts:
-                opts["system_prompt"] = (
-                    (opts.get("system_prompt") or "") +
-                    "\n\n" + " ".join(prompts)
-                )
-        if self._extra_cli_args and needs_mcp:
-            opts["extra_args"] = self._extra_cli_args
-
-        result_text = ""
-        assistant_msgs = 0
-        tool_calls = 0
-        start_time = _time.time()
-        try:
-            async with ClaudeSDKClient(ClaudeAgentOptions(**opts)) as client:
-                # Wait for MCP servers if configured and role needs them
-                if self._mcp_servers and needs_mcp:
-                    deadline = _time.time() + self.MCP_READY_TIMEOUT
-                    while _time.time() < deadline:
-                        status = await client.get_mcp_status()
-                        servers = status.get("mcpServers", [])
-                        if not servers or all(
-                            s.get("status") == "connected" for s in servers
-                        ):
-                            if servers:
-                                info = ", ".join(
-                                    f"{s['name']}({len(s.get('tools', []))})"
-                                    for s in servers
-                                )
-                                print(f"  [MCP ready: {info}]", file=sys.stderr)
-                            break
-                        await asyncio.sleep(1)
-                    else:
-                        pending = [
-                            s["name"] for s in servers
-                            if s.get("status") != "connected"
-                        ]
-                        print(
-                            f"  [MCP timeout {self.MCP_READY_TIMEOUT}s — "
-                            f"pending: {', '.join(pending)}]",
-                            file=sys.stderr,
-                        )
-
-                await client.query(user_prompt)
-                async for message in client.receive_response():
-                    if hasattr(message, "result") and message.result:
-                        result_text = message.result
-                    elif hasattr(message, "content") and message.content:
-                        assistant_msgs += 1
-                        for block in message.content:
-                            if hasattr(block, "text") and block.text:
-                                result_text += block.text
-                            block_type = type(block).__name__
-                            if block_type == "ToolUseBlock" or (
-                                hasattr(block, "name") and hasattr(block, "input")
-                            ):
-                                tool_calls += 1
-        except Exception as e:
-            # Enrich known crash types with actionable guidance so the
-            # retry's crash_context helps the next attempt avoid the same
-            # failure. The original exception propagates unchanged for
-            # unknown errors.
-            err_str = str(e)
-            if "maximum buffer size" in err_str:
-                e = RuntimeError(
-                    f"{err_str}\n\n"
-                    "CAUSE: A tool returned a response larger than 1MB (likely "
-                    "take_screenshot returning a full PNG). On retry, use "
-                    "take_snapshot (DOM text) instead of take_screenshot, or "
-                    "pass format='jpeg' and quality=50 to take_screenshot."
-                )
-            elapsed = _time.time() - start_time
-            print(
-                f"  [Agent metrics at crash — role={role}, model={model}, "
-                f"msgs={assistant_msgs}, tools={tool_calls}, "
-                f"elapsed={elapsed:.0f}s]",
-                file=sys.stderr,
-            )
-            self._last_stderr = list(stderr_lines)
-            if stderr_lines:
-                print(
-                    f"  [Agent stderr on crash — {len(stderr_lines)} lines, "
-                    f"role={role}, model={model}]",
-                    file=sys.stderr,
-                )
-                for line in stderr_lines[-30:]:
-                    print(f"    {line.rstrip()}", file=sys.stderr)
-                tail = "\n".join(line.rstrip() for line in stderr_lines[-20:])
-                raise RuntimeError(
-                    f"{type(e).__name__}: {e}\n"
-                    f"--- captured stderr (last 20 of {len(stderr_lines)} lines) ---\n"
-                    f"{tail}"
-                ) from e
-            else:
-                print(
-                    f"  [Agent crash with EMPTY stderr — role={role}, "
-                    f"model={model}, exception={type(e).__name__}: {e}]",
-                    file=sys.stderr,
-                )
-            raise
-
-        elapsed = _time.time() - start_time
-        print(
-            f"  [Agent metrics — role={role}, model={model}, "
-            f"msgs={assistant_msgs}, tools={tool_calls}, "
-            f"elapsed={elapsed:.0f}s]",
-            file=sys.stderr,
-        )
-
-        if stderr_lines:
-            print(f"  [Agent stderr: {len(stderr_lines)} lines]", file=sys.stderr)
-            for line in stderr_lines[-10:]:  # last 10 lines
-                print(f"    {line.rstrip()}", file=sys.stderr)
-
-        return result_text
-
-
-class OpenClawAdapter(RuntimeAdapter):
-    """Uses `openclaw agent` CLI — full tool access, real agent sessions."""
-
-    async def spawn_agent(self, model, system_prompt, user_prompt, role=None,
-                          allowed_tools=None):
-        # role/allowed_tools accepted for API compatibility
-        # with ClaudeCodeAdapter; openclaw CLI doesn't currently honor them.
-        import subprocess as sp
-
-        message = f"{system_prompt}\n\n---\n\n{user_prompt}"
-
-        cmd = [
-            "openclaw", "agent",
-            "--message", message,
-            "--session-id", f"sflo-{id(message) % 100000}",
-            "--json",
-        ]
-
-        # Map bindings thinking mode
-        thinking_map = {"off": "off", "adaptive": "adaptive", "extended": "extended"}
-        # thinking is passed via model bindings — not directly available here
-        # but the CLI defaults are reasonable
-
-        try:
-            result = sp.run(
-                cmd,
-                capture_output=True,
-                text=True,
-            )
-        except FileNotFoundError:
-            raise RuntimeError(
-                "openclaw CLI not found. "
-                "Install OpenClaw or run inside an OpenClaw workspace."
-            )
-
-        if result.returncode != 0:
-            raise RuntimeError(f"openclaw agent failed (exit {result.returncode}): {result.stderr}")
-
-        # Parse output — always return string
-        try:
-            data = json.loads(result.stdout)
-            if isinstance(data, dict):
-                return str(data.get("content", data.get("result", result.stdout)))
-            return str(data)
-        except json.JSONDecodeError:
-            return result.stdout
-
-
-def detect_runtime():
-    """Auto-detect which runtime we're in."""
-    import shutil
-    if shutil.which("openclaw"):
-        return "openclaw"
-    try:
-        from claude_agent_sdk import query  # noqa: F401
-        return "claude-code"
-    except ImportError:
-        pass
-    return None
-
-
-def get_adapter(runtime=None):
-    """Get the appropriate runtime adapter."""
-    if runtime is None:
-        runtime = detect_runtime()
-
-    if runtime == "openclaw":
-        return OpenClawAdapter()
-    elif runtime == "claude-code":
-        return ClaudeCodeAdapter()
-    else:
-        raise RuntimeError(
-            "No runtime detected. Run setup.sh to provision the environment, "
-            "or install manually: pip install claude-agent-sdk"
-        )
+if __name__ == "__main__":
+    from src.adapters import (
+        RuntimeAdapter, ClaudeCodeAdapter, OpenClawAdapter, OllamaAdapter,
+        detect_runtime, get_adapter,
+    )
+else:
+    from .adapters import (
+        RuntimeAdapter, ClaudeCodeAdapter, OpenClawAdapter, OllamaAdapter,
+        detect_runtime, get_adapter,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +144,7 @@ def format_validation_feedback(checks):
     return "\n".join(lines)
 
 
-def build_agent_prompt(agent_info, user_prompt, sflo_dir):
+def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None):
     """Build system prompt and user prompt for a gate agent.
 
     Agents get: SOUL + gate doc as system prompt, user request + context
@@ -500,23 +168,85 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir):
     # User prompt: request + context map + task
     user_parts = [f"## User Request\n\n{user_prompt}"]
 
-    # Context map — pointers to relevant files, no content
+    # Context: for Claude, give file paths (agent reads on demand).
+    # For ollama, inject actual content — small models don't proactively read files.
     if gate_num is not None:
         _mode, context_text = build_context_map(gate_num, sflo_dir)
-        user_parts.append(context_text)
+        if runtime == "ollama":
+            # Don't inject artifact content — models have Read tool and
+            # can read files themselves. Injecting makes models lazy.
+            # Instead, add explicit instruction to read the files.
+            user_parts.append(context_text)
+            user_parts.append(
+                "\nYou MUST use the read tool to read each prior artifact listed above "
+                "before starting your work. Do not guess what they contain."
+            )
+        else:
+            user_parts.append(context_text)
 
     produces = agent_info.get("produces", "")
     if produces:
         abs_produces = os.path.abspath(produces)
         artifact_name = os.path.basename(produces)
-        user_parts.append(
+        role = agent_info.get("role", "")
+        if runtime == "ollama":
+            write_instruction = (
+                f"You MUST write the file using bash:\n"
+                f"  mkdir -p {os.path.dirname(abs_produces)}\n"
+                f"  cat <<'ARTIFACT_EOF' > {abs_produces}\n"
+                f"  <your content here>\n"
+                f"  ARTIFACT_EOF\n"
+                f"Do NOT put the artifact content in your response — write it to the file."
+            )
+            # PM: acceptance criteria MUST use checkbox format
+            if role == "pm" and artifact_name == "SCOPE.md":
+                write_instruction += (
+                    f"\n\nAcceptance criteria MUST use this exact format:\n"
+                    f"- [ ] AC1: description\n"
+                    f"- [ ] AC2: description\n"
+                    f"Do NOT use numbered lists or plain dashes for ACs."
+                )
+            # Dev: read SCOPE ACs, build deliverable, verify, write status
+            if role == "dev":
+                scope_path = os.path.join(sflo_dir, "SCOPE.md")
+                write_instruction = (
+                    f"Follow this order:\n"
+                    f"1. Read {scope_path} to see the acceptance criteria.\n"
+                    f"2. Build the deliverable the user asked for. "
+                    f"Use `write` for the first part, `append` for subsequent parts "
+                    f"if the file is large. Write COMPLETE code, no placeholders.\n"
+                    f"3. Verify it works — run it, check output, confirm no errors.\n"
+                    f"4. Write {artifact_name} to {abs_produces}. "
+                    f"List each AC from SCOPE.md with [x] and how it was addressed."
+                )
+            # QA must actually test the deliverable, not just read BUILD-STATUS
+            elif role == "qa":
+                write_instruction = (
+                    f"IMPORTANT: You are QA. Do NOT just read BUILD-STATUS.md and grade it.\n"
+                    f"You MUST use tools to verify the actual deliverable:\n"
+                    f"1. Find the output file the developer created (check BUILD-STATUS.md for path).\n"
+                    f"2. Read the source code — check for syntax errors, missing logic.\n"
+                    f"3. If executable — run it and check output.\n"
+                    f"4. If browser tools are available — use them to open and test web deliverables.\n"
+                    f"5. THEN write {artifact_name} to {abs_produces} with SPECIFIC evidence from your tests.\n"
+                    f"Grade F if deliverable missing. Grade D if errors found. Generic 'PASS' without "
+                    f"evidence = not acceptable."
+                )
+        else:
+            write_instruction = (
+                f"Use the available tools to create the file (Write tool, or bash: "
+                f"cat <<'EOF' > path)."
+            )
+        task_text = (
             f"\n## Your Task\n\n"
             f"Write the artifact `{artifact_name}` to this EXACT path: {abs_produces}\n"
-            f"Use the Write tool to create the file. Follow the gate document template EXACTLY.\n"
+            f"{write_instruction}\n"
+            f"Follow the gate document template EXACTLY.\n"
             f"Every section in the template is REQUIRED — do not skip any.\n"
             f"The scaffold validates the artifact automatically. Missing sections cause gate failure.\n"
             f"Create the parent directory if it doesn't exist."
         )
+        user_parts.append(task_text)
 
     user_msg = "\n\n---\n\n".join(user_parts)
     return system_prompt, user_msg
@@ -527,7 +257,7 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir):
 # ---------------------------------------------------------------------------
 
 async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True,
-                        assignments=None):
+                        assignments=None, bindings=None):
     """Run the full SFLO pipeline.
 
     Args:
@@ -551,7 +281,7 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
     log = make_logger(sflo_dir, verbose)
 
     # --- Init ---
-    bindings_path = resolve_bindings_path()
+    bindings_path = resolve_bindings_path(explicit=bindings)
     if not bindings_path:
         return {"ok": False, "error": "bindings.yaml not found"}
 
@@ -589,41 +319,81 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
     #       counters on crash-resume, which would allow infinite loops.
     #   (b) Different prompt → fresh: archive old artifacts, start clean.
     #   (c) No prior state → fresh run.
+    #
+    # Safety net: Warn if state.json exists at project root (not in .sflo/).
+    # Archive if state.json is stale (>7 days old or wrong prompt context).
     cached_assignments = None
     is_resume = False
     resumed_state = None
     prior_state_path = os.path.join(sflo_dir, "state.json")
+
+    # Check if state.json exists at wrong location (project root instead of .sflo/)
+    if sflo_dir == ".sflo":
+        project_root_state = "state.json"
+        if os.path.isfile(project_root_state) and os.path.abspath(project_root_state) != os.path.abspath(prior_state_path):
+            if verbose:
+                print(
+                    "  WARNING: state.json found at project root (should be in .sflo/)",
+                    file=sys.stderr,
+                )
+            # Archive stale root-level state.json
+            archive_to_logs(sflo_dir, [project_root_state])
+            if verbose:
+                print("  Archived stale state.json from project root to logs/", file=sys.stderr)
+
     if os.path.isfile(prior_state_path):
         try:
-            with open(prior_state_path, "r") as f:
-                prior_state = json.load(f)
-            prior_prompt = prior_state.get("prompt")
-            prior_assignments = prior_state.get("assignments") or {}
+            # Check file age (safety net for stale state)
+            file_stat = os.stat(prior_state_path)
+            file_age_days = (_time.time() - file_stat.st_mtime) / 86400.0
+            STATE_MAX_AGE_DAYS = 7
 
-            if prior_prompt is not None and _norm_prompt(prior_prompt) == _norm_prompt(user_prompt):
-                # Same task — full resume
-                is_resume = True
-                resumed_state = prior_state
-                if all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
-                    cached_assignments = prior_assignments
-            elif prior_prompt is not None:
-                # Prompt changed — archive stale gate artifacts
+            if file_age_days > STATE_MAX_AGE_DAYS:
+                # State too old — archive and start fresh
+                if verbose:
+                    print(
+                        f"  Stale state — state.json is {file_age_days:.1f} days old (max {STATE_MAX_AGE_DAYS}), archiving",
+                        file=sys.stderr,
+                    )
                 _stale_names = [
-                    "SCOPE.md", "BUILD-STATUS.md", "QA-REPORT.md",
+                    "state.json", "SCOPE.md", "BUILD-STATUS.md", "QA-REPORT.md",
                     "PM-VERIFY.md", "SHIP-DECISION.md",
                     "QA-FEEDBACK.md", "PM-FEEDBACK.md",
                     "pipeline.log",
                 ]
                 _stale_paths = [os.path.join(sflo_dir, n) for n in _stale_names]
-                _archived = archive_to_logs(sflo_dir, _stale_paths)
-                if _archived and verbose:
-                    print(
-                        f"  Stale state — prompt changed, archived to logs/: "
-                        f"{', '.join(_archived)}",
-                        file=sys.stderr,
-                    )
-            elif all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
-                cached_assignments = prior_assignments
+                archive_to_logs(sflo_dir, _stale_paths)
+            else:
+                # State recent enough — check prompt
+                with open(prior_state_path, "r") as f:
+                    prior_state = json.load(f)
+                prior_prompt = prior_state.get("prompt")
+                prior_assignments = prior_state.get("assignments") or {}
+
+                if prior_prompt is not None and _norm_prompt(prior_prompt) == _norm_prompt(user_prompt):
+                    # Same task — full resume
+                    is_resume = True
+                    resumed_state = prior_state
+                    if all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
+                        cached_assignments = prior_assignments
+                elif prior_prompt is not None:
+                    # Prompt changed — archive stale gate artifacts
+                    _stale_names = [
+                        "SCOPE.md", "BUILD-STATUS.md", "QA-REPORT.md",
+                        "PM-VERIFY.md", "SHIP-DECISION.md",
+                        "QA-FEEDBACK.md", "PM-FEEDBACK.md",
+                        "pipeline.log",
+                    ]
+                    _stale_paths = [os.path.join(sflo_dir, n) for n in _stale_names]
+                    _archived = archive_to_logs(sflo_dir, _stale_paths)
+                    if _archived and verbose:
+                        print(
+                            f"  Stale state — prompt changed, archived to logs/: "
+                            f"{', '.join(_archived)}",
+                            file=sys.stderr,
+                        )
+                elif all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
+                    cached_assignments = prior_assignments
         except Exception:
             cached_assignments = None
             is_resume = False
@@ -828,7 +598,7 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
             role = agent["role"]
             model = agent.get("model", "sonnet")
 
-            system_prompt, user_msg = build_agent_prompt(agent, user_prompt, sflo_dir)
+            system_prompt, user_msg = build_agent_prompt(agent, user_prompt, sflo_dir, runtime=runtime)
 
             import time
             response = None
@@ -903,6 +673,10 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
                         log(f"  {artifact_name} ✓ (moved from {found})")
                     else:
                         os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
+                        # Guard: if model created artifact path as directory, remove it
+                        if os.path.isdir(produces):
+                            import shutil
+                            shutil.rmtree(produces)
                         with open(produces, "w", encoding="utf-8") as f:
                             f.write(response)
                         log(f"  {artifact_name} (from response)")
@@ -953,10 +727,21 @@ async def run_pipeline(user_prompt, sflo_dir=".sflo", runtime=None, verbose=True
 
             import time
             spawn_start = time.time()
+            if runtime == "ollama":
+                write_instr = (
+                    f"You MUST write the file using bash:\n"
+                    f"  mkdir -p {os.path.dirname(abs_artifact)}\n"
+                    f"  cat <<'ARTIFACT_EOF' > {abs_artifact}\n"
+                    f"  <your content>\n"
+                    f"  ARTIFACT_EOF\n"
+                    f"Do NOT put artifact content in your response — write it to the file."
+                )
+            else:
+                write_instr = "Use the Write tool. Create the parent directory if needed."
             gate5_prompt = (f"## User Request\n\n{user_prompt}\n\n{prior}\n\n"
                             f"Write {artifact_name} to this EXACT path: {abs_artifact}\n"
-                            f"Use the Write tool. Follow the template EXACTLY. "
-                            f"Create the parent directory if needed.")
+                            f"{write_instr}\n"
+                            f"Follow the template EXACTLY.")
             try:
                 response = await adapter.spawn_agent(
                     model=roles.get("sflo", {}).get("model", "opus"),
@@ -1084,7 +869,8 @@ def main():
     parser = argparse.ArgumentParser(description="SFLO Runner — enforced pipeline execution")
     parser.add_argument("prompt", nargs="?", default=None, help="What to build (or pass via stdin)")
     parser.add_argument("--sflo-dir", default=".sflo", help="Pipeline state directory")
-    parser.add_argument("--runtime", choices=["openclaw", "claude-code"], default=None)
+    parser.add_argument("--runtime", choices=["openclaw", "claude-code", "ollama"], default=None)
+    parser.add_argument("--bindings", default=None, help="Path to bindings YAML file")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
@@ -1111,6 +897,7 @@ def main():
         sflo_dir=args.sflo_dir,
         runtime=args.runtime,
         verbose=not args.quiet,
+        bindings=args.bindings,
     ))
 
     print(json.dumps(result, indent=2))

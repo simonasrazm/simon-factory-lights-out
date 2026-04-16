@@ -229,10 +229,22 @@ def validate_gate(gate_num, sflo_dir):
     _threshold_grade = next((k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?")
 
     if gate_num == 1:
-        # SCOPE.md must have acceptance criteria — the contract for downstream agents
-        ac_lines = re.findall(r"-\s*\[.\]", content)
-        checks.append({"name": "has_acceptance_criteria", "pass": len(ac_lines) >= 1,
-                        "detail": f"{len(ac_lines)} criteria found"})
+        # SCOPE.md must have acceptance criteria — the contract for downstream agents.
+        # Accept multiple formats: - [ ] AC1, * [ ] AC1, - AC1:, numbered 1. AC1:
+        ac_checkbox = re.findall(r"[-*]\s*\[.\]", content)
+        ac_labeled = re.findall(r"(?:^|\n)\s*[-*]\s*AC\d+\s*:", content)
+        ac_numbered = re.findall(r"(?:^|\n)\s*\d+\.\s*(?:\[.\]\s*)?AC\d+\s*:", content)
+        # Also match "Acceptance Criteria" section with any list items
+        ac_section = re.search(r"(?i)acceptance\s+criteria", content)
+        ac_items_after_header = []
+        if ac_section:
+            after = content[ac_section.end():]
+            ac_items_after_header = re.findall(r"(?:^|\n)\s*[-*\d.]+\s*\S", after[:500])
+        ac_total = len(ac_checkbox) + len(ac_labeled) + len(ac_numbered)
+        if ac_total == 0 and ac_items_after_header:
+            ac_total = len(ac_items_after_header)
+        checks.append({"name": "has_acceptance_criteria", "pass": ac_total >= 1,
+                        "detail": f"{ac_total} criteria found"})
 
         # Must have substantive content (not a near-empty file)
         word_count = len(content.split())
@@ -249,12 +261,12 @@ def validate_gate(gate_num, sflo_dir):
         has_success = bool(re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE))
         checks.append({"name": "build_success", "pass": has_success})
 
-        # Self-checks all marked
-        unchecked = re.findall(r"-\s*\[\s\]", content)
+        # Self-checks all marked (accept - [x], * [x], [x], [X], ✅, ☑)
+        unchecked = re.findall(r"[-*]\s*\[\s\]", content)
         checks.append({"name": "all_checks_marked", "pass": len(unchecked) == 0,
                         "detail": f"{len(unchecked)} unchecked items"})
 
-        checked = re.findall(r"-\s*\[[xX]\]", content)
+        checked = re.findall(r"(?:[-*]\s*)?\[[xX✓✅☑]\]", content)
         checks.append({"name": "has_checked_items", "pass": len(checked) >= 1,
                         "detail": f"{len(checked)} checked items"})
 
@@ -264,10 +276,14 @@ def validate_gate(gate_num, sflo_dir):
             scope_acs = re.findall(r"-\s*\[.\]\s*(?:AC\d+[:\s]*)?(.+)", scope_content)
             if scope_acs:
                 addressed = 0
-                for ac in scope_acs:
-                    # Check if the AC text (or key words from it) appears in BUILD-STATUS
+                content_lower = content.lower()
+                for i, ac in enumerate(scope_acs, 1):
+                    # Match by keyword from AC text
                     ac_words = [w for w in ac.split()[:5] if len(w) > 3]
-                    if any(w.lower() in content.lower() for w in ac_words):
+                    keyword_match = any(w.lower() in content_lower for w in ac_words)
+                    # Also match by AC number reference (AC1, AC2, etc.)
+                    ac_num_match = f"ac{i}" in content_lower or f"ac {i}" in content_lower
+                    if keyword_match or ac_num_match:
                         addressed += 1
                 checks.append({"name": "acs_addressed", "pass": addressed >= len(scope_acs) * 0.5,
                                 "detail": f"{addressed}/{len(scope_acs)} ACs referenced"})

@@ -4,7 +4,7 @@ import os
 import tempfile
 import pytest
 
-from src.preflight import check_agent_soul, preflight_check, check_chrome_devtools_mcp
+from src.preflight import check_agent_soul, preflight_check
 
 
 class TestCheckAgentSoul:
@@ -68,19 +68,6 @@ class TestPreflightCheck:
     def test_empty_assignments(self):
         assert preflight_check({}) == []
         assert preflight_check(None) == []
-
-
-class TestCheckChromeDevtools:
-    def test_returns_tuple(self):
-        ok, msg = check_chrome_devtools_mcp()
-        assert isinstance(ok, bool)
-        assert isinstance(msg, str)
-
-    def test_detects_missing_config(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        ok, msg = check_chrome_devtools_mcp()
-        assert not ok
-        assert "Install" in msg or "not found" in msg
 
 
 class TestCheckBrowser:
