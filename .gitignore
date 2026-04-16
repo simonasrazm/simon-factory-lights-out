@@ -3,25 +3,3 @@ __pycache__/
 *.pyc
 *.lock
 .claude/settings.local.json
-
-# Pipeline artifacts (output from SFLO runs, not framework code)
-SCOPE.md
-BUILD-STATUS.md
-QA-REPORT.md
-PM-VERIFY.md
-SHIP-DECISION.md
-QA-FEEDBACK.md
-PM-FEEDBACK.md
-project/
-mcp-defaults.json
-
-# Pipeline artifacts (not framework code)
-SCOPE.md
-BUILD-STATUS.md
-QA-REPORT.md
-PM-VERIFY.md
-SHIP-DECISION.md
-QA-FEEDBACK.md
-PM-FEEDBACK.md
-project/
-mcp-defaults.json
