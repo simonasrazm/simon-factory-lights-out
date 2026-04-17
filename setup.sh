@@ -57,8 +57,15 @@ echo ""
 # --- Detect runtime ---
 
 RUNTIME="unknown"
-if command -v openclaw &>/dev/null; then
+# Cursor is checked before claude-code so the native cursor-agent CLI wins
+# when both are installed. The user can force a different runtime by
+# pre-setting the RUNTIME env var before invoking setup.sh.
+if [[ -n "${RUNTIME_OVERRIDE:-}" ]]; then
+  RUNTIME="$RUNTIME_OVERRIDE"
+elif command -v openclaw &>/dev/null; then
   RUNTIME="openclaw"
+elif command -v cursor-agent &>/dev/null || [[ -d ".cursor" ]]; then
+  RUNTIME="cursor"
 elif command -v claude &>/dev/null || [[ -f ".claude/settings.json" ]]; then
   RUNTIME="claude-code"
 fi
@@ -223,6 +230,67 @@ else:
 " 2>/dev/null || echo "  ⚠ Could not update config — enable sflo-pipeline hook manually"
   fi
 
+elif [[ "$RUNTIME" == "cursor" ]]; then
+  # Native Cursor integration: hook + rule. Hooks live in .cursor/hooks.json
+  # and Cursor reloads them automatically when the file is saved (no IDE
+  # restart needed). Rules live in .cursor/rules/sflo.mdc and apply
+  # automatically because we set alwaysApply: true in the front matter.
+  CURSOR_DIR="$WORKSPACE/.cursor"
+  HOOKS_FILE="$CURSOR_DIR/hooks.json"
+  RULES_DIR="$CURSOR_DIR/rules"
+  RULE_FILE="$RULES_DIR/sflo.mdc"
+  STOP_HOOK_ABS="$SFLO_PATH/src/hooks/cursor/stop_hook.py"
+  STOP_HOOK_REL="$(relative_hook_path "$WORKSPACE" "$STOP_HOOK_ABS")"
+
+  mkdir -p "$RULES_DIR"
+
+  HOOK_CMD="$PYTHON_CMD $STOP_HOOK_REL"
+
+  # Cursor hooks.json: merge if exists, create if not. We replace any
+  # existing 'stop' entries that point to our stop_hook.py so reruns are
+  # idempotent. Other hooks (preToolUse etc.) the user added are preserved.
+  "$PYTHON_CMD" - <<PYEOF || echo "  ⚠ Could not write Cursor hooks.json"
+import json, os, sys
+path = r"$HOOKS_FILE"
+hook_cmd = r"$HOOK_CMD"
+hook_path = r"$STOP_HOOK_ABS"
+data = {"version": 1, "hooks": {}}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        pass
+data.setdefault("version", 1)
+hooks = data.setdefault("hooks", {})
+stop_list = hooks.get("stop", [])
+# Drop any prior SFLO stop entries (match by stop_hook.py substring)
+stop_list = [h for h in stop_list if "sflo" not in (h.get("command", "") + "").lower() or "stop_hook" not in h.get("command", "")]
+stop_list.insert(0, {"command": hook_cmd, "loop_limit": None})
+hooks["stop"] = stop_list
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+print("  ✓ .cursor/hooks.json updated (stop hook -> SFLO)")
+PYEOF
+
+  RULE_SRC="$SFLO_PATH/src/hooks/cursor/sflo.mdc"
+  if [[ -f "$RULE_SRC" ]]; then
+    cp "$RULE_SRC" "$RULE_FILE"
+    echo "  ✓ .cursor/rules/sflo.mdc installed"
+  else
+    echo "  ⚠ Cursor rule not found at $RULE_SRC"
+  fi
+
+  # Sanity: warn (don't fail) if cursor-agent CLI isn't on PATH. The
+  # adapter raises a clear error at first spawn, but installers expect
+  # to know now.
+  if ! command -v cursor-agent &>/dev/null; then
+    echo "  NOTE: cursor-agent CLI not on PATH — install from https://cursor.com/cli"
+    echo "        and run 'cursor-agent login' before triggering the pipeline."
+  else
+    echo "  ✓ cursor-agent CLI detected"
+  fi
+
 elif [[ "$RUNTIME" == "claude-code" ]]; then
   SETTINGS_DIR="$WORKSPACE/.claude"
   SETTINGS_FILE="$SETTINGS_DIR/settings.json"
@@ -333,6 +401,8 @@ STATUS_FILE="$STATUS_DIR/.setup-status"
 if [[ "$RUNTIME" == "openclaw" ]]; then
   echo "restart_required" > "$STATUS_FILE"
 else
+  # claude-code hot-reloads settings.json; cursor live-reloads
+  # .cursor/hooks.json and .cursor/rules/* — neither needs restart.
   echo "ready" > "$STATUS_FILE"
 fi
 

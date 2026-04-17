@@ -1,0 +1,6 @@
+---
+description: SFLO pipeline trigger
+alwaysApply: true
+---
+
+When the user sends a message starting with `SFLO:`, pipe the rest of the message to `python sflo/src/runner.py --runtime cursor` via stdin; the runner and stop hook drive everything else.

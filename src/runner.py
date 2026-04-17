@@ -46,7 +46,16 @@ def _install_signal_handler(sflo_dir=None):
                 pass
         sys.exit(128 + signum)
 
-    for sig in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+    # SIGHUP doesn't exist on Windows — use getattr so the listing is
+    # platform-portable (returns None on Windows, filtered out below).
+    sig_candidates = (
+        getattr(signal, "SIGHUP", None),
+        getattr(signal, "SIGTERM", None),
+        getattr(signal, "SIGINT", None),
+    )
+    for sig in sig_candidates:
+        if sig is None:
+            continue
         try:
             signal.signal(sig, _handler)
         except (OSError, ValueError):
@@ -869,7 +878,7 @@ def main():
     parser = argparse.ArgumentParser(description="SFLO Runner — enforced pipeline execution")
     parser.add_argument("prompt", nargs="?", default=None, help="What to build (or pass via stdin)")
     parser.add_argument("--sflo-dir", default=".sflo", help="Pipeline state directory")
-    parser.add_argument("--runtime", choices=["openclaw", "claude-code", "ollama"], default=None)
+    parser.add_argument("--runtime", choices=["openclaw", "claude-code", "cursor", "ollama"], default=None)
     parser.add_argument("--bindings", default=None, help="Path to bindings YAML file")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()

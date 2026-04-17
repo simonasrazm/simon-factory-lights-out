@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "python {{SFLO_PATH}}/src/hooks/cursor/stop_hook.py",
+        "loop_limit": null
+      }
+    ]
+  }
+}
