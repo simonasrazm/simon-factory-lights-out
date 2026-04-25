@@ -693,10 +693,13 @@ async def run_pipeline(
     excluded_agents = load_exclude_agents(bindings_path)
     excluded_dirs = load_exclude_agent_dirs(bindings_path)
 
+    # Dedup via os.path.realpath — under some workspace layouts two of
+    # the candidates below can resolve to the same physical directory
+    # (e.g. cwd/agents == sflo_parent/agents when SFLO_ROOT lives one
+    # level under cwd). Without this guard scout would see every agent
+    # listed twice in its prompt.
     agent_dirs = []
-    seen_real = set()  # dedup via realpath — when sflo is a submodule of
-                       # cwd, candidates 1 and 3 both resolve to cwd/agents,
-                       # which would list every agent twice and confuse scout.
+    seen_real = set()
     cwd = os.getcwd()
     sflo_parent = os.path.dirname(SFLO_ROOT)
     for candidate in [

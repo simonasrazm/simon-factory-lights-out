@@ -8,6 +8,7 @@ import time as _time
 from pathlib import Path
 
 from .base import RuntimeAdapter
+from ..bindings import load_security_config
 
 # ---------------------------------------------------------------------------
 # Tool policy — driven by `tools:` field in bindings.yaml per role.
@@ -124,6 +125,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         def capture_stderr(line):
             stderr_lines.append(line)
 
+        # Load security toggles from bindings.yaml. Defaults are all-false
+        # (host-trusted: agents inherit user PAI surface, no isolation).
+        # Each isolation layer is opt-in via bindings.yaml `security:` block.
+        sec = load_security_config()
+
         # Build options with MCP and extra args if configured.
         # MCP servers are forwarded only to roles whose tools_mode permits them.
         # readonly mode = no MCP (no browser tools, no shell tools, etc.).
@@ -133,7 +139,13 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             system_prompt=system_prompt,
             model=model,
             allowed_tools=resolved_tools,
-            permission_mode="default",  # Fix D: dropped bypassPermissions
+            # require_permission=true → "default" (interactive approval per
+            # tool action; deadlocks background pipelines).
+            # require_permission=false → "bypassPermissions" (auto-approve
+            # all writes; default for host-trusted single-user setup).
+            permission_mode=(
+                "default" if sec["require_permission"] else "bypassPermissions"
+            ),
             stderr=capture_stderr,
         )
         if cwd is not None:
@@ -157,23 +169,29 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         if self._extra_cli_args and needs_mcp:
             opts["extra_args"] = self._extra_cli_args
 
-        # Fix B: --no-session-persistence — prevents ~/.claude/projects/*.jsonl soul-dump.
-        # Merge (not overwrite) so MCP extra_args above are preserved.
-        opts["extra_args"] = {
-            **(opts.get("extra_args") or {}),
-            "no-session-persistence": None,
-        }
+        # no_session_persistence=true → block ~/.claude/projects/*.jsonl
+        # session dump. Merge (not overwrite) so MCP extra_args above are preserved.
+        if sec["no_session_persistence"]:
+            opts["extra_args"] = {
+                **(opts.get("extra_args") or {}),
+                "no-session-persistence": None,
+            }
 
-        # Fix A: setting_sources=[] — prevents CLI from loading ~/.claude/settings.json
-        # PAI-style hooks (PreToolUse/PostToolUse that dump payloads to attacker files).
-        opts["setting_sources"] = []
+        # isolate_settings=true → setting_sources=[] severs the user PAI
+        # surface (hooks, MCPs, skills, slash, CLAUDE.md memory, perms).
+        # Default false: agent inherits user settings.json normally.
+        if sec["isolate_settings"]:
+            opts["setting_sources"] = []
 
-        # Fix C: CLAUDE_CONFIG_DIR sandbox — belt-and-suspenders; even if Fix A is
-        # bypassed the CLI physically cannot find user config/hooks/memory. Also
-        # contains any residual files the CLI might write (wiped by Fix E finally).
-        sandbox_dir = Path(cwd if cwd is not None else os.getcwd()) / ".claude_sandbox"
-        sandbox_dir.mkdir(exist_ok=True)
-        opts["env"] = {**(opts.get("env") or {}), "CLAUDE_CONFIG_DIR": str(sandbox_dir)}
+        # sandbox_config_dir=true → override CLAUDE_CONFIG_DIR to a per-spawn
+        # .claude_sandbox/ inside cwd so the CLI cannot find user config.
+        # `sandbox_dir` stays None when the toggle is off so the wipe step
+        # below has nothing to clean up.
+        sandbox_dir = None
+        if sec["sandbox_config_dir"]:
+            sandbox_dir = Path(cwd if cwd is not None else os.getcwd()) / ".claude_sandbox"
+            sandbox_dir.mkdir(exist_ok=True)
+            opts["env"] = {**(opts.get("env") or {}), "CLAUDE_CONFIG_DIR": str(sandbox_dir)}
 
         # Web-tool gating is now driven by tools_mode (see top of file).
         # A blanket disallowed_tools=["WebFetch","WebSearch"] used to live here
@@ -337,8 +355,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 )
             raise
         finally:
-            # Fix E: wipe sandbox dir — no forensic residue after session ends.
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
+            # wipe_sandbox=true (and sandbox actually created) → rm -rf the
+            # per-spawn config dir so no forensic residue remains. No-op when
+            # sandbox_config_dir was off.
+            if sec["wipe_sandbox"] and sandbox_dir is not None:
+                shutil.rmtree(sandbox_dir, ignore_errors=True)
 
         elapsed = _time.time() - start_time
         print(

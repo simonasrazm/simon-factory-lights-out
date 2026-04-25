@@ -144,6 +144,77 @@ def load_exclude_agent_dirs(bindings_path=None):
     return _read_top_level_flag(bindings_path, "exclude_agent_dirs")
 
 
+# Known security hardening keys. Treat unknown keys as opt-in =false (forward-
+# compat: host bindings.yaml may declare a key the running sflo doesn't yet
+# implement; ignore rather than crash).
+SECURITY_KEYS = (
+    "isolate_settings",
+    "no_session_persistence",
+    "sandbox_config_dir",
+    "require_permission",
+    "wipe_sandbox",
+)
+
+
+def load_security_config(bindings_path=None):
+    """Return the security hardening toggle dict from bindings.yaml.
+
+    Reads the top-level `security:` block. Each child entry is `key: bool`
+    (true / false / yes / no, case-insensitive). All known SECURITY_KEYS
+    are returned with explicit boolean values; unset keys default to False.
+
+    Defaults to all-false (host-trusted, fully permissive) if bindings.yaml
+    or the section is missing. Hosts opt INTO each isolation layer.
+
+    Format:
+        security:
+          isolate_settings:        false
+          no_session_persistence:  false
+          sandbox_config_dir:      false
+          require_permission:      false
+          wipe_sandbox:            false
+    """
+    config = {k: False for k in SECURITY_KEYS}
+
+    if bindings_path is None:
+        bindings_path = resolve_bindings_path()
+    if not bindings_path or not os.path.isfile(bindings_path):
+        return config
+
+    in_security = False
+    truthy = {"true", "yes", "on", "1"}
+    falsy = {"false", "no", "off", "0"}
+
+    with open(bindings_path, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n\r")
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            indent = len(raw) - len(raw.lstrip())
+
+            if indent == 0:
+                in_security = stripped.rstrip(":") == "security"
+                continue
+
+            if not in_security:
+                continue
+
+            if indent >= 2 and ":" in stripped:
+                key, _, val = stripped.partition(":")
+                key = key.strip()
+                val = val.strip().lower()
+                if key in SECURITY_KEYS:
+                    if val in truthy:
+                        config[key] = True
+                    elif val in falsy:
+                        config[key] = False
+                    # Unknown values silently ignored — keep default.
+
+    return config
+
+
 def resolve_bindings_path(explicit=None):
     """Resolve bindings.yaml, preferring local overrides over the submodule default.
 
