@@ -694,6 +694,9 @@ async def run_pipeline(
     excluded_dirs = load_exclude_agent_dirs(bindings_path)
 
     agent_dirs = []
+    seen_real = set()  # dedup via realpath — when sflo is a submodule of
+                       # cwd, candidates 1 and 3 both resolve to cwd/agents,
+                       # which would list every agent twice and confuse scout.
     cwd = os.getcwd()
     sflo_parent = os.path.dirname(SFLO_ROOT)
     for candidate in [
@@ -707,6 +710,10 @@ async def run_pipeline(
         # Skip this dir if any excluded substring matches its path
         if any(ex and ex in candidate for ex in excluded_dirs):
             continue
+        real = os.path.realpath(candidate)
+        if real in seen_real:
+            continue
+        seen_real.add(real)
         agent_dirs.append(candidate)
 
     agent_listing = ""
