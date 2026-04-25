@@ -26,12 +26,24 @@ class TestHookDecisions(unittest.TestCase):
     def write_state(self, current):
         state = {
             "current_state": current,
-            "bindings": {"pm": {"model": "opus"}, "dev": {"model": "sonnet"}, "qa": {"model": "sonnet"}},
+            "bindings": {
+                "pm": {"model": "opus"},
+                "dev": {"model": "sonnet"},
+                "qa": {"model": "sonnet"},
+            },
             "assignments": {"pm": "agents/pm", "dev": "agents/dev", "qa": "agents/qa"},
-            "inner_loops": 0, "outer_loops": 0,
-            "gates": {str(g): {"status": "waiting", "artifact": a}
-                      for g, a in {1: "SCOPE.md", 2: "BUILD-STATUS.md", 3: "QA-REPORT.md",
-                                    4: "PM-VERIFY.md", 5: "SHIP-DECISION.md"}.items()},
+            "inner_loops": 0,
+            "outer_loops": 0,
+            "gates": {
+                str(g): {"status": "waiting", "artifact": a}
+                for g, a in {
+                    1: "SCOPE.md",
+                    2: "BUILD-STATUS.md",
+                    3: "QA-REPORT.md",
+                    4: "PM-VERIFY.md",
+                    5: "SHIP-DECISION.md",
+                }.items()
+            },
         }
         with open(os.path.join(self.state_dir, "state.json"), "w") as f:
             json.dump(state, f)
@@ -83,9 +95,21 @@ class TestHookPipelineTraversal(unittest.TestCase):
         bindings = os.path.join(self.tmpdir, "bindings.yaml")
         with open(bindings, "w") as f:
             f.write(BINDINGS_YAML)
-        run_scaffold("init", "--bindings", bindings, "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
-        run_scaffold("assign", "--pm", "agents/pm", "--dev", "agents/dev",
-                     "--qa", "agents/qa", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
+        run_scaffold(
+            "init", "--bindings", bindings, "--sflo-dir", self.sflo_dir, cwd=self.tmpdir
+        )
+        run_scaffold(
+            "assign",
+            "--pm",
+            "agents/pm",
+            "--dev",
+            "agents/dev",
+            "--qa",
+            "agents/qa",
+            "--sflo-dir",
+            self.sflo_dir,
+            cwd=self.tmpdir,
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
@@ -112,7 +136,9 @@ class TestHookPipelineTraversal(unittest.TestCase):
         for gate, (artifact_name, expected_keyword) in gate_sequence.items():
             r = self.prompt()
             self.assertTrue(r["ok"], f"Prompt failed at {gate}")
-            self.assertIn(expected_keyword, r["prompt"], f"Missing {expected_keyword} at {gate}")
+            self.assertIn(
+                expected_keyword, r["prompt"], f"Missing {expected_keyword} at {gate}"
+            )
             self.artifact(artifact_name, PASSING_ARTIFACTS[artifact_name])
             self.advance()
 

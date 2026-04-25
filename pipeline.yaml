@@ -13,6 +13,11 @@ gates:
     artifact: BUILD-STATUS.md
     role: dev
     gate_doc: gates/build.md
+  # Insert custom float-keyed gates (e.g. 2.5 for static analysis, 3.5 for
+  # security audit) by extending this map in your project's pipeline.yaml.
+  # The runner's `run_stst_gate` action handles non-LLM CLI gates when role
+  # == "stst" — see src/runner.py for the integration shape; the gate_doc
+  # and CLI tool are host-provided.
   3:
     artifact: QA-REPORT.md
     role: qa

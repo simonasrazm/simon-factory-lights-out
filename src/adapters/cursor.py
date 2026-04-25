@@ -64,8 +64,12 @@ class CursorAdapter(RuntimeAdapter):
     # CLI binary name. Override via SFLO_CURSOR_BIN for non-PATH installs.
     BIN = os.environ.get("SFLO_CURSOR_BIN", "cursor-agent")
 
-    async def spawn_agent(self, model, system_prompt, user_prompt, role=None,
-                          allowed_tools=None):
+    async def spawn_agent(
+        self, model, system_prompt, user_prompt, cwd=None, role=None, allowed_tools=None
+    ):
+        # cwd accepted for parity with other adapters (runner.py:729 sets it
+        # for dev/qa roles); cursor-agent doesn't expose --cwd in print mode,
+        # so we thread it to subprocess.run if the binary is launched directly.
         # allowed_tools is accepted for API parity with ClaudeCodeAdapter
         # but the cursor-agent CLI doesn't currently expose per-spawn tool
         # gating in print mode. Tool restrictions live in the rule prompt.
@@ -99,9 +103,11 @@ class CursorAdapter(RuntimeAdapter):
         cmd = [
             resolved,
             "--print",
-            "--output-format", "json",
-            "--force",                 # auto-approve shell/file tools (yolo)
-            "--model", _resolve_model(model),
+            "--output-format",
+            "json",
+            "--force",  # auto-approve shell/file tools (yolo)
+            "--model",
+            _resolve_model(model),
         ]
 
         # Honor scout's read-only contract by switching to ask mode. ask mode

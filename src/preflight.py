@@ -81,7 +81,17 @@ def preflight_check(assignments, sflo_dir=None):
     """
     all_issues = []
 
+    # Scout may return metadata keys alongside the agent-role assignments
+    # (e.g. host projects can extend scout to emit complexity scores or
+    # routing hints). Only agent-role keys point to filesystem agent paths —
+    # metadata keys hold ints/strings and must not be path-resolved.
+    _AGENT_ROLES = {"pm", "dev", "qa", "scout", "interrogator", "troubleshooter"}
+
     for role, agent_path in (assignments or {}).items():
+        if role not in _AGENT_ROLES:
+            # Metadata field — skip path validation, leave value in place
+            # for downstream consumers (preflight only checks agent paths).
+            continue
         if not agent_path:
             all_issues.append(f"{role}: agent path not found: {agent_path}")
             continue
@@ -107,7 +117,7 @@ def preflight_check(assignments, sflo_dir=None):
                 all_issues.append(f"{role}: agent path not found: {agent_path}")
                 continue
         assignments[role] = clean_path
-        issues = check_agent_soul(role, agent_path)
+        issues = check_agent_soul(role, clean_path)
         all_issues.extend(issues)
 
     return all_issues
@@ -123,6 +133,7 @@ def check_browser():
         (installed: bool, message: str)
     """
     import platform
+
     system = platform.system()
     if system == "Darwin":
         chrome_path = "/Applications/Google Chrome.app"
@@ -134,7 +145,10 @@ def check_browser():
     if chrome_path and os.path.exists(chrome_path):
         return (True, "Chrome installed")
     elif chrome_path:
-        return (False, f"Chrome not found at {chrome_path} — "
-                       f"Chrome extension requires Chrome to be installed")
+        return (
+            False,
+            f"Chrome not found at {chrome_path} — "
+            f"Chrome extension requires Chrome to be installed",
+        )
     else:
         return (False, f"Chrome install check not supported on {system}")

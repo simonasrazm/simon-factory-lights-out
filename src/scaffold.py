@@ -22,7 +22,13 @@ if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from src.constants import KNOWN_ROLES
     from src.bindings import parse_bindings, resolve_bindings_path
-    from src.state import acquire_lock, release_lock, read_state, write_state, make_initial_state
+    from src.state import (
+        acquire_lock,
+        release_lock,
+        read_state,
+        write_state,
+        make_initial_state,
+    )
     from src.validate import validate_agent_path, read_artifact, extract_field
     from src.machine import auto_transition, compute_next, apply_transition
     from src.prompt import format_prompt
@@ -30,7 +36,13 @@ if __name__ == "__main__":
 else:
     from .constants import KNOWN_ROLES
     from .bindings import parse_bindings, resolve_bindings_path
-    from .state import acquire_lock, release_lock, read_state, write_state, make_initial_state
+    from .state import (
+        acquire_lock,
+        release_lock,
+        read_state,
+        write_state,
+        make_initial_state,
+    )
     from .validate import validate_agent_path, read_artifact, extract_field
     from .machine import auto_transition, compute_next, apply_transition
     from .prompt import format_prompt
@@ -40,6 +52,7 @@ else:
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
+
 
 def parse_args(args, known_flags=None):
     """Parse CLI arguments. Returns (sflo_dir, flags_dict, unknown_args)."""
@@ -74,6 +87,7 @@ def parse_args(args, known_flags=None):
 # Commands
 # ---------------------------------------------------------------------------
 
+
 def cmd_init(args):
     """Initialize pipeline: parse bindings, create state."""
     sflo_dir, flags, _ = parse_args(args, {"bindings"})
@@ -92,21 +106,36 @@ def cmd_init(args):
     state = make_initial_state(roles)
     write_state(sflo_dir, state)
 
-    output({
-        "ok": True,
-        "bindings_path": path,
-        "roles": roles,
-        "sflo_dir": sflo_dir,
-        "next": compute_next(state, sflo_dir),
-    })
+    output(
+        {
+            "ok": True,
+            "bindings_path": path,
+            "roles": roles,
+            "sflo_dir": sflo_dir,
+            "next": compute_next(state, sflo_dir),
+        }
+    )
 
 
 def cmd_assign(args):
-    """Register Scout's agent assignments."""
+    """Register Scout's agent assignments.
+
+    Only roles defined in GATES or the canonical set {pm, dev, qa} are
+    accepted as valid assignment targets.  Unknown role names are rejected
+    to prevent silent misconfiguration.
+    """
     assignments = {}
     extras = {}
     sflo_dir = ".sflo"
     unknown = []
+
+    # Derive the set of assignable role names from GATES constants plus the
+    # canonical trio.  GATES keys are integers; role names come from gate
+    # artifact/role fields.  We accept any role that bindings.yaml can
+    # produce: pm, dev, qa, and any additional role in KNOWN_ROLES minus
+    # internal tokens (extra, sflo-dir).
+    _INTERNAL_TOKENS = {"extra", "sflo-dir"}
+    _ASSIGNABLE_ROLES = (KNOWN_ROLES - _INTERNAL_TOKENS) | {"pm", "dev", "qa"}
 
     i = 0
     while i < len(args):
@@ -120,7 +149,7 @@ def cmd_assign(args):
                 if "=" in path:
                     k, v = path.split("=", 1)
                     extras[k] = v
-            elif role in KNOWN_ROLES or role in {"pm", "dev", "qa"}:
+            elif role in _ASSIGNABLE_ROLES:
                 ok, err = validate_agent_path(path)
                 if not ok:
                     output({"ok": False, "error": err})
@@ -141,7 +170,9 @@ def cmd_assign(args):
     try:
         state = read_state(sflo_dir)
         if not state:
-            output({"ok": False, "error": "Pipeline not initialized. Run 'init' first."})
+            output(
+                {"ok": False, "error": "Pipeline not initialized. Run 'init' first."}
+            )
             return
 
         state["assignments"] = {**assignments, **extras}
@@ -151,11 +182,13 @@ def cmd_assign(args):
     finally:
         release_lock(sflo_dir, lock)
 
-    output({
-        "ok": True,
-        "assignments": state["assignments"],
-        "next": compute_next(state, sflo_dir),
-    })
+    output(
+        {
+            "ok": True,
+            "assignments": state["assignments"],
+            "next": compute_next(state, sflo_dir),
+        }
+    )
 
 
 def cmd_next(args):
@@ -170,7 +203,9 @@ def cmd_next(args):
     try:
         state = read_state(sflo_dir)
         if not state:
-            output({"ok": False, "error": "Pipeline not initialized. Run 'init' first."})
+            output(
+                {"ok": False, "error": "Pipeline not initialized. Run 'init' first."}
+            )
             return
 
         auto_transition(state, sflo_dir)
@@ -211,15 +246,17 @@ def cmd_status(args):
 
         gates_info[g_str] = entry
 
-    output({
-        "ok": True,
-        "current_state": state["current_state"],
-        "inner_loops": state["inner_loops"],
-        "outer_loops": state["outer_loops"],
-        "assignments": state.get("assignments", {}),
-        "gates": gates_info,
-        "started_at": state.get("started_at"),
-    })
+    output(
+        {
+            "ok": True,
+            "current_state": state["current_state"],
+            "inner_loops": state["inner_loops"],
+            "outer_loops": state["outer_loops"],
+            "assignments": state.get("assignments", {}),
+            "gates": gates_info,
+            "started_at": state.get("started_at"),
+        }
+    )
 
 
 def cmd_clean(args):
@@ -255,6 +292,10 @@ def cmd_clean(args):
         "SHIP-DECISION.md",
         "QA-FEEDBACK.md",
         "PM-FEEDBACK.md",
+        "STST-REPORT.md",
+        "STST-FEEDBACK.md",
+        "state.lock",
+        ".last_hook_state",
     }
     known_dirs = set()
 
@@ -271,12 +312,14 @@ def cmd_clean(args):
         return
 
     if not to_remove:
-        output({
-            "ok": True,
-            "sflo_dir": sflo_dir,
-            "removed": [],
-            "note": "Nothing to clean — directory contains no SFLO artifacts.",
-        })
+        output(
+            {
+                "ok": True,
+                "sflo_dir": sflo_dir,
+                "removed": [],
+                "note": "Nothing to clean — directory contains no SFLO artifacts.",
+            }
+        )
         return
 
     archived = []
@@ -286,17 +329,21 @@ def cmd_clean(args):
     except OSError as e:
         errors.append({"path": "<archive>", "error": str(e)})
 
-    output({
-        "ok": len(errors) == 0,
-        "sflo_dir": sflo_dir,
-        "archived_to": os.path.join(sflo_dir, "logs"),
-        "archived": archived,
-        "errors": errors,
-        "note": (
-            "Fresh run ready. Removed artifacts moved to logs/ for inspection. "
-            "Invoke pipeline with a new user prompt."
-        ) if not errors else None,
-    })
+    output(
+        {
+            "ok": len(errors) == 0,
+            "sflo_dir": sflo_dir,
+            "archived_to": os.path.join(sflo_dir, "logs"),
+            "archived": archived,
+            "errors": errors,
+            "note": (
+                "Fresh run ready. Removed artifacts moved to logs/ for inspection. "
+                "Invoke pipeline with a new user prompt."
+            )
+            if not errors
+            else None,
+        }
+    )
 
 
 def cmd_prompt(args):
@@ -328,6 +375,7 @@ def cmd_prompt(args):
 # Output + Dispatch
 # ---------------------------------------------------------------------------
 
+
 def output(data):
     print(json.dumps(data, indent=2))
 
@@ -344,11 +392,13 @@ COMMANDS = {
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        output({
-            "ok": False,
-            "error": "Usage: scaffold.py <command> [args]",
-            "commands": list(COMMANDS.keys()),
-        })
+        output(
+            {
+                "ok": False,
+                "error": "Usage: scaffold.py <command> [args]",
+                "commands": list(COMMANDS.keys()),
+            }
+        )
         sys.exit(1)
 
     COMMANDS[sys.argv[1]](sys.argv[2:])

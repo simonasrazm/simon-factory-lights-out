@@ -13,7 +13,6 @@ from src.config import parse_pipeline_yaml, load_pipeline_config, resolve_pipeli
 
 
 class TestParsePipelineYaml(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -112,7 +111,6 @@ gates:
 
 
 class TestLoadPipelineConfig(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -220,9 +218,9 @@ gates:
 
 
 class TestResolvePipelinePath(unittest.TestCase):
-
     def test_explicit_path_returned_if_exists(self):
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as f:
             f.write(b"threshold: B+\n")
             p = f.name

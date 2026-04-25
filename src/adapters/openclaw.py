@@ -1,6 +1,8 @@
 """OpenClawAdapter — runs agents via openclaw CLI."""
 
 import json
+import subprocess as sp
+from uuid import uuid4
 
 from .base import RuntimeAdapter
 
@@ -8,18 +10,22 @@ from .base import RuntimeAdapter
 class OpenClawAdapter(RuntimeAdapter):
     """Uses `openclaw agent` CLI — full tool access, real agent sessions."""
 
-    async def spawn_agent(self, model, system_prompt, user_prompt, role=None,
-                          allowed_tools=None):
-        # role/allowed_tools accepted for API compatibility
+    async def spawn_agent(
+        self, model, system_prompt, user_prompt, cwd=None, role=None, allowed_tools=None
+    ):
+        # role/allowed_tools/cwd accepted for API compatibility
         # with ClaudeCodeAdapter; openclaw CLI doesn't currently honor them.
-        import subprocess as sp
+        # If cwd support is added to openclaw CLI in future, pass it via --working-dir or similar.
 
         message = f"{system_prompt}\n\n---\n\n{user_prompt}"
 
         cmd = [
-            "openclaw", "agent",
-            "--message", message,
-            "--session-id", f"sflo-{id(message) % 100000}",
+            "openclaw",
+            "agent",
+            "--message",
+            message,
+            "--session-id",
+            f"sflo-{uuid4().hex}",
             "--json",
         ]
 
@@ -41,7 +47,9 @@ class OpenClawAdapter(RuntimeAdapter):
             )
 
         if result.returncode != 0:
-            raise RuntimeError(f"openclaw agent failed (exit {result.returncode}): {result.stderr}")
+            raise RuntimeError(
+                f"openclaw agent failed (exit {result.returncode}): {result.stderr}"
+            )
 
         # Parse output — always return string
         try:

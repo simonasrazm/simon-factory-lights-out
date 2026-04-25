@@ -9,6 +9,39 @@ import time as _time
 from .base import RuntimeAdapter
 from .tool_handlers import TOOL_HANDLERS
 
+# ---------------------------------------------------------------------------
+# Tool policy for OllamaAdapter — driven by `tools:` field in bindings.yaml.
+# Same philosophy as ClaudeCodeAdapter: workhorse roles get every locally-
+# implemented tool by default; only `tools: readonly` clamps to read/search.
+#
+# Tool names here are lowercase because Ollama function-calling sends names
+# verbatim and most local models prefer lowercase. Hosts can override per-
+# spawn via the allowed_tools kwarg (caller-supplied wins, backward-compat).
+# ---------------------------------------------------------------------------
+
+TOOL_MODE_PRESETS_OLLAMA = {
+    "readonly": ["read", "glob", "grep"],
+    "full": None,  # None = all locally-defined tools (no restriction)
+}
+
+
+def resolve_allowed_tools_ollama(tools_mode, caller_supplied=None):
+    """Resolve tool name set for OllamaAdapter. Returns set of names or None.
+
+    None means "use everything in the local tool map".
+    """
+    if caller_supplied is not None:
+        return {t.lower() for t in caller_supplied}
+    if tools_mode in TOOL_MODE_PRESETS_OLLAMA:
+        preset = TOOL_MODE_PRESETS_OLLAMA[tools_mode]
+        return None if preset is None else set(preset)
+    return None  # default = all tools
+
+
+def strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> blocks emitted by thinking/reasoning models."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
 
 class OllamaAdapter(RuntimeAdapter):
     """Uses local Ollama server — tool-capable models via ollama.chat() API.
@@ -315,19 +348,21 @@ class OllamaAdapter(RuntimeAdapter):
         # Strip <think>...</think> tag markers but preserve their content —
         # models like Qwen/DeepSeek embed tool calls inside thinking blocks,
         # removing the block entirely would lose the call.
-        text = re.sub(r'<think>(.*?)</think>', r'\1', text, flags=re.DOTALL).strip()
+        text = re.sub(r"<think>(.*?)</think>", r"\1", text, flags=re.DOTALL).strip()
         # Strip markdown code blocks (some models wrap JSON in ```)
-        text = re.sub(r'```(?:json)?\s*', '', text)
-        text = re.sub(r'```', '', text)
+        text = re.sub(r"```(?:json)?\s*", "", text)
+        text = re.sub(r"```", "", text)
         # Also detect CALL_TOOL: prefix (granite models)
-        if 'CALL_TOOL:' in text:
-            call_str = text.split('CALL_TOOL:', 1)[1].strip()
-            call_str = re.sub(r'```(?:json)?\s*', '', call_str)
-            call_str = re.sub(r'```', '', call_str).strip()
+        if "CALL_TOOL:" in text:
+            call_str = text.split("CALL_TOOL:", 1)[1].strip()
+            call_str = re.sub(r"```(?:json)?\s*", "", call_str)
+            call_str = re.sub(r"```", "", call_str).strip()
             try:
                 obj = json.loads(call_str)
-                fn_name = obj.get('tool_name', obj.get('name', ''))
-                fn_args = obj.get('args', obj.get('arguments', obj.get('parameters', {})))
+                fn_name = obj.get("tool_name", obj.get("name", ""))
+                fn_args = obj.get(
+                    "args", obj.get("arguments", obj.get("parameters", {}))
+                )
                 if fn_name:
                     calls.append((fn_name, fn_args))
                     return calls
@@ -339,15 +374,17 @@ class OllamaAdapter(RuntimeAdapter):
         #   </function>
         # Some models output XML tool calls instead of JSON when many tools available.
         for m in re.finditer(
-            r'<function=(\w+)>\s*(.*?)</function>',
-            text, re.DOTALL,
+            r"<function=(\w+)>\s*(.*?)</function>",
+            text,
+            re.DOTALL,
         ):
             fn_name = m.group(1)
             params_block = m.group(2)
             fn_args = {}
             for pm in re.finditer(
-                r'<parameter=(\w+)>\s*(.*?)\s*</parameter>',
-                params_block, re.DOTALL,
+                r"<parameter=(\w+)>\s*(.*?)\s*</parameter>",
+                params_block,
+                re.DOTALL,
             ):
                 fn_args[pm.group(1)] = pm.group(2).strip()
             if fn_name:
@@ -358,14 +395,14 @@ class OllamaAdapter(RuntimeAdapter):
         decoder = json.JSONDecoder()
         idx = 0
         while idx < len(text):
-            idx = text.find('{', idx)
+            idx = text.find("{", idx)
             if idx == -1:
                 break
             try:
                 obj, end = decoder.raw_decode(text, idx)
-                if isinstance(obj, dict) and 'name' in obj:
-                    fn_name = obj.get('name', '')
-                    fn_args = obj.get('arguments', obj.get('parameters', {}))
+                if isinstance(obj, dict) and "name" in obj:
+                    fn_name = obj.get("name", "")
+                    fn_args = obj.get("arguments", obj.get("parameters", {}))
                     if fn_name:
                         calls.append((fn_name, fn_args))
                 idx = end if end > idx else idx + 1
@@ -373,37 +410,47 @@ class OllamaAdapter(RuntimeAdapter):
                 idx += 1
         return calls
 
-    async def spawn_agent(self, model, system_prompt, user_prompt, role=None,
-                          allowed_tools=None, max_turns=None, timeout=None):
+    async def spawn_agent(
+        self,
+        model,
+        system_prompt,
+        user_prompt,
+        cwd=None,
+        role=None,
+        allowed_tools=None,
+        tools_mode=None,
+        max_turns=None,
+        timeout=None,
+    ):
         try:
             import ollama
         except ImportError:
-            raise RuntimeError(
-                "ollama package not installed. Fix: pip install ollama"
-            )
+            raise RuntimeError("ollama package not installed. Fix: pip install ollama")
 
+        is_scout = role == "scout"
 
-        is_scout = (role == "scout")
+        # Determine allowed tool names via tools_mode preset (caller-supplied
+        # wins). None = all locally-defined tools (full toolkit, no restriction).
+        _all_tool_map = {
+            "bash": self._BASH_TOOL,
+            "read": self._READ_TOOL,
+            "write": self._WRITE_TOOL,
+            "append": self._APPEND_TOOL,
+            "edit": self._EDIT_TOOL,
+            "multiedit": self._MULTIEDIT_TOOL,
+            "glob": self._GLOB_TOOL,
+            "grep": self._GREP_TOOL,
+            "webfetch": self._WEBFETCH_TOOL,
+        }
+        _resolved = resolve_allowed_tools_ollama(tools_mode, allowed_tools)
+        _permitted = set(_all_tool_map.keys()) if _resolved is None else _resolved
 
         # Try native tools first; fall back to text-based tool calling
         use_native_tools = True
-        if is_scout:
-            tools = [self._READ_TOOL, self._GLOB_TOOL, self._GREP_TOOL]
-        else:
-            tools = [
-                self._BASH_TOOL,
-                self._READ_TOOL,
-                self._WRITE_TOOL,
-                self._APPEND_TOOL,
-                self._EDIT_TOOL,
-                self._MULTIEDIT_TOOL,
-                self._GLOB_TOOL,
-                self._GREP_TOOL,
-                self._WEBFETCH_TOOL,
-            ]
+        tools = [v for k, v in _all_tool_map.items() if k in _permitted]
 
         # MCP bridge tools (set by host project or extensions)
-        mcp_bridge = getattr(self, '_mcp_bridge', None)
+        mcp_bridge = getattr(self, "_mcp_bridge", None)
         if mcp_bridge and not is_scout:
             tools.extend(mcp_bridge.get_ollama_tools())
             # Add usage guidance from MCP tool descriptions to system prompt
@@ -422,6 +469,11 @@ class OllamaAdapter(RuntimeAdapter):
         _recent_calls = []  # Track recent tool calls for loop detection
         tool_use_count = 0
         start_time = _time.time()
+
+        # cwd is passed via subprocess cwd= kwarg — do NOT os.chdir here as it
+        # mutates the process working directory for all threads and is not
+        # reverted on exception paths in nested calls.
+        original_cwd = None  # retained for API compat; not used
 
         try:
             while turn_count < max_t:
@@ -470,7 +522,10 @@ class OllamaAdapter(RuntimeAdapter):
                         continue
                     raise RuntimeError(f"Ollama ResponseError: {e}") from e
                 except Exception as e:
-                    if "connection" in type(e).__name__.lower() or "connect" in str(e).lower():
+                    if (
+                        "connection" in type(e).__name__.lower()
+                        or "connect" in str(e).lower()
+                    ):
                         raise RuntimeError(
                             "Ollama is not running. Start it: ollama serve"
                         ) from e
@@ -504,8 +559,13 @@ class OllamaAdapter(RuntimeAdapter):
 
                 has_calls = bool(native_calls) or bool(text_calls)
 
-                messages.append({"role": "assistant", "content": content,
-                                  **({"tool_calls": native_calls} if native_calls else {})})
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        **({"tool_calls": native_calls} if native_calls else {}),
+                    }
+                )
 
                 if not has_calls:
                     elapsed = _time.time() - start_time
@@ -516,9 +576,7 @@ class OllamaAdapter(RuntimeAdapter):
                         file=sys.stderr,
                     )
                     # Strip <think>...</think> blocks from thinking models
-                    
-                    clean = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                    return clean
+                    return strip_think_tags(content)
 
                 # Build unified call list from native or text-parsed calls
                 call_list = []
@@ -538,10 +596,12 @@ class OllamaAdapter(RuntimeAdapter):
                                 f"  [OllamaAdapter] malformed tool_call, skipping: {e}",
                                 file=sys.stderr,
                             )
-                            messages.append({
-                                "role": "tool",
-                                "content": f"[ERROR: malformed tool call — {e}]",
-                            })
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "content": f"[ERROR: malformed tool call — {e}]",
+                                }
+                            )
                 elif text_calls:
                     call_list = text_calls
 
@@ -561,9 +621,8 @@ class OllamaAdapter(RuntimeAdapter):
                         f"elapsed={elapsed:.0f}s, LOOP_BREAK]",
                         file=sys.stderr,
                     )
-                    
-                    clean = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                    return clean
+
+                    return strip_think_tags(content)
 
                 # Execute calls
                 # Truncation limit for glob (paths) and grep (matching lines).
@@ -593,7 +652,9 @@ class OllamaAdapter(RuntimeAdapter):
                         available = ", ".join(TOOL_HANDLERS)
                         output = f"[unknown tool '{fn_name}' — available: {available}]"
 
-                    messages.append({"role": "tool", "tool_name": fn_name, "content": output})
+                    messages.append(
+                        {"role": "tool", "tool_name": fn_name, "content": output}
+                    )
 
             raise RuntimeError(
                 f"OllamaAdapter: {max_t}-turn limit reached without final answer "
@@ -608,3 +669,5 @@ class OllamaAdapter(RuntimeAdapter):
                     "Ollama is not running. Start it: ollama serve"
                 ) from e
             raise
+        finally:
+            pass  # cwd management moved to subprocess cwd= kwarg (M1)

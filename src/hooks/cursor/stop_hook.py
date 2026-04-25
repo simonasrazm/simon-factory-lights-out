@@ -30,6 +30,7 @@ Cursor's own `loop_limit` (default 5) is a secondary safety net; the
 state-progress check is the primary one because the SFLO pipeline can
 legitimately need >5 follow-ups across all gates.
 """
+
 import json
 import os
 import subprocess
@@ -57,7 +58,10 @@ def main():
         _emit({})
 
     status = hook_input.get("status", "completed")
-    loop_count = int(hook_input.get("loop_count", 0) or 0)
+    try:
+        loop_count = int(hook_input.get("loop_count", 0) or 0)
+    except (TypeError, ValueError):
+        loop_count = 0
     # Cursor doesn't always pass cwd in hook input — fall back to the
     # process cwd which is set to the workspace root for project hooks.
     cwd = hook_input.get("cwd") or os.environ.get("CURSOR_WORKSPACE") or os.getcwd()
@@ -110,7 +114,9 @@ def main():
 
     # Resolve scaffold.py — this hook lives at sflo/src/hooks/cursor/, so
     # scaffold.py is two parents up from __file__'s parent.
-    src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    src_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     scaffold = os.path.join(src_dir, "scaffold.py")
 
     try:

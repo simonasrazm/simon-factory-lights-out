@@ -7,7 +7,9 @@ import sys
 # Root of the sflo repo.
 # SFLO_ROOT env var (set by SimonFactory app to vault path) takes precedence.
 # Falls back to __file__-derived path for CLI / dev use.
-SFLO_ROOT = os.environ.get("SFLO_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SFLO_ROOT = os.environ.get("SFLO_ROOT") or os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
 # Load pipeline config (gates, threshold) from pipeline.yaml
 # Resolution: cwd/pipeline.yaml -> sflo/pipeline.yaml -> built-in defaults
@@ -25,6 +27,7 @@ OUTER_LOOP_MAX = 10
 
 KNOWN_ROLES = {"pm", "dev", "qa", "extra", "sflo-dir"}
 
+
 def _detect_python():
     """Return the python command available on this system."""
     if shutil.which("python3"):
@@ -32,6 +35,7 @@ def _detect_python():
     if shutil.which("python"):
         return "python"
     return sys.executable or "python3"
+
 
 PYTHON_CMD = _detect_python()
 

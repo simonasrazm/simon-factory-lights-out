@@ -11,7 +11,11 @@ _DEFAULTS = {
         2: {"artifact": "BUILD-STATUS.md", "role": "dev", "gate_doc": "gates/build.md"},
         3: {"artifact": "QA-REPORT.md", "role": "qa", "gate_doc": "gates/test.md"},
         4: {"artifact": "PM-VERIFY.md", "role": "pm", "gate_doc": "gates/verify.md"},
-        5: {"artifact": "SHIP-DECISION.md", "role": "sflo", "gate_doc": "gates/ship.md"},
+        5: {
+            "artifact": "SHIP-DECISION.md",
+            "role": "sflo",
+            "gate_doc": "gates/ship.md",
+        },
     },
 }
 
@@ -78,7 +82,9 @@ def parse_pipeline_yaml(path):
                     key = key.strip()
                     val = val.strip()
                     if key == "threshold":
-                        result["threshold"] = _strip_inline_comment(val) if val else "B+"
+                        result["threshold"] = (
+                            _strip_inline_comment(val) if val else "B+"
+                        )
                         current_section = "threshold"
                         current_gate_key = None
                     elif key == "gates":
@@ -99,7 +105,9 @@ def parse_pipeline_yaml(path):
                             current_gate_key = gate_key
                             result["gates"][gate_key] = {}
                         else:
-                            errors.append(f"Line {line_num}: invalid gate key: {gate_str!r}")
+                            errors.append(
+                                f"Line {line_num}: invalid gate key: {gate_str!r}"
+                            )
                             current_gate_key = None
                     continue
 
@@ -151,9 +159,10 @@ def load_pipeline_config(path=None):
             raw = parsed
 
     threshold_str = raw.get("threshold", _DEFAULTS["threshold"])
-    grade_threshold = _GRADE_MAP.get(threshold_str, _DEFAULTS["threshold"])
+    _default_numeric = _GRADE_MAP[_DEFAULTS["threshold"]]
+    grade_threshold = _GRADE_MAP.get(threshold_str, _default_numeric)
     if not isinstance(grade_threshold, (int, float)):
-        grade_threshold = _GRADE_MAP[_DEFAULTS["threshold"]]
+        grade_threshold = _default_numeric
 
     gates_raw = raw.get("gates", {})
     if gates_raw:

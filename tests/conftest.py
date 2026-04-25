@@ -7,6 +7,11 @@ import subprocess
 import sys
 import tempfile
 
+# Exclude any tests/fixtures/**/*.py from pytest collection. Fixture files
+# are intentionally crafted (sometimes with import errors by design) and
+# should not be discovered as tests themselves.
+collect_ignore_glob = ["fixtures/**/*.py"]
+
 SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "src")
 SCAFFOLD = os.path.join(SRC_DIR, "scaffold.py")
 HOOK = os.path.join(SRC_DIR, "hooks", "claude-code", "stop_hook.py")
@@ -16,8 +21,11 @@ BINDINGS_YAML = "roles:\n  pm:\n    model: opus\n  dev:\n    model: sonnet\n  qa
 
 # Standard gate artifacts for test state construction
 GATE_ARTIFACTS = {
-    1: "SCOPE.md", 2: "BUILD-STATUS.md", 3: "QA-REPORT.md",
-    4: "PM-VERIFY.md", 5: "SHIP-DECISION.md",
+    1: "SCOPE.md",
+    2: "BUILD-STATUS.md",
+    3: "QA-REPORT.md",
+    4: "PM-VERIFY.md",
+    5: "SHIP-DECISION.md",
 }
 
 # Minimal passing artifact content for each gate
@@ -59,7 +67,11 @@ PASSING_ARTIFACTS = {
 }
 
 # Standard bindings and assignments for state construction
-DEFAULT_BINDINGS = {"pm": {"model": "opus"}, "dev": {"model": "sonnet"}, "qa": {"model": "sonnet"}}
+DEFAULT_BINDINGS = {
+    "pm": {"model": "opus"},
+    "dev": {"model": "sonnet"},
+    "qa": {"model": "sonnet"},
+}
 DEFAULT_ASSIGNMENTS = {"pm": "agents/pm", "dev": "agents/dev", "qa": "agents/qa"}
 
 
@@ -67,12 +79,16 @@ def run_scaffold(*args, cwd=None):
     """Run scaffold.py as subprocess, return parsed JSON output."""
     result = subprocess.run(
         [sys.executable, SCAFFOLD, *args],
-        capture_output=True, text=True, cwd=cwd,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
     )
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
-        raise AssertionError(f"Non-JSON output: {result.stdout}\nStderr: {result.stderr}")
+        raise AssertionError(
+            f"Non-JSON output: {result.stdout}\nStderr: {result.stderr}"
+        )
 
 
 def run_hook(state_dir, stop_active=False):
@@ -81,16 +97,21 @@ def run_hook(state_dir, stop_active=False):
     sflo_in_project = os.path.join(project_dir, ".sflo")
     shutil.copytree(state_dir, sflo_in_project)
 
-    hook_input = json.dumps({
-        "stop_hook_active": stop_active,
-        "cwd": project_dir,
-        "session_id": "test",
-        "last_assistant_message": "test",
-    })
+    hook_input = json.dumps(
+        {
+            "stop_hook_active": stop_active,
+            "cwd": project_dir,
+            "session_id": "test",
+            "last_assistant_message": "test",
+        }
+    )
 
     result = subprocess.run(
         [sys.executable, HOOK],
-        input=hook_input, capture_output=True, text=True, timeout=15,
+        input=hook_input,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
     if os.path.isdir(sflo_in_project):
@@ -116,8 +137,10 @@ def make_state(current, inner=0, outer=0, bindings=None, assignments=None):
         "assignments": assignments or DEFAULT_ASSIGNMENTS,
         "inner_loops": inner,
         "outer_loops": outer,
-        "gates": {str(g): {"status": "waiting", "artifact": a}
-                  for g, a in GATE_ARTIFACTS.items()},
+        "gates": {
+            str(g): {"status": "waiting", "artifact": a}
+            for g, a in GATE_ARTIFACTS.items()
+        },
     }
 
 

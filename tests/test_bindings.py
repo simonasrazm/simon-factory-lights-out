@@ -7,12 +7,12 @@ import tempfile
 import unittest
 
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.bindings import parse_bindings, resolve_bindings_path
 
 
 class TestParseBindings(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -26,9 +26,12 @@ class TestParseBindings(unittest.TestCase):
         return path
 
     def test_standard_bindings(self):
-        roles, err = parse_bindings(self.write(
-            "roles:\n  pm:\n    model: opus\n    thinking: extended\n"
-            "  dev:\n    model: sonnet\n    thinking: off\n"))
+        roles, err = parse_bindings(
+            self.write(
+                "roles:\n  pm:\n    model: opus\n    thinking: extended\n"
+                "  dev:\n    model: sonnet\n    thinking: off\n"
+            )
+        )
         self.assertIsNone(err)
         self.assertEqual(roles["pm"]["model"], "opus")
         self.assertEqual(roles["dev"]["thinking"], "off")
@@ -49,20 +52,21 @@ class TestParseBindings(unittest.TestCase):
         self.assertIn("No roles", err)
 
     def test_comments_skipped(self):
-        roles, err = parse_bindings(self.write(
-            "roles:\n  pm:\n    # this is a comment\n    model: opus\n"))
+        roles, err = parse_bindings(
+            self.write("roles:\n  pm:\n    # this is a comment\n    model: opus\n")
+        )
         self.assertIsNone(err)
         self.assertEqual(roles["pm"]["model"], "opus")
 
     def test_colon_in_value(self):
-        roles, err = parse_bindings(self.write(
-            "roles:\n  scout:\n    agent: ./path/to:agent\n"))
+        roles, err = parse_bindings(
+            self.write("roles:\n  scout:\n    agent: ./path/to:agent\n")
+        )
         self.assertIsNone(err)
         self.assertEqual(roles["scout"]["agent"], "./path/to:agent")
 
 
 class TestResolveBindingsPath(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.orig_cwd = os.getcwd()
@@ -83,8 +87,9 @@ class TestResolveBindingsPath(unittest.TestCase):
         with open(path, "w") as f:
             f.write("roles:\n")
         # Use realpath to normalize macOS /var -> /private/var symlink
-        self.assertEqual(os.path.realpath(resolve_bindings_path()),
-                         os.path.realpath(path))
+        self.assertEqual(
+            os.path.realpath(resolve_bindings_path()), os.path.realpath(path)
+        )
 
     def test_not_found(self):
         # Ensure no bindings.yaml exists in cwd (tmpdir)
@@ -95,8 +100,7 @@ class TestResolveBindingsPath(unittest.TestCase):
         # Result could be None or a path found in a parent/sflo location;
         # the key assertion is it's not in our empty tmpdir
         if result is not None:
-            self.assertNotEqual(os.path.realpath(result),
-                                os.path.realpath(candidate))
+            self.assertNotEqual(os.path.realpath(result), os.path.realpath(candidate))
 
 
 if __name__ == "__main__":

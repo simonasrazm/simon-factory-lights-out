@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.validate import (
     validate_gate,
@@ -19,22 +20,26 @@ from src.validate import (
 
 
 class TestExtractField(unittest.TestCase):
-
     def test_basic_extraction(self):
-        self.assertEqual(extract_field("### Grade: A\n", r"###?\s*Grade[:\s]*(.+)"), "A")
+        self.assertEqual(
+            extract_field("### Grade: A\n", r"###?\s*Grade[:\s]*(.+)"), "A"
+        )
 
     def test_bold_markers_stripped(self):
-        self.assertEqual(extract_field("### Grade: **A**\n", r"###?\s*Grade[:\s]*(.+)"), "A")
+        self.assertEqual(
+            extract_field("### Grade: **A**\n", r"###?\s*Grade[:\s]*(.+)"), "A"
+        )
 
     def test_trailing_commentary_ignored(self):
-        self.assertEqual(extract_field("### Grade: B+ (almost)\n", r"###?\s*Grade[:\s]*(.+)"), "B+")
+        self.assertEqual(
+            extract_field("### Grade: B+ (almost)\n", r"###?\s*Grade[:\s]*(.+)"), "B+"
+        )
 
     def test_not_found(self):
         self.assertIsNone(extract_field("no grade here", r"###?\s*Grade[:\s]*(.+)"))
 
 
 class TestValidateGate(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -133,14 +138,19 @@ class TestValidateGate(unittest.TestCase):
         self.assertFalse(checked_check["pass"])
 
     def test_gate2_unchecked_items_remain(self):
-        self.write("BUILD-STATUS.md", "Build: Success\nZero errors\n- [ ] still todo\n- [x] done\n")
+        self.write(
+            "BUILD-STATUS.md",
+            "Build: Success\nZero errors\n- [ ] still todo\n- [x] done\n",
+        )
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed)
         marked_check = next(c for c in checks if c["name"] == "all_checks_marked")
         self.assertFalse(marked_check["pass"])
 
     def test_gate2_no_build_success(self):
-        self.write("BUILD-STATUS.md", "Output:\n- [x] done\n")  # missing 'Build: Success' / 'zero errors'
+        self.write(
+            "BUILD-STATUS.md", "Output:\n- [x] done\n"
+        )  # missing 'Build: Success' / 'zero errors'
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed)
         build_check = next(c for c in checks if c["name"] == "build_success")
@@ -190,7 +200,9 @@ class TestValidateGate(unittest.TestCase):
         self.assertTrue(passed)
 
     def test_gate4_rejected(self):
-        content = self.FULL_PM.replace("### Verdict: APPROVED\n", "### Verdict: NEEDS CHANGES\n")
+        content = self.FULL_PM.replace(
+            "### Verdict: APPROVED\n", "### Verdict: NEEDS CHANGES\n"
+        )
         self.write("PM-VERIFY.md", content)
         passed, _ = validate_gate(4, self.tmpdir)
         self.assertFalse(passed)
@@ -229,7 +241,6 @@ class TestValidateGate(unittest.TestCase):
 
 
 class TestQAFeedback(unittest.TestCase):
-
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
@@ -241,11 +252,12 @@ class TestQAFeedback(unittest.TestCase):
             f.write(content)
 
     def test_extract_feedback_with_issues(self):
-        self.write("QA-REPORT.md",
+        self.write(
+            "QA-REPORT.md",
             "### Test Results\n| Test | Result |\n| Spacing | FAIL |\n"
             "### Grade: C\n"
             "### Issues\n- Missing spacing scale\n- No error states\n"
-            "### Stranger Test\nYes.\n"
+            "### Stranger Test\nYes.\n",
         )
         feedback = extract_qa_feedback(self.tmpdir)
         self.assertIn("QA Grade: C", feedback)
@@ -254,10 +266,11 @@ class TestQAFeedback(unittest.TestCase):
         self.assertIn("Test Results", feedback)
 
     def test_extract_feedback_no_issues(self):
-        self.write("QA-REPORT.md",
+        self.write(
+            "QA-REPORT.md",
             "### Test Results\n| Test | Result |\n| Core | PASS |\n"
             "### Grade: A\n"
-            "### Stranger Test\nYes.\n"
+            "### Stranger Test\nYes.\n",
         )
         feedback = extract_qa_feedback(self.tmpdir)
         self.assertIsNotNone(feedback)
@@ -268,13 +281,15 @@ class TestQAFeedback(unittest.TestCase):
         self.assertIsNone(feedback)
 
     def test_save_accumulates_rounds(self):
-        self.write("QA-REPORT.md",
-            "### Grade: C\n### Issues\n- Bug 1\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        self.write(
+            "QA-REPORT.md",
+            "### Grade: C\n### Issues\n- Bug 1\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n",
         )
         save_qa_feedback(self.tmpdir)
 
-        self.write("QA-REPORT.md",
-            "### Grade: B\n### Issues\n- Bug 2\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        self.write(
+            "QA-REPORT.md",
+            "### Grade: B\n### Issues\n- Bug 2\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n",
         )
         save_qa_feedback(self.tmpdir)
 
@@ -288,7 +303,6 @@ class TestQAFeedback(unittest.TestCase):
 
 
 class TestValidateAgentPath(unittest.TestCase):
-
     def test_valid_path(self):
         ok, _ = validate_agent_path(".")
         self.assertTrue(ok)
@@ -361,7 +375,9 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
         self.assertIsNotNone(PLACEHOLDER_PATTERN.search("[INSERT company name here]"))
 
     def test_explicit_placeholder(self):
-        self.assertIsNotNone(PLACEHOLDER_PATTERN.search("some [PLACEHOLDER for X] text"))
+        self.assertIsNotNone(
+            PLACEHOLDER_PATTERN.search("some [PLACEHOLDER for X] text")
+        )
 
     # ---- end-to-end via validate_gate ----
 

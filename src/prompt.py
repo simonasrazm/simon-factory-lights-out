@@ -1,10 +1,14 @@
 """SFLO prompt generation — translates state machine output to reinjectable instructions."""
 
-from .constants import PYTHON_CMD
+import sys
 
 
 def format_prompt(action_dict):
     """Translate a compute_next() result into a reinjectable instruction string."""
+    # Use sys.executable so the prompt always references the active interpreter,
+    # not a hardcoded constant that may differ across venvs / OS installs.
+    _python_cmd = sys.executable or "python3"
+
     action = action_dict.get("action", "")
 
     if action in ("pipeline_complete", "waiting", "ask_human"):
@@ -35,9 +39,15 @@ def format_prompt(action_dict):
         if instruction:
             lines.append(f"  instruction: {instruction}")
         lines.append("")
-        lines.append("Tell the agent to read the files listed above and produce the artifact.")
-        lines.append("Do NOT paraphrase gate docs — tell the agent to read them directly.")
-        lines.append(f"After the agent finishes, run: {PYTHON_CMD} sflo/src/scaffold.py next")
+        lines.append(
+            "Tell the agent to read the files listed above and produce the artifact."
+        )
+        lines.append(
+            "Do NOT paraphrase gate docs — tell the agent to read them directly."
+        )
+        lines.append(
+            f"After the agent finishes, run: {_python_cmd} sflo/src/scaffold.py next"
+        )
         return "\n".join(lines)
 
     if action == "produce_artifact":
@@ -53,7 +63,7 @@ def format_prompt(action_dict):
             reads_str,
             "",
             f"Produce the artifact in .sflo/{artifact} following the gate doc template.",
-            f"After writing the artifact, run: {PYTHON_CMD} sflo/src/scaffold.py next",
+            f"After writing the artifact, run: {_python_cmd} sflo/src/scaffold.py next",
         ]
         return "\n".join(lines)
 
@@ -87,4 +97,4 @@ def format_prompt(action_dict):
             lines.append(next_prompt)
         return "\n".join(lines)
 
-    return f"SFLO PIPELINE — continue. Run: {PYTHON_CMD} sflo/src/scaffold.py next"
+    return f"SFLO PIPELINE — continue. Run: {_python_cmd} sflo/src/scaffold.py next"

@@ -1,9 +1,7 @@
 """SFLO gate validation — artifact checks for each gate."""
 
-import json
 import os
 import re
-import sys
 
 from .constants import GATES, SFLO_ROOT, GRADE_MAP, GRADE_THRESHOLD
 
@@ -36,10 +34,10 @@ def section_body(content, heading_pattern):
     m = re.search(rf"##[#]*\s*{heading_pattern}.*?\n", content, re.IGNORECASE)
     if not m:
         return ""
-    rest = content[m.end():]
+    rest = content[m.end() :]
     # Take content up to the next ## heading
     next_heading = re.search(r"\n##", rest)
-    body = rest[:next_heading.start()] if next_heading else rest
+    body = rest[: next_heading.start()] if next_heading else rest
     return body.strip()
 
 
@@ -70,12 +68,21 @@ def section_body(content, heading_pattern):
 # This removes the false positive on literal UI markup like "[source]" that
 # appeared in real SCOPE.md prose describing source-link affordances.
 _SIMPLE_TOKENS = r"URL|TODO|TBD|N/?A|FILL[\s_-]?IN|SOURCE"
+# PLACEHOLDER_PATTERN trade-off: the field-label-colon form uses a greedy
+# line-anchored regex to avoid false positives on Swift/TypeScript type
+# annotations like `maintains partialPaths: [URL] covering every ...`.
+# Consequence: a placeholder that appears mid-sentence (e.g. "see [TODO]")
+# is NOT flagged unless it occupies a whole label line.  This is intentional —
+# flagging every bracket token in prose would produce too many false positives
+# on documents that legitimately reference placeholder syntax in explanations.
 PLACEHOLDER_PATTERN = re.compile(
     # alone-on-line form
     rf"(?:^|\n)[ \t]*\[(?:{_SIMPLE_TOKENS})\][ \t]*(?=$|\n)"
     r"|"
-    # field-label-colon form (e.g. "Grade: [TBD]")
-    rf"\b\w[\w\s-]*:[ \t]*\[(?:{_SIMPLE_TOKENS})\]"
+    # field-label-colon form (e.g. "Grade: [TBD]") — must occupy the whole line
+    # (label-colon-bracket-end-of-line) to avoid matching mid-prose Swift type
+    # annotations like `... maintains partialPaths: [URL] covering every ...`
+    rf"(?:^|\n)[ \t]*\w[\w -]*:[ \t]*\[(?:{_SIMPLE_TOKENS})\][ \t]*(?=$|\n)"
     r"|"
     # explicit insert/placeholder forms (always flagged)
     r"\[INSERT[^\]]*\]|\[PLACEHOLDER[^\]]*\]",
@@ -102,7 +109,8 @@ def extract_qa_feedback(sflo_dir):
 
     # Extract Issues section (everything between ### Issues and the next ### heading)
     issues_match = re.search(
-        r"(###?\s*Issues.*?)(?=\n###?\s|\Z)", content,
+        r"(###?\s*Issues.*?)(?=\n###?\s|\Z)",
+        content,
         re.IGNORECASE | re.DOTALL,
     )
     if issues_match:
@@ -110,7 +118,8 @@ def extract_qa_feedback(sflo_dir):
 
     # Extract Test Results section
     test_match = re.search(
-        r"(###?\s*Test Results.*?)(?=\n###?\s|\Z)", content,
+        r"(###?\s*Test Results.*?)(?=\n###?\s|\Z)",
+        content,
         re.IGNORECASE | re.DOTALL,
     )
     if test_match:
@@ -208,15 +217,21 @@ def validate_gate(gate_num, sflo_dir):
     from .validate_ext import get_validator
 
     if gate_num not in GATES:
-        return False, [{"name": "gate_not_found", "pass": False,
-                         "detail": f"Gate {gate_num} not found in GATES"}]
+        return False, [
+            {
+                "name": "gate_not_found",
+                "pass": False,
+                "detail": f"Gate {gate_num} not found in GATES",
+            }
+        ]
 
     info = GATES[gate_num]
     checks = []
 
     content, err = read_artifact(sflo_dir, info["artifact"])
-    checks.append({"name": "file_exists", "pass": content is not None,
-                    "detail": err or "OK"})
+    checks.append(
+        {"name": "file_exists", "pass": content is not None, "detail": err or "OK"}
+    )
     if content is None:
         return False, checks
 
@@ -226,7 +241,9 @@ def validate_gate(gate_num, sflo_dir):
         return custom_validator(gate_num, content, sflo_dir, checks)
 
     # Resolve threshold grade name for error messages
-    _threshold_grade = next((k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?")
+    _threshold_grade = next(
+        (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?"
+    )
 
     if gate_num == 1:
         # SCOPE.md must have acceptance criteria — the contract for downstream agents.
@@ -238,37 +255,64 @@ def validate_gate(gate_num, sflo_dir):
         ac_section = re.search(r"(?i)acceptance\s+criteria", content)
         ac_items_after_header = []
         if ac_section:
-            after = content[ac_section.end():]
+            after = content[ac_section.end() :]
             ac_items_after_header = re.findall(r"(?:^|\n)\s*[-*\d.]+\s*\S", after[:500])
         ac_total = len(ac_checkbox) + len(ac_labeled) + len(ac_numbered)
         if ac_total == 0 and ac_items_after_header:
             ac_total = len(ac_items_after_header)
-        checks.append({"name": "has_acceptance_criteria", "pass": ac_total >= 1,
-                        "detail": f"{ac_total} criteria found"})
+        checks.append(
+            {
+                "name": "has_acceptance_criteria",
+                "pass": ac_total >= 1,
+                "detail": f"{ac_total} criteria found",
+            }
+        )
 
         # Must have substantive content (not a near-empty file)
         word_count = len(content.split())
-        checks.append({"name": "has_substance", "pass": word_count >= 50,
-                        "detail": f"{word_count} words (minimum 50)"})
+        checks.append(
+            {
+                "name": "has_substance",
+                "pass": word_count >= 50,
+                "detail": f"{word_count} words (minimum 50)",
+            }
+        )
 
         # No template placeholders left
         has_placeholder = bool(PLACEHOLDER_PATTERN.search(content))
-        checks.append({"name": "no_placeholders", "pass": not has_placeholder,
-                        "detail": "placeholder detected" if has_placeholder else "OK"})
+        checks.append(
+            {
+                "name": "no_placeholders",
+                "pass": not has_placeholder,
+                "detail": "placeholder detected" if has_placeholder else "OK",
+            }
+        )
 
     elif gate_num == 2:
         # Build success marker
-        has_success = bool(re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE))
+        has_success = bool(
+            re.search(r"build[:\s]*success|zero errors", content, re.IGNORECASE)
+        )
         checks.append({"name": "build_success", "pass": has_success})
 
         # Self-checks all marked (accept - [x], * [x], [x], [X], ✅, ☑)
         unchecked = re.findall(r"[-*]\s*\[\s\]", content)
-        checks.append({"name": "all_checks_marked", "pass": len(unchecked) == 0,
-                        "detail": f"{len(unchecked)} unchecked items"})
+        checks.append(
+            {
+                "name": "all_checks_marked",
+                "pass": len(unchecked) == 0,
+                "detail": f"{len(unchecked)} unchecked items",
+            }
+        )
 
         checked = re.findall(r"(?:[-*]\s*)?\[[xX✓✅☑]\]", content)
-        checks.append({"name": "has_checked_items", "pass": len(checked) >= 1,
-                        "detail": f"{len(checked)} checked items"})
+        checks.append(
+            {
+                "name": "has_checked_items",
+                "pass": len(checked) >= 1,
+                "detail": f"{len(checked)} checked items",
+            }
+        )
 
         # AC-tracing: read SCOPE.md ACs, check BUILD-STATUS.md addresses each one
         scope_content, _ = read_artifact(sflo_dir, "SCOPE.md")
@@ -282,27 +326,46 @@ def validate_gate(gate_num, sflo_dir):
                     ac_words = [w for w in ac.split()[:5] if len(w) > 3]
                     keyword_match = any(w.lower() in content_lower for w in ac_words)
                     # Also match by AC number reference (AC1, AC2, etc.)
-                    ac_num_match = f"ac{i}" in content_lower or f"ac {i}" in content_lower
+                    ac_num_match = (
+                        f"ac{i}" in content_lower or f"ac {i}" in content_lower
+                    )
                     if keyword_match or ac_num_match:
                         addressed += 1
-                checks.append({"name": "acs_addressed", "pass": addressed >= len(scope_acs) * 0.5,
-                                "detail": f"{addressed}/{len(scope_acs)} ACs referenced"})
+                checks.append(
+                    {
+                        "name": "acs_addressed",
+                        "pass": addressed >= len(scope_acs) * 0.5,
+                        "detail": f"{addressed}/{len(scope_acs)} ACs referenced",
+                    }
+                )
 
     elif gate_num == 3:
         # Grade present and meets threshold
         grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
         grade_val = GRADE_MAP.get(grade_str, -1) if grade_str else -1
-        checks.append({"name": "grade_present", "pass": grade_str is not None,
-                        "value": grade_str})
+        checks.append(
+            {"name": "grade_present", "pass": grade_str is not None, "value": grade_str}
+        )
 
         if grade_str and grade_val < 0:
-            checks.append({"name": "grade_recognized", "pass": False,
-                            "detail": f"Unrecognized grade '{grade_str}'. "
-                                      f"Valid: {', '.join(sorted(GRADE_MAP.keys()))}"})
+            checks.append(
+                {
+                    "name": "grade_recognized",
+                    "pass": False,
+                    "detail": f"Unrecognized grade '{grade_str}'. "
+                    f"Valid: {', '.join(sorted(GRADE_MAP.keys()))}",
+                }
+            )
         else:
-            checks.append({"name": "grade_sufficient", "pass": grade_val >= GRADE_THRESHOLD,
-                            "value": grade_str, "minimum": _threshold_grade,
-                            "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else f'below {_threshold_grade}'})"})
+            checks.append(
+                {
+                    "name": "grade_sufficient",
+                    "pass": grade_val >= GRADE_THRESHOLD,
+                    "value": grade_str,
+                    "minimum": _threshold_grade,
+                    "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else f'below {_threshold_grade}'})",
+                }
+            )
 
         # Auto-fail triggers — universal red flags regardless of project type
         auto_fail_patterns = [
@@ -315,27 +378,45 @@ def validate_gate(gate_num, sflo_dir):
             if len(issues_section) > 1:
                 found = bool(re.search(pat, issues_section[1], re.IGNORECASE))
                 if found:
-                    checks.append({"name": f"auto_fail_{name}", "pass": False,
-                                   "detail": f"Auto-fail trigger: {name}"})
+                    checks.append(
+                        {
+                            "name": f"auto_fail_{name}",
+                            "pass": False,
+                            "detail": f"Auto-fail trigger: {name}",
+                        }
+                    )
 
     elif gate_num == 4:
         # Verdict present and approved
         verdict = extract_field(content, r"###?\s*Verdict[:\s]*(.+)")
         is_approved = verdict and "APPROVED" in verdict.upper()
-        checks.append({"name": "verdict_present", "pass": verdict is not None,
-                        "value": verdict})
-        checks.append({"name": "verdict_approved", "pass": is_approved,
-                        "value": verdict})
+        checks.append(
+            {"name": "verdict_present", "pass": verdict is not None, "value": verdict}
+        )
+        checks.append(
+            {"name": "verdict_approved", "pass": is_approved, "value": verdict}
+        )
 
     elif gate_num == 5:
         # Decision present and valid
         decision = extract_field(content, r"###?\s*Decision[:\s]*(.+)")
         valid_decisions = ["SHIP", "HOLD", "KILL"]
         is_valid = decision and decision.upper() in valid_decisions
-        checks.append({"name": "decision_present", "pass": decision is not None,
-                        "value": decision})
-        checks.append({"name": "decision_valid", "pass": is_valid,
-                        "value": decision, "valid_options": valid_decisions})
+        checks.append(
+            {
+                "name": "decision_present",
+                "pass": decision is not None,
+                "value": decision,
+            }
+        )
+        checks.append(
+            {
+                "name": "decision_valid",
+                "pass": is_valid,
+                "value": decision,
+                "valid_options": valid_decisions,
+            }
+        )
 
     passed = all(c["pass"] for c in checks)
     return passed, checks

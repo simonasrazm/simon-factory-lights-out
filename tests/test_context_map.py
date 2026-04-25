@@ -1,9 +1,5 @@
 """Tests for build_context_map and feedback flow in machine.py."""
 
-import os
-import json
-import pytest
-
 from src.machine import build_context_map
 
 

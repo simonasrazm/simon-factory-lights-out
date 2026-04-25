@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 *.lock
 .claude/settings.local.json
+# Chunk 0.6: output filter dev-only incident log (never commit)
+.filter_incidents.jsonl

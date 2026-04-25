@@ -6,6 +6,7 @@ import os
 import unittest
 
 import sys
+
 # Add sflo/ to path so we can import src as a package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
@@ -53,7 +54,10 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
 
     def test_check_failed(self):
         self.write_state("check-3")
-        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
+        )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         self.assertEqual(result["action"], "check_failed")
@@ -90,7 +94,10 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_qa_failure_loops_inner(self):
         self.write_state("check-3", inner=2)
-        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
+        )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -100,7 +107,10 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_qa_failure_exhausted(self):
         self.write_state("check-3", inner=9)
-        self.write_artifact("QA-REPORT.md", "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n")
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
+        )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -109,7 +119,10 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_pm_rejection_loops_outer(self):
         self.write_state("check-4", inner=5, outer=1)
-        self.write_artifact("PM-VERIFY.md", "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n")
+        self.write_artifact(
+            "PM-VERIFY.md",
+            "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n",
+        )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -119,7 +132,10 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
     def test_pm_rejection_escalates(self):
         self.write_state("check-4", outer=9)
-        self.write_artifact("PM-VERIFY.md", "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n")
+        self.write_artifact(
+            "PM-VERIFY.md",
+            "### Acceptance Criteria Check\nOK\n### Scope Alignment\nOK\n### Verdict: NEEDS CHANGES\n## Process Reflection\nNeed fixes.\n",
+        )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
@@ -139,11 +155,12 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
     def test_qa_failure_saves_feedback(self):
         """When QA gives a low grade, feedback is saved before artifacts are archived."""
         self.write_state("check-3", inner=0)
-        self.write_artifact("QA-REPORT.md",
+        self.write_artifact(
+            "QA-REPORT.md",
             "### Test Results\n| Test | Result |\n| Spacing | FAIL |\n"
             "### Grade: C\n"
             "### Issues\n- Missing spacing scale\n- No error states\n"
-            "### Stranger Test\nNo.\n"
+            "### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
@@ -152,7 +169,9 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
 
         # QA-REPORT.md should be archived (moved to logs/, not at top level)
         self.assertFalse(os.path.isfile(os.path.join(self.sflo_dir, "QA-REPORT.md")))
-        self.assertTrue(os.path.isfile(os.path.join(self.sflo_dir, "logs", "QA-REPORT.md")))
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.sflo_dir, "logs", "QA-REPORT.md"))
+        )
 
         # But QA-FEEDBACK.md should exist with the findings (preserved in place)
         feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
@@ -180,8 +199,9 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         """Multiple QA failures accumulate findings in QA-FEEDBACK.md."""
         # First failure
         self.write_state("check-3", inner=0)
-        self.write_artifact("QA-REPORT.md",
-            "### Grade: C\n### Issues\n- Bug A\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Grade: C\n### Issues\n- Bug A\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
@@ -189,8 +209,9 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
 
         # Second failure
         self.write_state("check-3", inner=1)
-        self.write_artifact("QA-REPORT.md",
-            "### Grade: B\n### Issues\n- Bug B\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n"
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Grade: B\n### Issues\n- Bug B\n### Test Results\n| T | R |\n### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
@@ -206,7 +227,6 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
 
 
 class TestAutoTransition(TempDirMixin, unittest.TestCase):
-
     def test_transitions_when_artifact_exists(self):
         self.write_state("gate-1")
         self.write_artifact("SCOPE.md", "content")
@@ -241,8 +261,7 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         """Set up state at check-1 with a SCOPE.md that will fail validation
         because of a real (field-label form) placeholder."""
         scope = (
-            "# SCOPE\n\n## ACs\n- [ ] AC1: do things\n\nOwner: [TBD]\n\n"
-            + "word " * 60
+            "# SCOPE\n\n## ACs\n- [ ] AC1: do things\n\nOwner: [TBD]\n\n" + "word " * 60
         )
         self.write_artifact("SCOPE.md", scope)
         self.write_state("check-1")
@@ -340,8 +359,11 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         # State MUST have changed — either current_state looped back to gate-1
         # with gate status reset to pending, or escalated
         # In retry case, current_state stays gate-1 but gate status changes to pending
-        self.assertEqual(state_after["gates"]["1"]["status"], "pending",
-            "apply_transition failed to reset gate 1 status — would cause silent spin")
+        self.assertEqual(
+            state_after["gates"]["1"]["status"],
+            "pending",
+            "apply_transition failed to reset gate 1 status — would cause silent spin",
+        )
 
 
 if __name__ == "__main__":

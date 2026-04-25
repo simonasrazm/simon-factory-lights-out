@@ -19,6 +19,7 @@ import tempfile
 import unittest
 
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.validate import validate_gate, section_body, PLACEHOLDER_PATTERN
 
@@ -44,13 +45,15 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate1_template_placeholders(self):
         """SCOPE.md with placeholder content should fail no_placeholders check."""
-        self.write("SCOPE.md", (
-            "## Data Sources\n[URL]\n"
-            "## Acceptance Criteria\n- [x] AC1\n"
-            "## Challenge Analysis\n[TODO]\n"
-            "## What We're Building\nA thing.\n"
-            + "word " * 50
-        ))
+        self.write(
+            "SCOPE.md",
+            (
+                "## Data Sources\n[URL]\n"
+                "## Acceptance Criteria\n- [x] AC1\n"
+                "## Challenge Analysis\n[TODO]\n"
+                "## What We're Building\nA thing.\n" + "word " * 50
+            ),
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed, "Placeholder SCOPE.md should not pass")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -58,10 +61,9 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate1_empty_sections_too_short(self):
         """SCOPE.md with empty sections and too few words fails has_substance."""
-        self.write("SCOPE.md", (
-            "## Acceptance Criteria\n- [x] AC1\n"
-            "## Challenge Analysis\n\n"
-        ))
+        self.write(
+            "SCOPE.md", ("## Acceptance Criteria\n- [x] AC1\n## Challenge Analysis\n\n")
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed, "Too-short SCOPE.md should not pass")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -71,11 +73,14 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate2_headings_only_no_checkmarks(self):
         """BUILD-STATUS.md with structure but no checked items fails."""
-        self.write("BUILD-STATUS.md", (
-            "Build: Success\nZero errors\n"
-            "## 1. Core Functionality Check\n\n"
-            "## 2. Accessibility Check\n\n"
-        ))
+        self.write(
+            "BUILD-STATUS.md",
+            (
+                "Build: Success\nZero errors\n"
+                "## 1. Core Functionality Check\n\n"
+                "## 2. Accessibility Check\n\n"
+            ),
+        )
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed, "BUILD-STATUS with no checked items should fail")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -83,10 +88,10 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate2_claims_success_unchecked_items(self):
         """BUILD-STATUS.md with unchecked items fails all_checks_marked."""
-        self.write("BUILD-STATUS.md", (
-            "Build: Success\nZero errors\n- [x] done\n"
-            "- [ ] not done yet\n"
-        ))
+        self.write(
+            "BUILD-STATUS.md",
+            ("Build: Success\nZero errors\n- [x] done\n- [ ] not done yet\n"),
+        )
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed, "Unchecked items should fail")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -96,11 +101,14 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate3_low_grade_fails(self):
         """QA-REPORT.md with grade below threshold fails grade_sufficient."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-            "### Grade: C\n"
-            "### Stranger Test\nNo.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+                "### Grade: C\n"
+                "### Stranger Test\nNo.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed, "Grade C should fail")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -108,12 +116,15 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate3_inflated_grade_with_mock_data(self):
         """QA gives A but issues mention mock data — auto-fail trigger."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-            "### Grade: A\n"
-            "### Issues\nUses mock data\n"
-            "### Stranger Test\nYes — very useful.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+                "### Grade: A\n"
+                "### Issues\nUses mock data\n"
+                "### Stranger Test\nYes — very useful.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed, "Mock data auto-fail should trigger")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -123,12 +134,15 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate4_rubber_stamp_with_needs_changes(self):
         """PM-VERIFY.md with NEEDS CHANGES verdict fails verdict_approved."""
-        self.write("PM-VERIFY.md", (
-            "### Acceptance Criteria Check\nAll criteria met.\n"
-            "### Scope Alignment\nIn scope.\n"
-            "### Verdict: NEEDS CHANGES\n"
-            "## Process Reflection\nWent well.\n"
-        ))
+        self.write(
+            "PM-VERIFY.md",
+            (
+                "### Acceptance Criteria Check\nAll criteria met.\n"
+                "### Scope Alignment\nIn scope.\n"
+                "### Verdict: NEEDS CHANGES\n"
+                "## Process Reflection\nWent well.\n"
+            ),
+        )
         passed, checks = validate_gate(4, self.tmpdir)
         self.assertFalse(passed, "NEEDS CHANGES verdict should fail")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -136,11 +150,14 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate4_missing_verdict(self):
         """PM-VERIFY.md without a verdict fails verdict_present."""
-        self.write("PM-VERIFY.md", (
-            "### Acceptance Criteria Check\n- [x] AC1 met\n"
-            "### Scope Alignment\nOK.\n"
-            "## Process Reflection\nWent well.\n"
-        ))
+        self.write(
+            "PM-VERIFY.md",
+            (
+                "### Acceptance Criteria Check\n- [x] AC1 met\n"
+                "### Scope Alignment\nOK.\n"
+                "## Process Reflection\nWent well.\n"
+            ),
+        )
         passed, checks = validate_gate(4, self.tmpdir)
         self.assertFalse(passed, "Missing verdict should fail")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -168,33 +185,39 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate1_minimum_viable_passes(self):
         """SCOPE.md with ACs, substance, and no placeholders passes."""
-        self.write("SCOPE.md", (
-            "## Acceptance Criteria\n- [x] AC1: clicking button increments counter\n"
-            "## What We're Building\nA small widget with a button.\n"
-            + "word " * 50
-        ))
+        self.write(
+            "SCOPE.md",
+            (
+                "## Acceptance Criteria\n- [x] AC1: clicking button increments counter\n"
+                "## What We're Building\nA small widget with a button.\n" + "word " * 50
+            ),
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Minimum viable SCOPE.md should pass: {failed}")
 
     def test_gate1_na_without_brackets_passes(self):
         """'N/A' without brackets in prose is real content, not a placeholder."""
-        self.write("SCOPE.md", (
-            "## Data Sources\nN/A — no external data required\n"
-            "## Acceptance Criteria\n- [x] AC1: do things\n"
-            + "word " * 50
-        ))
+        self.write(
+            "SCOPE.md",
+            (
+                "## Data Sources\nN/A — no external data required\n"
+                "## Acceptance Criteria\n- [x] AC1: do things\n" + "word " * 50
+            ),
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"N/A without brackets should pass: {failed}")
 
     def test_gate1_tbd_placeholder_rejected(self):
         """[TBD] alone on a line is a placeholder — fails no_placeholders."""
-        self.write("SCOPE.md", (
-            "## Data Sources\n[TBD]\n"
-            "## Acceptance Criteria\n- [x] AC1: do things\n"
-            + "word " * 50
-        ))
+        self.write(
+            "SCOPE.md",
+            (
+                "## Data Sources\n[TBD]\n"
+                "## Acceptance Criteria\n- [x] AC1: do things\n" + "word " * 50
+            ),
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed)
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -202,11 +225,13 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate1_insert_placeholder_rejected(self):
         """[INSERT ...] is always a placeholder — fails no_placeholders."""
-        self.write("SCOPE.md", (
-            "## Data Sources\n[INSERT data source here]\n"
-            "## Acceptance Criteria\n- [x] AC1: do things\n"
-            + "word " * 50
-        ))
+        self.write(
+            "SCOPE.md",
+            (
+                "## Data Sources\n[INSERT data source here]\n"
+                "## Acceptance Criteria\n- [x] AC1: do things\n" + "word " * 50
+            ),
+        )
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed)
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -214,10 +239,7 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate1_one_word_challenge_too_short(self):
         """SCOPE.md with too few words fails has_substance."""
-        self.write("SCOPE.md", (
-            "## Acceptance Criteria\n- [x] AC1\n"
-            "Difficult\n"
-        ))
+        self.write("SCOPE.md", ("## Acceptance Criteria\n- [x] AC1\nDifficult\n"))
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed)
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -227,20 +249,21 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate2_minimum_viable_passes(self):
         """BUILD-STATUS.md with build success, checked items passes."""
-        self.write("BUILD-STATUS.md", (
-            "Build: Success\nZero errors\n- [x] done\n"
-            "## 1. Core Functionality Check\n- [x] works\n"
-            "## 2. Accessibility Check\n- [x] accessible\n"
-        ))
+        self.write(
+            "BUILD-STATUS.md",
+            (
+                "Build: Success\nZero errors\n- [x] done\n"
+                "## 1. Core Functionality Check\n- [x] works\n"
+                "## 2. Accessibility Check\n- [x] accessible\n"
+            ),
+        )
         passed, checks = validate_gate(2, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Minimum viable BUILD-STATUS.md should pass: {failed}")
 
     def test_gate2_no_build_success_fails(self):
         """BUILD-STATUS.md without build success marker fails."""
-        self.write("BUILD-STATUS.md", (
-            "Output:\n- [x] done\n"
-        ))
+        self.write("BUILD-STATUS.md", ("Output:\n- [x] done\n"))
         passed, checks = validate_gate(2, self.tmpdir)
         self.assertFalse(passed)
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -250,26 +273,32 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_minimum_viable_passes(self):
         """QA-REPORT.md with grade A passes."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-            "### Grade: A\n"
-            "### Stranger Test\nYes — useful.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+                "### Grade: A\n"
+                "### Stranger Test\nYes — useful.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Minimum viable QA-REPORT.md should pass: {failed}")
 
     def test_gate3_fail_entries_dont_block_grade(self):
         """FAIL entries in test results don't block if grade is sufficient."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n"
-            "| Test | Result |\n|------|--------|\n"
-            "| Spacing | FAIL |\n"
-            "| Error states | FAIL |\n"
-            "| Core render | PASS |\n"
-            "### Grade: B+\n"
-            "### Stranger Test\nNo — missing critical styling.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n"
+                "| Test | Result |\n|------|--------|\n"
+                "| Spacing | FAIL |\n"
+                "| Error states | FAIL |\n"
+                "| Core render | PASS |\n"
+                "### Grade: B+\n"
+                "### Stranger Test\nNo — missing critical styling.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         # B+ meets threshold, no auto-fail triggers
         grade_check = next(c for c in checks if c["name"] == "grade_sufficient")
@@ -277,11 +306,14 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_mixed_case_grade(self):
         """Grade field extraction should work with various formats."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-            "### Grade: B+\n"
-            "### Stranger Test\nYes — reasonable value.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+                "### Grade: B+\n"
+                "### Stranger Test\nYes — reasonable value.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"B+ grade should pass: {failed}")
@@ -289,68 +321,89 @@ class TestContentDepthPassPath(unittest.TestCase):
     def test_gate3_prose_only_still_passes_if_grade_ok(self):
         """QA with prose-only test results still passes if grade meets threshold.
         Content depth checks were removed — validate.py only checks grade."""
-        self.write("QA-REPORT.md", (
-            "### Test Results\n"
-            "Everything looks good. The app works well.\n"
-            "### Grade: A\n"
-            "### Stranger Test\nYes — would recommend.\n"
-        ))
+        self.write(
+            "QA-REPORT.md",
+            (
+                "### Test Results\n"
+                "Everything looks good. The app works well.\n"
+                "### Grade: A\n"
+                "### Stranger Test\nYes — would recommend.\n"
+            ),
+        )
         passed, checks = validate_gate(3, self.tmpdir)
         # Grade A meets threshold, no auto-fail triggers
-        self.assertTrue(passed, "Grade A should pass even without structured test results")
+        self.assertTrue(
+            passed, "Grade A should pass even without structured test results"
+        )
 
     # -- Gate 4: minimum passing artifact --
 
     def test_gate4_minimum_viable_passes(self):
         """PM-VERIFY.md with APPROVED verdict passes."""
-        self.write("PM-VERIFY.md", (
-            "### Acceptance Criteria Check\n- [x] AC1 met\n"
-            "### Scope Alignment\nIn scope.\n"
-            "### Verdict: APPROVED\n"
-            "## Process Reflection\nWent smoothly.\n"
-        ))
+        self.write(
+            "PM-VERIFY.md",
+            (
+                "### Acceptance Criteria Check\n- [x] AC1 met\n"
+                "### Scope Alignment\nIn scope.\n"
+                "### Verdict: APPROVED\n"
+                "## Process Reflection\nWent smoothly.\n"
+            ),
+        )
         passed, checks = validate_gate(4, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Minimum viable PM-VERIFY.md should pass: {failed}")
 
     def test_gate4_multiple_ac_items(self):
         """PM-VERIFY.md with multiple checked AC items passes."""
-        self.write("PM-VERIFY.md", (
-            "### Acceptance Criteria Check\n"
-            "- [x] AC1: Core works\n"
-            "- [x] AC2: Charts render\n"
-            "### Scope Alignment\nAll features within original scope.\n"
-            "### Verdict: APPROVED\n"
-            "## Process Reflection\nGood iteration.\n"
-        ))
+        self.write(
+            "PM-VERIFY.md",
+            (
+                "### Acceptance Criteria Check\n"
+                "- [x] AC1: Core works\n"
+                "- [x] AC2: Charts render\n"
+                "### Scope Alignment\nAll features within original scope.\n"
+                "### Verdict: APPROVED\n"
+                "## Process Reflection\nGood iteration.\n"
+            ),
+        )
         passed, checks = validate_gate(4, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Multi-AC PM-VERIFY.md should pass: {failed}")
 
     def test_gate4_one_word_scope_still_passes(self):
         """Scope Alignment with short text passes — depth checks were removed."""
-        self.write("PM-VERIFY.md", (
-            "### Acceptance Criteria Check\n- [x] AC1 met\n"
-            "### Scope Alignment\nAligned\n"
-            "### Verdict: APPROVED\n"
-            "## Process Reflection\nWent smoothly.\n"
-        ))
+        self.write(
+            "PM-VERIFY.md",
+            (
+                "### Acceptance Criteria Check\n- [x] AC1 met\n"
+                "### Scope Alignment\nAligned\n"
+                "### Verdict: APPROVED\n"
+                "## Process Reflection\nWent smoothly.\n"
+            ),
+        )
         passed, checks = validate_gate(4, self.tmpdir)
         # Only verdict checks remain for gate 4
-        self.assertTrue(passed, "Short scope alignment should pass without depth checks")
+        self.assertTrue(
+            passed, "Short scope alignment should pass without depth checks"
+        )
 
     # -- Gate 5: baseline --
 
     def test_gate5_minimum_viable_passes(self):
         """SHIP-DECISION.md passes with valid decision."""
-        self.write("SHIP-DECISION.md", (
-            "### Pipeline Evidence\nAll gates passed.\n"
-            "### Iterations\n1 iteration.\n"
-            "### Decision: SHIP\n"
-        ))
+        self.write(
+            "SHIP-DECISION.md",
+            (
+                "### Pipeline Evidence\nAll gates passed.\n"
+                "### Iterations\n1 iteration.\n"
+                "### Decision: SHIP\n"
+            ),
+        )
         passed, checks = validate_gate(5, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
-        self.assertTrue(passed, f"Minimum viable SHIP-DECISION.md should pass: {failed}")
+        self.assertTrue(
+            passed, f"Minimum viable SHIP-DECISION.md should pass: {failed}"
+        )
 
 
 class TestSectionBodyHelper(unittest.TestCase):

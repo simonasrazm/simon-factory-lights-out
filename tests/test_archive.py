@@ -1,8 +1,5 @@
 """Tests for src.archive — move-instead-of-delete."""
 
-import os
-import pytest
-
 from src.archive import archive_to_logs
 
 

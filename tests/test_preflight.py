@@ -1,9 +1,5 @@
 """Tests for src.preflight — SOUL validation and browser checks."""
 
-import os
-import tempfile
-import pytest
-
 from src.preflight import check_agent_soul, preflight_check
 
 
@@ -73,6 +69,7 @@ class TestPreflightCheck:
 class TestCheckBrowser:
     def test_returns_tuple(self):
         from src.preflight import check_browser
+
         ok, msg = check_browser()
         assert isinstance(ok, bool)
         assert isinstance(msg, str)

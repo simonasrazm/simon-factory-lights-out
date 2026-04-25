@@ -5,6 +5,7 @@ Intercepts Claude's exit, checks pipeline state via scaffold.py,
 and reinjects instructions if work remains. Lets Claude stop when
 the pipeline is complete, escalated, or no pipeline is running.
 """
+
 import sys
 import json
 import os
@@ -61,13 +62,17 @@ def main():
 
     # Get next instruction from scaffold
     # stop_hook.py lives in src/hooks/claude-code/, scaffold.py lives in src/
-    src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    src_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     scaffold = os.path.join(src_dir, "scaffold.py")
     try:
         result = subprocess.run(
             [sys.executable, scaffold, "prompt", "--sflo-dir", sflo_dir],
-            capture_output=True, text=True, timeout=10,
-            cwd=cwd
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=cwd,
         )
         data = json.loads(result.stdout)
     except subprocess.TimeoutExpired:

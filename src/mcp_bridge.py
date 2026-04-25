@@ -24,7 +24,6 @@ Usage:
 """
 
 import asyncio
-import json
 import os
 import sys
 
@@ -41,7 +40,7 @@ class OllamaMCPBridge:
 
     def __init__(self, tool_hints=None):
         self._sessions = {}  # server_name -> (session, read, write)
-        self._tools = {}     # tool_name -> (server_name, tool_schema)
+        self._tools = {}  # tool_name -> (server_name, tool_schema)
         self._tool_hints = tool_hints or {}
 
     async def connect_server(self, name, config):
@@ -125,21 +124,31 @@ class OllamaMCPBridge:
                 items_type = items.get("type", "")
                 if items_type in ("string", "number", "integer", "boolean"):
                     # Simple typed array — safe to keep as-is
-                    clean = {k: v for k, v in param_schema.items()
-                             if k not in ("additionalProperties",)}
+                    clean = {
+                        k: v
+                        for k, v in param_schema.items()
+                        if k not in ("additionalProperties",)
+                    }
                     sanitized[param_name] = clean
                 else:
                     # Complex array (nested objects) — flatten to string
                     # Append note to description so model knows format
-                    note = " (provide as JSON array string)" if not desc.endswith(")") else ""
+                    note = (
+                        " (provide as JSON array string)"
+                        if not desc.endswith(")")
+                        else ""
+                    )
                     sanitized[param_name] = {
                         "type": "string",
                         "description": desc + note,
                     }
             else:
                 # Remove additionalProperties (causes issues in some ollama versions)
-                clean = {k: v for k, v in param_schema.items()
-                         if k not in ("additionalProperties", "$schema")}
+                clean = {
+                    k: v
+                    for k, v in param_schema.items()
+                    if k not in ("additionalProperties", "$schema")
+                }
                 sanitized[param_name] = clean
 
         return sanitized
@@ -204,12 +213,12 @@ class OllamaMCPBridge:
         try:
             result = await session.call_tool(name, arguments)
             # Extract text from result content
-            if hasattr(result, 'content') and result.content:
+            if hasattr(result, "content") and result.content:
                 parts = []
                 for block in result.content:
-                    if hasattr(block, 'text'):
+                    if hasattr(block, "text"):
                         parts.append(block.text)
-                    elif hasattr(block, 'data'):
+                    elif hasattr(block, "data"):
                         parts.append(f"[binary data: {len(block.data)} bytes]")
                 return "\n".join(parts) if parts else "[empty result]"
             return str(result)
@@ -231,7 +240,8 @@ class OllamaMCPBridge:
         servers = {}
         for tool_name, (server_name, tool) in self._tools.items():
             servers.setdefault(server_name, []).append(
-                (tool_name, tool.description or ""))
+                (tool_name, tool.description or "")
+            )
 
         lines = ["\n## Connected Tool Servers\n"]
         for server_name, tool_list in servers.items():
@@ -258,12 +268,15 @@ class OllamaMCPBridge:
         races with the event loop teardown. Cosmetic issue, not a leak.
         """
         import warnings
-        warnings.filterwarnings("ignore", message=".*cancel scope.*", category=RuntimeWarning)
-        for cm in ('_session_cm', '_stdio_cm'):
+
+        warnings.filterwarnings(
+            "ignore", message=".*cancel scope.*", category=RuntimeWarning
+        )
+        for cm in ("_session_cm", "_stdio_cm"):
             if hasattr(self, cm):
                 try:
                     await getattr(self, cm).__aexit__(None, None, None)
-                except (RuntimeError, asyncio.CancelledError, Exception):
+                except (RuntimeError, asyncio.CancelledError, OSError):
                     pass
         self._sessions.clear()
         self._tools.clear()

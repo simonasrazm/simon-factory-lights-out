@@ -1,21 +1,63 @@
+# SFLO default role bindings.
+#
+# Generic aliases (opus, sonnet, haiku) are resolved per-adapter to the
+# vendor-specific model id (e.g. cursor adapter maps "sonnet" to its own
+# Cursor model name; Claude Code adapter accepts the alias directly).
+# Hosts that want a different version can replace with the literal string,
+# e.g. `model: claude-opus-4-7` or `model: claude-sonnet-4-7`.
+#
+# `thinking` and `effort` are passed through bindings.py and consumed by
+# adapter integrations that know how to interpret them. Modern Anthropic
+# CLI accepts:
+#   thinking: adaptive | enabled | disabled
+#   effort:   low | medium | high | max
+# Legacy values (extended, off) are still accepted by older adapters but
+# discouraged — adaptive + effort is the modern surface.
+#
+# `tools` controls per-role tool gating. Workhorse default = full access.
+#   tools: readonly   →  Read/Glob/Grep only, no MCP, no Bash, no Web
+#   tools: full       →  all built-in Claude Code tools + all MCP tools
+#                        (chrome-devtools, playwright, computer-use, etc.)
+#                        + all skills. This is the DEFAULT if `tools:` is
+#                        omitted — sflo trusts the agent to do its job.
+# Only scout is restricted by default because it's pure recon (returns
+# JSON via assistant text). Hosts that want to relax even scout (e.g.
+# classifier needs to read project HLA docs) can override with `tools: full`.
+#
+# Adding a role here doesn't make it active — the runner only spawns roles
+# wired into the pipeline (sflo, scout, pm, dev, qa, interrogator). Hosts
+# can override per-role agent paths via `agent: ./path/to/agent`.
+
 roles:
   sflo:
-    model: opus
-    thinking: extended
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
 
   scout:
     agent: ./sflo/agents/scout
     model: sonnet
     thinking: adaptive
+    effort: medium
+    tools: readonly      # Read/Glob/Grep only — recon, no Write/Edit/Bash/MCP
 
   pm:
-    model: opus
-    thinking: extended
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
 
   dev:
     model: sonnet
-    thinking: off
+    thinking: adaptive
+    effort: low
 
   qa:
     model: sonnet
     thinking: adaptive
+    effort: max
+
+  interrogator:
+    model: sonnet
+    thinking: adaptive
+    effort: medium
+    tools: readonly      # Socratic analysis only — SOUL explicitly says "Do not use tools"

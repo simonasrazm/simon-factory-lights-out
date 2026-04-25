@@ -8,18 +8,99 @@ and registering it in TOOL_HANDLERS dict.
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 
 
 _TOOL_TRUNCATE_LIMIT = 200
 
+# ---------------------------------------------------------------------------
+# Bash safety policy.
+#
+# Philosophy: workhorse agents need to actually do work — running tests,
+# git operations, package managers, build tools, file moves, mkdir, etc.
+# An overly restrictive allowlist (cat/ls/grep only) is theatre — the agent
+# will fail the task instead of producing useful output. Real security
+# concerns are shell-injection patterns (;, &, |, $( ), backticks, redirects,
+# eval/exec/source, sudo escalation), NOT the leading executable name.
+#
+# This module rejects commands that contain shell-injection or escalation
+# patterns. The leading executable is NOT filtered — an operator who wants
+# command-level filtering can opt in by setting BASH_ALLOWED_COMMANDS to a
+# non-empty set in their host integration.
+#
+# Set SFLO_BASH_ALLOWED_COMMANDS env var (comma-separated) to enforce a
+# command allowlist for paranoid environments. Empty / unset = no allowlist.
+# ---------------------------------------------------------------------------
+
+BASH_ALLOWED_COMMANDS = {
+    cmd.strip()
+    for cmd in os.environ.get("SFLO_BASH_ALLOWED_COMMANDS", "").split(",")
+    if cmd.strip()
+}  # empty set by default = no command-level filter (only injection check)
+
+# Patterns that indicate shell injection / command chaining / privilege
+# escalation. These are rejected regardless of the leading command.
+_DANGEROUS_PATTERNS = re.compile(
+    r"(?:"
+    r"[;&|]"  # shell operators ; & |
+    r"|`[^`]"  # backtick subshell
+    r"|\$\("  # $( subshell
+    r"|>[>]?"  # redirect (write to file)
+    r"|<\("  # process substitution
+    r"|\beval\b"  # eval
+    r"|\bexec\b"  # exec
+    r"|\bsource\b"  # source
+    r"|\bsudo\b"  # sudo escalation
+    r")"
+)
+
+
+def _check_bash_safety(command: str):
+    """Return (is_safe: bool, reason: str)."""
+    if not command or not command.strip():
+        return False, "empty command"
+
+    # Check for dangerous shell patterns
+    if _DANGEROUS_PATTERNS.search(command):
+        return False, f"command contains dangerous shell pattern: {command!r}"
+
+    # Parse to a list — if shlex fails the command is malformed
+    try:
+        parts = shlex.split(command)
+    except ValueError as e:
+        return False, f"command parse error: {e}"
+
+    if not parts:
+        return False, "empty command after parsing"
+
+    # Optional opt-in command allowlist (off by default). Operators who want
+    # command-level filtering set SFLO_BASH_ALLOWED_COMMANDS in their env.
+    if BASH_ALLOWED_COMMANDS:
+        exe = os.path.basename(parts[0])
+        if exe not in BASH_ALLOWED_COMMANDS:
+            return False, (
+                f"command '{exe}' not in SFLO_BASH_ALLOWED_COMMANDS allowlist. "
+                f"Allowed: {', '.join(sorted(BASH_ALLOWED_COMMANDS))}"
+            )
+
+    return True, ""
+
 
 def handle_bash(fn_args):
     command = fn_args.get("command", "")
+    is_safe, reason = _check_bash_safety(command)
+    if not is_safe:
+        return f"[bash blocked: {reason}]"
     try:
+        # Use list-form with shell=False to prevent injection
+        cmd_list = shlex.split(command)
         proc = subprocess.run(
-            command, shell=True, capture_output=True,
-            text=True, timeout=30,
+            cmd_list,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         output = proc.stdout
         if proc.stderr:
@@ -28,6 +109,8 @@ def handle_bash(fn_args):
             output = f"[exit code {proc.returncode}]"
     except subprocess.TimeoutExpired:
         output = "[bash error: command timed out after 30s]"
+    except FileNotFoundError as e:
+        output = f"[bash error: command not found — {e}]"
     except Exception as e:
         output = f"[bash error: {e}]"
     return output
@@ -45,9 +128,15 @@ def handle_read(fn_args):
             p = pathlib.Path(os.getcwd()) / p
         raw_lines = p.read_text(encoding="utf-8").splitlines()
         start = max(0, offset - 1)
-        selected = raw_lines[start:start + limit] if limit is not None else raw_lines[start:]
+        selected = (
+            raw_lines[start : start + limit] if limit is not None else raw_lines[start:]
+        )
         result_lines = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
-        return "\n".join(result_lines) if result_lines else "[empty file or no lines in range]"
+        return (
+            "\n".join(result_lines)
+            if result_lines
+            else "[empty file or no lines in range]"
+        )
     except FileNotFoundError:
         return f"[read error: file not found: {path}]"
     except UnicodeDecodeError:
@@ -105,7 +194,11 @@ def handle_edit(fn_args):
                 f"[edit error: old_string found {count} times in {file_path} "
                 f"— use replace_all=true or provide more context to make it unique]"
             )
-        new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+        new_text = (
+            text.replace(old_string, new_string)
+            if replace_all
+            else text.replace(old_string, new_string, 1)
+        )
         p.write_text(new_text, encoding="utf-8")
         return f"Replaced {count if replace_all else 1} occurrence(s) in {file_path}"
     except FileNotFoundError:
@@ -132,7 +225,7 @@ def handle_multiedit(fn_args):
             if old not in text:
                 p.write_text(original, encoding="utf-8")
                 return (
-                    f"[multiedit error: edit {applied+1} old_string not found "
+                    f"[multiedit error: edit {applied + 1} old_string not found "
                     f"in {file_path} — all edits rolled back]"
                 )
             text = text.replace(old, new, 1)
@@ -212,16 +305,24 @@ def handle_webfetch(fn_args):
     url = fn_args.get("url", "")
     try:
         proc = subprocess.run(
-            ["curl", "-sL", "-m", "15",
-             "-H", "User-Agent: SFLO-OllamaAdapter/1.0",
-             url],
-            capture_output=True, text=True, timeout=20,
+            [
+                "curl",
+                "-sL",
+                "-m",
+                "15",
+                "-H",
+                "User-Agent: SFLO-OllamaAdapter/1.0",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
         )
         raw = proc.stdout
-        text = re.sub(r'<script[^>]*>.*?</script>', '', raw, flags=re.DOTALL)
-        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
-        text = re.sub(r'<[^>]+>', ' ', text)
-        text = re.sub(r'\s+', ' ', text).strip()
+        text = re.sub(r"<script[^>]*>.*?</script>", "", raw, flags=re.DOTALL)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
         output = text[:4000]
         if len(text) > 4000:
             output += "\n[truncated]"

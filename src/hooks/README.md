@@ -8,6 +8,7 @@ Hooks keep the SFLO pipeline running automatically. Without hooks, the pipeline 
 |---------|------|-------------|
 | **OpenClaw** | `openclaw/sflo-pipeline/` | Fires on `message:sent` events. Checks pipeline state, reinjects next instruction. |
 | **Claude Code** | `claude-code/stop_hook.py` | Intercepts exit. Checks pipeline state, blocks exit with next instruction. |
+| **Cursor** | `cursor/stop_hook.py` | Returns `followup_message` from the `stop` hook so Cursor auto-submits the next gate. See `cursor/README.md`. |
 
 ## Quick Install
 

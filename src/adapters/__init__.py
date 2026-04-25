@@ -23,6 +23,7 @@ _log = logging.getLogger("sflo.detect")
 # merely installed. Precheck failures fall through to the next option instead
 # of crashing the pipeline later.
 
+
 def _claude_code_usable():
     """Claude SDK importable AND auth credential present."""
     try:
@@ -43,12 +44,15 @@ def _cursor_logged_in(timeout=3.0):
     has no machine-readable status command as of 2026-01.
     """
     import shutil
+
     if not shutil.which("cursor-agent"):
         return False
     try:
         r = subprocess.run(
             ["cursor-agent", "status"],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         combined = (r.stdout or "") + (r.stderr or "")
         return "Not logged in" not in combined and "login" not in combined.lower()
@@ -64,6 +68,7 @@ def _openclaw_alive(timeout=0.2):
     SFLO_PREFER_RUNTIME=openclaw to bypass the probe.
     """
     import shutil
+
     if not shutil.which("openclaw"):
         return False
     for port in (7777, 8080):
@@ -79,6 +84,7 @@ def _ollama_alive():
     """ollama package importable AND server answers list()."""
     try:
         import ollama  # noqa: F401
+
         ollama.list()
         return True
     except Exception:
@@ -90,6 +96,7 @@ def _ollama_alive():
 # identified itself via environment variables. When present, prefer that
 # runtime even if other tools exist on PATH — the caller's intent trumps
 # filesystem presence of alternatives.
+
 
 def _spawned_by_claude_code():
     """True if Claude Code spawned this Python process.
@@ -104,10 +111,13 @@ def _spawned_by_claude_code():
 
 def _spawned_by_cursor():
     """True if Cursor's integrated agent/terminal spawned this process."""
-    return bool(os.environ.get("CURSOR_TRACE_ID") or os.environ.get("CURSOR_SESSION_ID"))
+    return bool(
+        os.environ.get("CURSOR_TRACE_ID") or os.environ.get("CURSOR_SESSION_ID")
+    )
 
 
 # -- main entry point --------------------------------------------------------
+
 
 def detect_runtime():
     """Auto-detect which runtime we're in.
@@ -175,9 +185,11 @@ def get_adapter(runtime=None):
         return OllamaAdapter()
     else:
         raise RuntimeError(
-            "No runtime detected. Run setup.sh to provision the environment, "
-            "or install manually: pip install claude-agent-sdk, "
-            "or install Cursor CLI from https://cursor.com/cli."
+            "No runtime detected. Supported runtimes: claude-code, cursor, openclaw, ollama. "
+            "Run setup.sh to provision the environment, "
+            "or install manually: pip install claude-agent-sdk (claude-code), "
+            "cursor-agent CLI (cursor), openclaw CLI (openclaw), "
+            "or pip install ollama + ollama serve (ollama)."
         )
 
 

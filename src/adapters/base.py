@@ -102,6 +102,12 @@ class RuntimeAdapter:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    async def spawn_agent(self, model, system_prompt, user_prompt):
-        """Spawn agent via runtime. Returns response text (str)."""
+    async def spawn_agent(self, model, system_prompt, user_prompt, cwd=None, **kwargs):
+        """Spawn agent via runtime. Returns response text (str).
+
+        Args:
+            cwd: Working directory for agent (user deliverables land here).
+                 If None, uses inherited process cwd.
+            **kwargs: Runtime-specific options (role, allowed_tools, etc).
+        """
         raise NotImplementedError

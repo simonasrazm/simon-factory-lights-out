@@ -4,11 +4,22 @@ import os
 import re
 
 from .constants import (
-    GATES, SFLO_ROOT, INNER_LOOP_MAX, OUTER_LOOP_MAX,
-    S_SCOUT, S_ASSIGN, S_ESCALATE, S_DONE,
+    GATES,
+    SFLO_ROOT,
+    INNER_LOOP_MAX,
+    OUTER_LOOP_MAX,
+    S_SCOUT,
+    S_ASSIGN,
+    S_ESCALATE,
+    S_DONE,
 )
 from .state import write_state
-from .validate import validate_gate, clean_artifacts_from, save_qa_feedback, save_pm_feedback
+from .validate import (
+    validate_gate,
+    clean_artifacts_from,
+    save_qa_feedback,
+    save_pm_feedback,
+)
 
 
 def resolve_sflo_base():
@@ -75,12 +86,13 @@ def build_context_map(gate_num, sflo_dir):
     qa_feedback = os.path.join(sflo_dir, "QA-FEEDBACK.md")
     pm_feedback = os.path.join(sflo_dir, "PM-FEEDBACK.md")
     if os.path.isfile(pm_feedback):
-        feedback_files.append(
-            f"  - {pm_feedback} (PM reviewed and requested changes)"
-        )
+        feedback_files.append(f"  - {pm_feedback} (PM reviewed and requested changes)")
     if os.path.isfile(qa_feedback):
+        feedback_files.append(f"  - {qa_feedback} (QA found issues in your code)")
+    stst_feedback = os.path.join(sflo_dir, "STST-FEEDBACK.md")
+    if os.path.isfile(stst_feedback):
         feedback_files.append(
-            f"  - {qa_feedback} (QA found issues in your code)"
+            f"  - {stst_feedback} (STST static analysis found issues in your tests — fix before QA)"
         )
 
     is_rebuild = len(feedback_files) > 0
@@ -150,8 +162,11 @@ def compute_next(state, sflo_dir):
             "action": "spawn_agent",
             "agent": {
                 "role": "scout",
-                "path": bindings.get("scout", {}).get("agent", os.path.join(sflo_base, "agents", "scout")),
+                "path": bindings.get("scout", {}).get(
+                    "agent", os.path.join(sflo_base, "agents", "scout")
+                ),
                 "model": bindings.get("scout", {}).get("model", "sonnet"),
+                "tools_mode": bindings.get("scout", {}).get("tools", "readonly"),
                 "reads": [os.path.join(sflo_base, "agents", "scout", "SOUL.md")],
                 "instruction": "Read user prompt, scan agents/ for matches, return structured assignments.",
             },
@@ -171,7 +186,11 @@ def compute_next(state, sflo_dir):
         n = int(n) if n == int(n) else n
 
         if n not in GATES:
-            return {"state": current, "action": "unknown", "error": f"Unknown gate: {n}"}
+            return {
+                "state": current,
+                "action": "unknown",
+                "error": f"Unknown gate: {n}",
+            }
 
         last_gate = _last_gate()
         if n == last_gate:
@@ -196,6 +215,16 @@ def compute_next(state, sflo_dir):
         agent_path = assignments.get(role, os.path.join(sflo_base, "agents", role))
         role_bindings = bindings.get(role, {})
 
+        # STST filter gate — runs CLI, not an LLM agent
+        if role == "stst":
+            return {
+                "state": f"gate-{n_str}",
+                "action": "run_stst_gate",
+                "gate_num": n,
+                "gate_doc": os.path.join(sflo_base, GATES[n]["gate_doc"]),
+                "sflo_dir": sflo_dir,
+            }
+
         return {
             "state": f"gate-{n_str}",
             "action": "spawn_agent",
@@ -203,6 +232,10 @@ def compute_next(state, sflo_dir):
                 "role": role,
                 "path": agent_path,
                 "model": role_bindings.get("model", "sonnet"),
+                # tools_mode flows from bindings.yaml `tools:` field. Unset =
+                # full access (None resolved by the adapter); set to "readonly"
+                # to clamp scout-style recon agents to Read/Glob/Grep only.
+                "tools_mode": role_bindings.get("tools"),
                 "reads": agent_reads(n, agent_path, sflo_base, sflo_dir),
                 "produces": os.path.join(sflo_dir, GATES[n]["artifact"]),
                 "gate_num": n,
@@ -288,6 +321,7 @@ def apply_transition(state, result, sflo_dir):
 
         # Archive feedback files to logs/ once they've served their purpose
         from .archive import archive_to_logs
+
         if n == inner_loop_restart:
             pm_fb = os.path.join(sflo_dir, "PM-FEEDBACK.md")
             if os.path.isfile(pm_fb):
@@ -311,6 +345,53 @@ def apply_transition(state, result, sflo_dir):
         outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
         # Inner loop restart gate is gate 2 in default pipeline
         inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+
+        # STST filter gate (role="stst") — loop back to DEV without touching
+        # inner_loops or outer_loops. Uses gate_retries["2.5"] counter.
+        stst_gate = next(
+            (g for g in sorted_gates if g in GATES and GATES[g].get("role") == "stst"),
+            None,
+        )
+        if stst_gate is not None and n == stst_gate:
+            gate_retries = state.get("gate_retries", {})
+            gate_key = str(n)
+            gate_retries[gate_key] = gate_retries.get(gate_key, 0) + 1
+            state["gate_retries"] = gate_retries
+
+            if gate_retries[gate_key] >= INNER_LOOP_MAX:
+                state["current_state"] = S_ESCALATE
+                state["escalate_reason"] = (
+                    f"STST rejected {gate_retries[gate_key]} DEV rebuilds — "
+                    f"likely prompt/SUT mismatch. Human decision needed."
+                )
+                state["escalate_options"] = [
+                    "override (ship-anyway)",
+                    "fix DEV test generation prompt",
+                    "kill",
+                ]
+                write_state(sflo_dir, state)
+                return compute_next(state, sflo_dir)
+            else:
+                restart_gate = inner_loop_restart
+                from .archive import archive_to_logs
+
+                stst_report = os.path.join(sflo_dir, "STST-REPORT.md")
+                build_status = os.path.join(sflo_dir, "BUILD-STATUS.md")
+                to_archive = [
+                    f for f in [stst_report, build_status] if os.path.isfile(f)
+                ]
+                if to_archive:
+                    archive_to_logs(sflo_dir, to_archive)
+                state["current_state"] = f"gate-{restart_gate}"
+                write_state(sflo_dir, state)
+                return {
+                    **result,
+                    "state": "loop-stst",
+                    "action": "loop_back",
+                    "stst_retry_count": gate_retries[gate_key],
+                    "max": INNER_LOOP_MAX,
+                    "next": compute_next(state, sflo_dir),
+                }
 
         if n == inner_loop_gate:
             state["inner_loops"] += 1
@@ -394,7 +475,9 @@ def apply_transition(state, result, sflo_dir):
             state["gate_retries"] = gate_retries
 
             if gate_retries[gate_key] >= INNER_LOOP_MAX:
-                failed_checks = [c for c in result.get("checks", []) if not c.get("pass", True)]
+                failed_checks = [
+                    c for c in result.get("checks", []) if not c.get("pass", True)
+                ]
                 failed_names = [c.get("name", "?") for c in failed_checks]
                 artifact_name = GATES[n]["artifact"] if n in GATES else f"gate-{n}"
                 state["current_state"] = S_ESCALATE
@@ -415,12 +498,15 @@ def apply_transition(state, result, sflo_dir):
             else:
                 # Loop back: re-run the gate's agent with the failed
                 # artifact deleted so it rebuilds from scratch.
-                failed_checks = [c for c in result.get("checks", []) if not c.get("pass", True)]
+                failed_checks = [
+                    c for c in result.get("checks", []) if not c.get("pass", True)
+                ]
                 failed_names = [c.get("name", "?") for c in failed_checks]
                 artifact_name = GATES[n]["artifact"] if n in GATES else f"gate-{n}"
                 artifact_path = os.path.join(sflo_dir, artifact_name)
                 if os.path.isfile(artifact_path):
                     from .archive import archive_to_logs
+
                     archive_to_logs(sflo_dir, [artifact_path])
                 state["gates"][gate_key]["status"] = "pending"
                 state["current_state"] = f"gate-{n}"

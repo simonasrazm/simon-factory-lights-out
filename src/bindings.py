@@ -1,4 +1,38 @@
-"""SFLO bindings.yaml parser — strict 2-level YAML subset."""
+"""SFLO bindings.yaml parser — strict 2-level YAML subset.
+
+Schema overview (all sections are optional except `roles:`):
+
+    # Top-level flags (comma-separated)
+    exclude_agents: pm-website, foo          # skip by agent dir entry name
+    exclude_agent_dirs: sflo/agents          # skip by path substring
+
+    # Eval plugins — typed extension point (sflo core eval framework)
+    # Each entry is loaded via importlib at runner startup.
+    # See sflo/src/evals/ for the SfloEval ABC and registry.
+    #
+    # evals:
+    #   - name: my_check                     # unique identifier (required)
+    #     module: my_pkg.my_eval             # Python import path (required)
+    #     class: MyEval                      # class name — must subclass SfloEval (required)
+    #     enabled: true                      # set false to disable without removing
+    #     priority: 50                       # lower = runs first (default: 100)
+    #     match:                             # optional filter; omit = fire on all
+    #       roles: [dev, qa]                 # list of role names; omit = all roles
+    #       gates: [2, 3]                    # list of gate numbers; omit = all gates
+    #     config:                            # dict passed to plugin __init__(config=...)
+    #       key: value
+
+    # Role model assignments
+    roles:
+      dev:
+        model: sonnet
+        thinking: adaptive   # parsed and stored; consumed by adapter integrations
+        effort: low          # parsed and stored; consumed by adapter integrations
+
+The `evals:` section is parsed by sflo/src/evals/registry.py using yaml.safe_load
+(if PyYAML is available) or the hand-rolled mini-parser in that module.
+The `roles:` section is parsed by this module's parse_bindings() function.
+"""
 
 import os
 
@@ -28,7 +62,7 @@ def parse_bindings(path):
             if not content or content.startswith("#"):
                 continue
 
-            if "\t" in raw[:len(raw) - len(raw.lstrip())]:
+            if "\t" in raw[: len(raw) - len(raw.lstrip())]:
                 errors.append(f"Line {line_num}: tabs in indentation not supported")
                 continue
 
@@ -148,3 +182,5 @@ def resolve_bindings_path(explicit=None):
     if os.path.isfile(root_path):
         return root_path
     return None
+
+
