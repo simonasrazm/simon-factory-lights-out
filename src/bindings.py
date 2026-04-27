@@ -144,11 +144,10 @@ def load_exclude_agent_dirs(bindings_path=None):
     return _read_top_level_flag(bindings_path, "exclude_agent_dirs")
 
 
-# Known security hardening keys. Treat unknown keys as opt-in =false (forward-
-# compat: host bindings.yaml may declare a key the running sflo doesn't yet
-# implement; ignore rather than crash).
+# Security toggle keys. Schema lives in bindings.yaml. Unknown keys ignored.
 SECURITY_KEYS = (
-    "isolate_settings",
+    "isolate_user_settings",
+    "isolate_all_settings",
     "no_session_persistence",
     "sandbox_config_dir",
     "require_permission",
@@ -157,23 +156,7 @@ SECURITY_KEYS = (
 
 
 def load_security_config(bindings_path=None):
-    """Return the security hardening toggle dict from bindings.yaml.
-
-    Reads the top-level `security:` block. Each child entry is `key: bool`
-    (true / false / yes / no, case-insensitive). All known SECURITY_KEYS
-    are returned with explicit boolean values; unset keys default to False.
-
-    Defaults to all-false (host-trusted, fully permissive) if bindings.yaml
-    or the section is missing. Hosts opt INTO each isolation layer.
-
-    Format:
-        security:
-          isolate_settings:        false
-          no_session_persistence:  false
-          sandbox_config_dir:      false
-          require_permission:      false
-          wipe_sandbox:            false
-    """
+    """Return the security toggle dict. All-false default if section missing."""
     config = {k: False for k in SECURITY_KEYS}
 
     if bindings_path is None:

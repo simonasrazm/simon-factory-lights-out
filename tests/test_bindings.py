@@ -133,7 +133,8 @@ class TestLoadSecurityConfig(unittest.TestCase):
     def test_all_true(self):
         self.write(
             "security:\n"
-            "  isolate_settings: true\n"
+            "  isolate_user_settings: true\n"
+            "  isolate_all_settings: true\n"
             "  no_session_persistence: true\n"
             "  sandbox_config_dir: true\n"
             "  require_permission: true\n"
@@ -146,12 +147,12 @@ class TestLoadSecurityConfig(unittest.TestCase):
         # yes/on/1 all parse as True
         self.write(
             "security:\n"
-            "  isolate_settings: yes\n"
+            "  isolate_user_settings: yes\n"
             "  no_session_persistence: on\n"
             "  sandbox_config_dir: 1\n"
         )
         cfg = load_security_config(self.path)
-        self.assertTrue(cfg["isolate_settings"])
+        self.assertTrue(cfg["isolate_user_settings"])
         self.assertTrue(cfg["no_session_persistence"])
         self.assertTrue(cfg["sandbox_config_dir"])
 
@@ -159,22 +160,22 @@ class TestLoadSecurityConfig(unittest.TestCase):
         # explicit no/off/0 all parse as False (same as default)
         self.write(
             "security:\n"
-            "  isolate_settings: no\n"
+            "  isolate_user_settings: no\n"
             "  no_session_persistence: off\n"
             "  sandbox_config_dir: 0\n"
         )
         cfg = load_security_config(self.path)
-        self.assertFalse(cfg["isolate_settings"])
+        self.assertFalse(cfg["isolate_user_settings"])
         self.assertFalse(cfg["no_session_persistence"])
         self.assertFalse(cfg["sandbox_config_dir"])
 
     def test_partial_block_unset_keys_default_false(self):
         self.write(
             "security:\n"
-            "  isolate_settings: true\n"
+            "  isolate_user_settings: true\n"
         )
         cfg = load_security_config(self.path)
-        self.assertTrue(cfg["isolate_settings"])
+        self.assertTrue(cfg["isolate_user_settings"])
         self.assertFalse(cfg["no_session_persistence"])
         self.assertFalse(cfg["sandbox_config_dir"])
         self.assertFalse(cfg["require_permission"])
@@ -184,11 +185,11 @@ class TestLoadSecurityConfig(unittest.TestCase):
         # Forward-compat: a future host may declare a key sflo doesn't yet know.
         self.write(
             "security:\n"
-            "  isolate_settings: true\n"
+            "  isolate_user_settings: true\n"
             "  future_unknown_key: true\n"
         )
         cfg = load_security_config(self.path)
-        self.assertTrue(cfg["isolate_settings"])
+        self.assertTrue(cfg["isolate_user_settings"])
         self.assertNotIn("future_unknown_key", cfg)
 
     def test_security_after_roles(self):
@@ -199,19 +200,19 @@ class TestLoadSecurityConfig(unittest.TestCase):
             "  pm:\n"
             "    model: opus\n"
             "security:\n"
-            "  isolate_settings: true\n"
+            "  isolate_user_settings: true\n"
         )
         cfg = load_security_config(self.path)
-        self.assertTrue(cfg["isolate_settings"])
+        self.assertTrue(cfg["isolate_user_settings"])
 
     def test_comment_lines_skipped(self):
         self.write(
             "security:\n"
             "  # commented out\n"
-            "  isolate_settings: true\n"
+            "  isolate_user_settings: true\n"
         )
         cfg = load_security_config(self.path)
-        self.assertTrue(cfg["isolate_settings"])
+        self.assertTrue(cfg["isolate_user_settings"])
 
     def test_default_sflo_bindings_yaml_all_false(self):
         # The shipped sflo/bindings.yaml must keep all toggles OFF by default

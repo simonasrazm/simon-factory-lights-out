@@ -62,61 +62,11 @@ roles:
     effort: medium
     tools: readonly      # Socratic analysis only — SOUL explicitly says "Do not use tools"
 
-# Security hardening toggles for the Claude Code runtime adapter.
-#
-# DEFAULT = OFF (host-trusted: single-user, single-machine, agents fully
-# inherit user PAI surface). Multi-tenant or shared-infra hosts should
-# selectively enable these to seal spawned agents from user secrets.
-#
-# Each key, when true, applies a specific isolation layer:
-#
-#   isolate_settings        Pass setting_sources=[] to claude-agent-sdk so
-#                           the spawned CLI does NOT load ~/.claude/settings
-#                           .json. Severs user PAI hooks (PreToolUse /
-#                           PostToolUse), user-installed MCP servers, custom
-#                           slash commands, custom skills, the user-global
-#                           allow/deny permission lists, and CLAUDE.md
-#                           memory chain rooted under user config.
-#                           Threat sealed: a tampered user hook that
-#                           exfiltrates tool args/results to an attacker.
-#
-#   no_session_persistence  Pass --no-session-persistence so the agent's
-#                           reasoning is NOT written to ~/.claude/projects
-#                           /*.jsonl. Severs forensic replay + cross-run
-#                           learning.
-#                           Threat sealed: secrets in a long agent
-#                           reasoning chain leaking to disk where another
-#                           process could read.
-#
-#   sandbox_config_dir      Override CLAUDE_CONFIG_DIR to a per-spawn
-#                           .claude_sandbox/ inside cwd. Even if
-#                           isolate_settings is false (or bypassed), the
-#                           CLI cannot find user config because its config
-#                           dir points elsewhere.
-#                           Threat sealed: defense-in-depth against future
-#                           SDK regressions that might re-discover user
-#                           settings.
-#
-#   require_permission      Use permission_mode="default" instead of
-#                           "bypassPermissions". Each tool action prompts
-#                           for approval. DEADLOCKS background-launched
-#                           pipelines that touch multiple projects (no UI
-#                           to approve cross-project writes). Only useful
-#                           for foreground / interactive runs where the
-#                           operator wants to inspect each step.
-#
-#   wipe_sandbox            After spawn finalize, rm -rf the
-#                           .claude_sandbox/ dir. Hygiene only — has no
-#                           effect unless sandbox_config_dir is also true.
-#                           Disable to keep post-mortem material for
-#                           debugging crashed agents.
-#
-# To re-enable the full hardening posture (the pre-toggles default), set
-# all five to true in the host's bindings.yaml overlay.
-
+# Security hardening — Claude Code adapter only. All default OFF.
 security:
-  isolate_settings:        false
-  no_session_persistence:  false
-  sandbox_config_dir:      false
-  require_permission:      false
-  wipe_sandbox:            false
+  isolate_user_settings:   false   # severs ~/.claude/; project hooks survive
+  isolate_all_settings:    false   # severs EVERYTHING (breaks Stop hook)
+  no_session_persistence:  false   # no ~/.claude/projects/*.jsonl trail
+  sandbox_config_dir:      false   # CLAUDE_CONFIG_DIR → per-spawn sandbox
+  require_permission:      false   # tool-call approval (interactive only — hangs otherwise)
+  wipe_sandbox:            false   # rm -rf sandbox post-spawn (no-op without sandbox_config_dir)
