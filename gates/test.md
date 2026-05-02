@@ -54,6 +54,7 @@ These automatically score F regardless of other results:
 - Product doesn't start or run
 - Purpose is unclear ("what is this for?")
 - Core use case from SCOPE.md doesn't work
+- Any unmet **"Dev MUST follow"** decision from SCOPE.md (e.g. a `D2 / D3 / D6` constraint marked as Dev-binding). MUST-follow decisions are non-negotiable architectural commitments the PM scoped — leaving any of them violated is a contract breach, not a quality nit. Catch them at QA (Gate 3) so they don't survive to PM-VERIFY (Gate 4) and trigger an outer-loop iteration.
 
 ## Gate Check
 

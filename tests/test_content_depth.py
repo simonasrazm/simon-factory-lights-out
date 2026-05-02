@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.validate import validate_gate, section_body, PLACEHOLDER_PATTERN
+from src.constants import GRADE_MAP, GRADE_THRESHOLD
 
 
 class TestScaffoldingDecoysRejected(unittest.TestCase):
@@ -101,16 +102,24 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate3_low_grade_fails(self):
         """QA-REPORT.md with grade below threshold fails grade_sufficient."""
+        below_val = max(
+            (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
+        )
+        below_letter = next(
+            (k for k, v in GRADE_MAP.items() if v == below_val), None
+        )
+        if below_letter is None:
+            self.skipTest("No grade below threshold in GRADE_MAP")
         self.write(
             "QA-REPORT.md",
             (
                 "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-                "### Grade: C\n"
+                f"### Grade: {below_letter}\n"
                 "### Stranger Test\nNo.\n"
             ),
         )
         passed, checks = validate_gate(3, self.tmpdir)
-        self.assertFalse(passed, "Grade C should fail")
+        self.assertFalse(passed, f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}")
         failed_names = {c["name"] for c in checks if not c["pass"]}
         self.assertIn("grade_sufficient", failed_names)
 
@@ -287,6 +296,12 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_fail_entries_dont_block_grade(self):
         """FAIL entries in test results don't block if grade is sufficient."""
+        # Use the threshold-equal letter so this test tracks the configured
+        # bar (pipeline.yaml `threshold:`). Hardcoding "B+" broke when the
+        # project bumped the QA bar to A.
+        threshold_letter = next(
+            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+        )
         self.write(
             "QA-REPORT.md",
             (
@@ -295,28 +310,38 @@ class TestContentDepthPassPath(unittest.TestCase):
                 "| Spacing | FAIL |\n"
                 "| Error states | FAIL |\n"
                 "| Core render | PASS |\n"
-                "### Grade: B+\n"
+                f"### Grade: {threshold_letter}\n"
                 "### Stranger Test\nNo — missing critical styling.\n"
             ),
         )
         passed, checks = validate_gate(3, self.tmpdir)
-        # B+ meets threshold, no auto-fail triggers
+        # Grade at threshold, no auto-fail triggers.
         grade_check = next(c for c in checks if c["name"] == "grade_sufficient")
-        self.assertTrue(grade_check["pass"], "B+ should meet threshold")
+        self.assertTrue(
+            grade_check["pass"],
+            f"{threshold_letter} should meet threshold {threshold_letter}",
+        )
 
     def test_gate3_mixed_case_grade(self):
         """Grade field extraction should work with various formats."""
+        # Pick the threshold-equal letter so the gate passes regardless of
+        # the project's configured bar.
+        threshold_letter = next(
+            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+        )
         self.write(
             "QA-REPORT.md",
             (
                 "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
-                "### Grade: B+\n"
+                f"### Grade: {threshold_letter}\n"
                 "### Stranger Test\nYes — reasonable value.\n"
             ),
         )
         passed, checks = validate_gate(3, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
-        self.assertTrue(passed, f"B+ grade should pass: {failed}")
+        self.assertTrue(
+            passed, f"Grade {threshold_letter} should pass: {failed}"
+        )
 
     def test_gate3_prose_only_still_passes_if_grade_ok(self):
         """QA with prose-only test results still passes if grade meets threshold.

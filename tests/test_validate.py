@@ -17,6 +17,7 @@ from src.validate import (
     save_qa_feedback,
     PLACEHOLDER_PATTERN,
 )
+from src.constants import GRADE_MAP, GRADE_THRESHOLD
 
 
 class TestExtractField(unittest.TestCase):
@@ -163,17 +164,40 @@ class TestValidateGate(unittest.TestCase):
         self.assertTrue(passed)
 
     def test_gate3_grade_b_plus(self):
-        # B+ meets the default B+ threshold
-        content = self.FULL_QA.replace("### Grade: A\n", "### Grade: B+\n")
+        # Grade equal to the configured threshold (whatever pipeline.yaml sets)
+        # must pass. Letter derived from GRADE_THRESHOLD so this test stays
+        # green when the project bumps the bar (e.g. B+ → A).
+        threshold_letter = next(
+            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+        )
+        content = self.FULL_QA.replace(
+            "### Grade: A\n", f"### Grade: {threshold_letter}\n"
+        )
         self.write("QA-REPORT.md", content)
         passed, _ = validate_gate(3, self.tmpdir)
-        self.assertTrue(passed)
+        self.assertTrue(
+            passed,
+            f"Grade {threshold_letter} should pass at threshold {threshold_letter}",
+        )
 
-    def test_gate3_grade_b_fails(self):
-        content = self.FULL_QA.replace("### Grade: A\n", "### Grade: B\n")
+    def test_gate3_grade_below_threshold_fails(self):
+        below_val = max(
+            (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
+        )
+        below_letter = next(
+            (k for k, v in GRADE_MAP.items() if v == below_val), None
+        )
+        if below_letter is None:
+            self.skipTest("No grade below threshold in GRADE_MAP")
+        content = self.FULL_QA.replace(
+            "### Grade: A\n", f"### Grade: {below_letter}\n"
+        )
         self.write("QA-REPORT.md", content)
         passed, _ = validate_gate(3, self.tmpdir)
-        self.assertFalse(passed)
+        self.assertFalse(
+            passed,
+            f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}",
+        )
 
     def test_gate3_unrecognized_grade(self):
         content = self.FULL_QA.replace("### Grade: A\n", "### Grade: A+\n")

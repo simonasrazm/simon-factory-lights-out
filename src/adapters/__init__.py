@@ -32,6 +32,10 @@ def _claude_code_usable():
         return False
     if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
         return True
+    # SDK can refresh OAuth tokens via the parent process (subscription auth).
+    # This is the normal path when spawned from Claude Desktop's Bash tool.
+    if os.environ.get("CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH") == "1":
+        return True
     api_key = os.environ.get("ANTHROPIC_API_KEY") or ""
     return api_key.startswith("sk-ant-")
 
