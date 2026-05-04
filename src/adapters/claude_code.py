@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .base import RuntimeAdapter
 from ..bindings import load_security_config
+from .._stderr import _safe_stderr
 
 # ---------------------------------------------------------------------------
 # Tool policy — driven by `tools:` field in bindings.yaml per role.
@@ -129,21 +130,21 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         resolved_tools = resolve_allowed_tools(tools_mode, allowed_tools)
 
         if sec["require_permission"]:
-            print(
+            _safe_stderr(
                 "  [security] require_permission=true — non-interactive runs "
-                "will hang on tool calls without an allow-list / prompt tool.",
-                file=sys.stderr,
+                "will hang on tool calls without an allow-list / prompt tool."
             )
 
         opts = dict(
             system_prompt=system_prompt,
             model=model,
-            allowed_tools=resolved_tools,
             permission_mode=(
                 "default" if sec["require_permission"] else "bypassPermissions"
             ),
             stderr=capture_stderr,
         )
+        if resolved_tools is not None:
+            opts["allowed_tools"] = resolved_tools
         if cwd is not None:
             opts["cwd"] = cwd
         # readonly mode opts out of MCP — scout-style recon stays Read/Glob/Grep only.
@@ -173,10 +174,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         # Settings isolation. all-mode wins over user-mode if both set.
         if sec["isolate_all_settings"]:
             opts["setting_sources"] = []
-            print(
+            _safe_stderr(
                 "  [security] isolate_all_settings=true — project settings "
-                "severed in spawned agents (interactive Stop hook only).",
-                file=sys.stderr,
+                "severed in spawned agents (interactive Stop hook only)."
             )
         elif sec["isolate_user_settings"]:
             opts["setting_sources"] = ["project", "local"]
@@ -208,17 +208,16 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                                     f"{s['name']}({len(s.get('tools', []))})"
                                     for s in servers
                                 )
-                                print(f"  [MCP ready: {info}]", file=sys.stderr)
+                                _safe_stderr(f"  [MCP ready: {info}]")
                             break
                         await asyncio.sleep(1)
                     else:
                         pending = [
                             s["name"] for s in servers if s.get("status") != "connected"
                         ]
-                        print(
+                        _safe_stderr(
                             f"  [MCP timeout {self.MCP_READY_TIMEOUT}s — "
-                            f"pending: {', '.join(pending)}]",
-                            file=sys.stderr,
+                            f"pending: {', '.join(pending)}]"
                         )
 
                 await client.query(user_prompt)
@@ -293,11 +292,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                                 # Emit live progress so the Mac UI can update
                                 # agent card tool counts mid-run (AC3).
                                 elapsed_now = _time.time() - start_time
-                                print(
+                                _safe_stderr(
                                     f"  [Agent metrics — role={role}, model={model}, "
                                     f"msgs={assistant_msgs}, tools={tool_calls}, "
-                                    f"elapsed={elapsed_now:.0f}s]",
-                                    file=sys.stderr,
+                                    f"elapsed={elapsed_now:.0f}s]"
                                 )
         except Exception as e:
             # Enrich known crash types with actionable guidance so the
@@ -314,21 +312,19 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     "pass format='jpeg' and quality=50 to take_screenshot."
                 )
             elapsed = _time.time() - start_time
-            print(
+            _safe_stderr(
                 f"  [Agent metrics at crash — role={role}, model={model}, "
                 f"msgs={assistant_msgs}, tools={tool_calls}, "
-                f"elapsed={elapsed:.0f}s]",
-                file=sys.stderr,
+                f"elapsed={elapsed:.0f}s]"
             )
             self._last_stderr = list(stderr_lines)
             if stderr_lines:
-                print(
+                _safe_stderr(
                     f"  [Agent stderr on crash — {len(stderr_lines)} lines, "
-                    f"role={role}, model={model}]",
-                    file=sys.stderr,
+                    f"role={role}, model={model}]"
                 )
                 for line in stderr_lines[-30:]:
-                    print(f"    {line.rstrip()}", file=sys.stderr)
+                    _safe_stderr(f"    {line.rstrip()}")
                 tail = "\n".join(line.rstrip() for line in stderr_lines[-20:])
                 raise RuntimeError(
                     f"{type(e).__name__}: {e}\n"
@@ -336,10 +332,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     f"{tail}"
                 ) from e
             else:
-                print(
+                _safe_stderr(
                     f"  [Agent crash with EMPTY stderr — role={role}, "
-                    f"model={model}, exception={type(e).__name__}: {e}]",
-                    file=sys.stderr,
+                    f"model={model}, exception={type(e).__name__}: {e}]"
                 )
             raise
         finally:
@@ -347,16 +342,15 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 shutil.rmtree(sandbox_dir, ignore_errors=True)
 
         elapsed = _time.time() - start_time
-        print(
+        _safe_stderr(
             f"  [Agent metrics — role={role}, model={model}, "
             f"msgs={assistant_msgs}, tools={tool_calls}, "
-            f"elapsed={elapsed:.0f}s]",
-            file=sys.stderr,
+            f"elapsed={elapsed:.0f}s]"
         )
 
         if stderr_lines:
-            print(f"  [Agent stderr: {len(stderr_lines)} lines]", file=sys.stderr)
+            _safe_stderr(f"  [Agent stderr: {len(stderr_lines)} lines]")
             for line in stderr_lines[-10:]:  # last 10 lines
-                print(f"    {line.rstrip()}", file=sys.stderr)
+                _safe_stderr(f"    {line.rstrip()}")
 
         return result_text

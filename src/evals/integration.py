@@ -21,6 +21,7 @@ from typing import Any
 
 from .base import EvalAbortError, EvalAction, EvalContext, HookSite
 from .registry import registered_evals_for_site
+from .._stderr import _safe_stderr
 
 
 async def call_adapter_with_evals(
@@ -98,15 +99,14 @@ async def call_adapter_with_evals(
                         f"severity={result.severity.value} "
                         f"{json.dumps(result.incident)}"
                     )
-                    print(f"  {_msg}", file=sys.stderr)
+                    _safe_stderr(f"  {_msg}")
         except EvalAbortError:
             raise  # propagate aborts to runner
         except Exception as exc:
             # Fail-safe: eval crash never blocks the pipeline
-            print(
+            _safe_stderr(
                 f"  [Eval] {eval_inst.name} crashed "
-                f"(pre_prompt — passing through original): {exc}",
-                file=sys.stderr,
+                f"(pre_prompt — passing through original): {exc}"
             )
 
     # ------------------------------------------------------------------ #
@@ -155,15 +155,14 @@ async def call_adapter_with_evals(
                         f"severity={result.severity.value} "
                         f"{json.dumps(result.incident)}"
                     )
-                    print(f"  {_msg}", file=sys.stderr)
+                    _safe_stderr(f"  {_msg}")
         except EvalAbortError:
             raise  # propagate aborts to runner
         except Exception as exc:
             # Fail-safe: eval crash never blocks the pipeline
-            print(
+            _safe_stderr(
                 f"  [Eval] {eval_inst.name} crashed "
-                f"(post_response — passing through original): {exc}",
-                file=sys.stderr,
+                f"(post_response — passing through original): {exc}"
             )
 
     return response

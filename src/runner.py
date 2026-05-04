@@ -38,6 +38,9 @@ import traceback
 _RE_MODULE_GUARD = re.compile(r"")
 
 
+from ._stderr import _safe_stderr  # noqa: E402 — must be early, before any stderr use
+
+
 # ---------------------------------------------------------------------------
 # Signal handler — log signal name + timestamp before exit so we know
 # what killed the process (SIGHUP from terminal close, SIGTERM from
@@ -284,7 +287,7 @@ def make_logger(sflo_dir, verbose=True):
         log_file.write(line + "\n")
         log_file.flush()
         if verbose:
-            print(msg, file=sys.stderr)
+            _safe_stderr(msg)
 
     log._file = log_file  # keep reference to close later
     log.close = _close_log
@@ -494,7 +497,7 @@ async def run_pipeline(
         _evals.load_evals_from_bindings(_Path(bindings_path))
     except Exception as _eval_load_err:
         # Non-fatal: warn but never block pipeline startup
-        print(f"  [evals] load warning: {_eval_load_err}", file=sys.stderr)
+        _safe_stderr(f"  [evals] load warning: {_eval_load_err}")
 
     os.makedirs(sflo_dir, exist_ok=True)
 
@@ -541,16 +544,14 @@ async def run_pipeline(
             project_root_state
         ) != os.path.abspath(prior_state_path):
             if verbose:
-                print(
-                    "  WARNING: state.json found at project root (should be in .sflo/)",
-                    file=sys.stderr,
+                _safe_stderr(
+                    "  WARNING: state.json found at project root (should be in .sflo/)"
                 )
             # Archive stale root-level state.json
             archive_to_logs(sflo_dir, [project_root_state])
             if verbose:
-                print(
-                    "  Archived stale state.json from project root to logs/",
-                    file=sys.stderr,
+                _safe_stderr(
+                    "  Archived stale state.json from project root to logs/"
                 )
 
     if os.path.isfile(prior_state_path):
@@ -563,9 +564,8 @@ async def run_pipeline(
             if file_age_days > STATE_MAX_AGE_DAYS:
                 # State too old — archive and start fresh
                 if verbose:
-                    print(
-                        f"  Stale state — state.json is {file_age_days:.1f} days old (max {STATE_MAX_AGE_DAYS}), archiving",
-                        file=sys.stderr,
+                    _safe_stderr(
+                        f"  Stale state — state.json is {file_age_days:.1f} days old (max {STATE_MAX_AGE_DAYS}), archiving"
                     )
                 _stale_names = [
                     "state.json",
@@ -610,10 +610,9 @@ async def run_pipeline(
                     _stale_paths = [os.path.join(sflo_dir, n) for n in _stale_names]
                     _archived = archive_to_logs(sflo_dir, _stale_paths)
                     if _archived and verbose:
-                        print(
+                        _safe_stderr(
                             f"  Stale state — prompt changed, archived to logs/: "
-                            f"{', '.join(_archived)}",
-                            file=sys.stderr,
+                            f"{', '.join(_archived)}"
                         )
                 elif all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
                     cached_assignments = prior_assignments
@@ -650,7 +649,7 @@ async def run_pipeline(
             if retries:
                 log_parts.append(f"retries={retries}")
             if verbose:
-                print(f"  Resuming: {', '.join(log_parts)}", file=sys.stderr)
+                _safe_stderr(f"  Resuming: {', '.join(log_parts)}")
     else:
         state = make_initial_state(roles)
         state["prompt"] = user_prompt

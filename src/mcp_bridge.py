@@ -27,6 +27,8 @@ import asyncio
 import os
 import sys
 
+from ._stderr import _safe_stderr
+
 
 class OllamaMCPBridge:
     """Bridge between ollama tool calls and MCP servers.
@@ -83,15 +85,13 @@ class OllamaMCPBridge:
         tools_result = await session.list_tools()
         for tool in tools_result.tools:
             self._tools[tool.name] = (name, tool)
-            print(
-                f"  [MCP Bridge] Registered tool: {tool.name} (from {name})",
-                file=sys.stderr,
+            _safe_stderr(
+                f"  [MCP Bridge] Registered tool: {tool.name} (from {name})"
             )
 
         self._sessions[name] = session
-        print(
-            f"  [MCP Bridge] Connected to {name}: {len(tools_result.tools)} tools",
-            file=sys.stderr,
+        _safe_stderr(
+            f"  [MCP Bridge] Connected to {name}: {len(tools_result.tools)} tools"
         )
 
     # No hardcoded tool hints — host project passes hints via constructor.
@@ -280,4 +280,4 @@ class OllamaMCPBridge:
                     pass
         self._sessions.clear()
         self._tools.clear()
-        print("  [MCP Bridge] Closed.", file=sys.stderr)
+        _safe_stderr("  [MCP Bridge] Closed.")
