@@ -1168,6 +1168,22 @@ async def run_pipeline(
 
     log(f"SFLO Pipeline — {user_prompt[:60]}")
 
+    # Surface resolved config so silent threshold drift becomes visible.
+    # Without this, when cwd ≠ project-with-pipeline.yaml, the runner
+    # silently falls back to the submodule's default threshold and the
+    # operator never knows their project pipeline.yaml was bypassed.
+    try:
+        from .config import resolve_pipeline_path
+        from .constants import GRADE_THRESHOLD, GRADE_MAP
+
+        _resolved = resolve_pipeline_path() or "<built-in defaults>"
+        _threshold_name = next(
+            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?"
+        )
+        log(f"  Pipeline config: {_resolved} (threshold={_threshold_name})")
+    except Exception as _cfg_log_err:
+        log(f"  Pipeline config: log failed — {_cfg_log_err}")
+
     # --- Chrome extension check (inform only, never block) ---
     if RuntimeAdapter._extra_cli_args.get("chrome") is not None:
         browser_ok, browser_msg = check_browser()

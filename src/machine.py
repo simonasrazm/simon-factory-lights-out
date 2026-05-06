@@ -912,14 +912,26 @@ def apply_transition(state, result, sflo_dir, gates=None):
         if n == inner_loop_gate:
             state["inner_loops"] += 1
             if state["inner_loops"] >= INNER_LOOP_MAX:
-                next_gate = _next_gate_after(n, gates=gates)
-                state["current_state"] = f"gate-{next_gate}"
+                # Inner loop exhausted — Dev<>QA failed to reach threshold
+                # INNER_LOOP_MAX times. Escalate instead of bypassing review.
+                gate_artifact = gate_info.get("artifact") or f"gate-{n}"
+                state["current_state"] = S_ESCALATE
+                state["escalate_reason"] = (
+                    f"Gate {n} ({gate_artifact}) below threshold for "
+                    f"{INNER_LOOP_MAX} Dev<>QA cycles. Escalating to human."
+                )
+                state["escalate_options"] = [
+                    f"raise the threshold via project pipeline.yaml and retry",
+                    f"fix {gate_artifact} manually and retry",
+                    f"delete {sflo_dir}/ and retry",
+                    "override threshold (not recommended)",
+                ]
                 write_state(sflo_dir, state)
                 return {
                     **result,
-                    "state": "loop-inner-exhausted",
-                    "action": "proceed",
-                    "note": f"Inner loop exhausted ({INNER_LOOP_MAX} Dev<>QA cycles). Proceeding to PM verification.",
+                    "state": "escalate",
+                    "action": "ask_human",
+                    "reason": state["escalate_reason"],
                     "inner_count": state["inner_loops"],
                     "next": compute_next(state, sflo_dir, gates=gates),
                 }

@@ -279,15 +279,24 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         self.assertIn("Verdict: REJECT", feedback)
 
     def test_qa_failure_exhausted(self):
-        self.write_state("check-3")
+        """When inner-loop QA failures hit INNER_LOOP_MAX, escalate to
+        human — do NOT bypass the gate by proceeding to PM verification.
+        Bypass would ship code that QA contractually rejected."""
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            3: {"artifact": "QA-REPORT.md", "role": "qa"},
+            4: {"artifact": "PM-VERIFY.md", "role": "pm"},
+            5: {"artifact": "SHIP-DECISION.md", "role": "sflo"},
+        }
+        self.write_state("check-3", inner=9)
         self.write_artifact(
             "QA-REPORT.md",
             "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
-        state["gate_retries"] = {"3": 9}
-        result = compute_next(state, self.sflo_dir)
-        result = apply_transition(state, result, self.sflo_dir)
+        result = compute_next(state, self.sflo_dir, gates=gates)
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
         self.assertEqual(
             result["action"],
             "ask_human",
@@ -298,6 +307,9 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
             "escalate",
             "exhausted QA retries must not bypass review",
         )
+        self.assertEqual(result["state"], "escalate")
+        self.assertIn("escalate_reason", state)
+        self.assertIn("escalate_options", state)
 
     def test_pm_rejection_loops_outer(self):
         self.write_state("check-4", inner=5, outer=1)
