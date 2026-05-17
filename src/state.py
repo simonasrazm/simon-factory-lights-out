@@ -93,15 +93,29 @@ def write_state(sflo_dir, state):
     os.replace(tmp, p)
 
 
-def make_initial_state(bindings):
+def make_initial_state(roles):
     return {
         "current_state": S_SCOUT,
-        "bindings": bindings,
+        "roles": roles,
         "assignments": {},
         "inner_loops": 0,
         "outer_loops": 0,
         "gates": {
-            str(g): {"status": "waiting", "artifact": info["artifact"]}
+            str(g): {
+                "status": "waiting",
+                "artifact": (
+                    info[0].get("artifact", f"gate-{g}") if info else f"gate-{g}"
+                )
+                if isinstance(info, list)
+                else info.get("artifact", f"gate-{g}"),
+                "parallel_artifacts": (
+                    [e.get("artifact", f"gate-{g}-{i}") for i, e in enumerate(info)]
+                    if info
+                    else []
+                )
+                if isinstance(info, list)
+                else None,
+            }
             for g, info in GATES.items()
         },
         "started_at": datetime.now(timezone.utc).isoformat(),

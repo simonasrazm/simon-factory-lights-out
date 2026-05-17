@@ -16,8 +16,8 @@ def format_prompt(action_dict):
 
     if action == "spawn_agent":
         agent = action_dict.get("agent", {})
-        role = agent.get("role", "unknown")
-        model = agent.get("model", "sonnet")
+        role = agent.get("role", "")
+        model = agent.get("model", "")
         path = agent.get("path", "")
         reads = agent.get("reads", [])
         produces = agent.get("produces", "")
@@ -47,6 +47,23 @@ def format_prompt(action_dict):
         )
         lines.append(
             f"After the agent finishes, run: {_python_cmd} sflo/src/scaffold.py next"
+        )
+        return "\n".join(lines)
+
+    if action == "spawn_parallel":
+        agents = action_dict.get("agents", [])
+        lines = ["SFLO PIPELINE — spawn parallel agents:"]
+        for agent in agents:
+            role = agent.get("role", "")
+            model = agent.get("model", "")
+            path = agent.get("path", "")
+            produces = agent.get("produces", "")
+            lines.append(f"  {role.upper()}: model={model}, path={path}")
+            if produces:
+                lines.append(f"    produces: {produces}")
+        lines.append("")
+        lines.append(
+            f"After all agents finish, run: {_python_cmd} sflo/src/scaffold.py next"
         )
         return "\n".join(lines)
 

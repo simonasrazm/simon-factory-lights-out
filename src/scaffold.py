@@ -5,7 +5,7 @@ The scaffold IS the pipeline authority. This file is the CLI interface;
 logic lives in separate modules (machine, validate, state, etc.).
 
 Usage:
-    python3 sflo/src/scaffold.py init [--bindings PATH] [--sflo-dir PATH]
+    python3 sflo/src/scaffold.py init [--sflo-dir PATH]
     python3 sflo/src/scaffold.py assign --pm PATH --dev PATH --qa PATH [--extra role=path ...]
     python3 sflo/src/scaffold.py next [--sflo-dir PATH]
     python3 sflo/src/scaffold.py prompt [--sflo-dir PATH]
@@ -20,8 +20,8 @@ import json
 # Allow running as script (python3 sflo/src/scaffold.py) or as module
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.constants import KNOWN_ROLES
-    from src.bindings import parse_bindings, resolve_bindings_path
+    from src.constants import KNOWN_ROLES, GATES as _SCAFFOLD_GATES
+    from src.config import derive_roles_from_pipeline
     from src.state import (
         acquire_lock,
         release_lock,
@@ -34,8 +34,8 @@ if __name__ == "__main__":
     from src.prompt import format_prompt
     from src.archive import archive_to_logs
 else:
-    from .constants import KNOWN_ROLES
-    from .bindings import parse_bindings, resolve_bindings_path
+    from .constants import KNOWN_ROLES, GATES as _SCAFFOLD_GATES
+    from .config import derive_roles_from_pipeline
     from .state import (
         acquire_lock,
         release_lock,
@@ -89,18 +89,10 @@ def parse_args(args, known_flags=None):
 
 
 def cmd_init(args):
-    """Initialize pipeline: parse bindings, create state."""
-    sflo_dir, flags, _ = parse_args(args, {"bindings"})
+    """Initialize pipeline: derive role config from pipeline.yaml."""
+    sflo_dir, flags, _ = parse_args(args)
 
-    path = resolve_bindings_path(flags.get("bindings"))
-    if not path:
-        output({"ok": False, "error": "bindings.yaml not found"})
-        return
-
-    roles, err = parse_bindings(path)
-    if err:
-        output({"ok": False, "error": err})
-        return
+    roles = derive_roles_from_pipeline()
 
     os.makedirs(sflo_dir, exist_ok=True)
     state = make_initial_state(roles)
@@ -109,7 +101,7 @@ def cmd_init(args):
     output(
         {
             "ok": True,
-            "bindings_path": path,
+            "source": "pipeline.yaml",
             "roles": roles,
             "sflo_dir": sflo_dir,
             "next": compute_next(state, sflo_dir),
@@ -131,9 +123,8 @@ def cmd_assign(args):
 
     # Derive the set of assignable role names from GATES constants plus the
     # canonical trio.  GATES keys are integers; role names come from gate
-    # artifact/role fields.  We accept any role that bindings.yaml can
-    # produce: pm, dev, qa, and any additional role in KNOWN_ROLES minus
-    # internal tokens (extra, sflo-dir).
+    # artifact/role fields in pipeline.yaml.  We accept pm, dev, qa, and
+    # any additional role in KNOWN_ROLES minus internal tokens.
     _INTERNAL_TOKENS = {"extra", "sflo-dir"}
     _ASSIGNABLE_ROLES = (KNOWN_ROLES - _INTERNAL_TOKENS) | {"pm", "dev", "qa"}
 
@@ -148,6 +139,10 @@ def cmd_assign(args):
             if role == "extra":
                 if "=" in path:
                     k, v = path.split("=", 1)
+                    ok, err = validate_agent_path(v)
+                    if not ok:
+                        output({"ok": False, "error": f"Extra '{k}': {err}"})
+                        return
                     extras[k] = v
             elif role in _ASSIGNABLE_ROLES:
                 ok, err = validate_agent_path(path)
@@ -176,8 +171,11 @@ def cmd_assign(args):
             return
 
         state["assignments"] = {**assignments, **extras}
-        state["current_state"] = "gate-1"
-        state["gates"]["1"]["status"] = "in_progress"
+        first_gate = min(_SCAFFOLD_GATES.keys()) if _SCAFFOLD_GATES else 1
+        first_gate_key = str(first_gate)
+        state["current_state"] = f"gate-{first_gate_key}"
+        if first_gate_key in state.get("gates", {}):
+            state["gates"][first_gate_key]["status"] = "in_progress"
         write_state(sflo_dir, state)
     finally:
         release_lock(sflo_dir, lock)
@@ -228,7 +226,8 @@ def cmd_status(args):
 
     gates_info = {}
     for g_str, g_info in state["gates"].items():
-        g_num = int(g_str)
+        g_num = float(g_str)
+        g_num = int(g_num) if g_num == int(g_num) else g_num
         artifact = g_info["artifact"]
         artifact_path = os.path.join(sflo_dir, artifact)
         exists = os.path.isfile(artifact_path)
@@ -238,11 +237,11 @@ def cmd_status(args):
         if exists:
             content, _ = read_artifact(sflo_dir, artifact)
             if content and g_num == 3:
-                entry["grade"] = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
+                entry["grade"] = extract_field(content, r"###?\s*Grade[: ]*(.+)")
             elif content and g_num == 4:
-                entry["verdict"] = extract_field(content, r"###?\s*Verdict[:\s]*(.+)")
+                entry["verdict"] = extract_field(content, r"###?\s*Verdict[: ]*(.+)")
             elif content and g_num == 5:
-                entry["decision"] = extract_field(content, r"###?\s*Decision[:\s]*(.+)")
+                entry["decision"] = extract_field(content, r"###?\s*Decision[: ]*(.+)")
 
         gates_info[g_str] = entry
 
@@ -285,18 +284,18 @@ def cmd_clean(args):
     known_files = {
         "state.json",
         "pipeline.log",
-        "SCOPE.md",
-        "BUILD-STATUS.md",
-        "QA-REPORT.md",
-        "PM-VERIFY.md",
-        "SHIP-DECISION.md",
-        "QA-FEEDBACK.md",
-        "PM-FEEDBACK.md",
-        "STST-REPORT.md",
-        "STST-FEEDBACK.md",
         "state.lock",
         ".last_hook_state",
+        "QA-FEEDBACK.md",
+        "PM-FEEDBACK.md",
     }
+    for _g, _ginfo in _SCAFFOLD_GATES.items():
+        if isinstance(_ginfo, list):
+            for _entry in _ginfo:
+                if _entry.get("artifact"):
+                    known_files.add(_entry["artifact"])
+        elif isinstance(_ginfo, dict) and _ginfo.get("artifact"):
+            known_files.add(_ginfo["artifact"])
     known_dirs = set()
 
     to_remove = []

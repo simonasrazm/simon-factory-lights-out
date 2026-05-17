@@ -32,7 +32,9 @@ class TestLockAcquireRelease:
         sflo_dir = str(tmp_path)
         fd = acquire_lock(sflo_dir)
         lock_path = os.path.join(sflo_dir, "state.lock")
-        assert os.path.exists(lock_path)
+        assert os.path.exists(lock_path), (
+            f"lock file should exist at {lock_path} after acquire"
+        )
         release_lock(sflo_dir, fd)
 
     def test_release_removes_lockfile(self, tmp_path):
@@ -40,7 +42,9 @@ class TestLockAcquireRelease:
         fd = acquire_lock(sflo_dir)
         release_lock(sflo_dir, fd)
         lock_path = os.path.join(sflo_dir, "state.lock")
-        assert not os.path.exists(lock_path)
+        assert not os.path.exists(lock_path), (
+            f"lock file should be removed after release at {lock_path}"
+        )
 
     def test_lock_prevents_concurrent_open(self, tmp_path):
         """While lock is held, the lock file exists and cannot be re-created."""
@@ -49,7 +53,9 @@ class TestLockAcquireRelease:
         try:
             lock_path = os.path.join(sflo_dir, "state.lock")
             # Lock file must exist
-            assert os.path.exists(lock_path)
+            assert os.path.exists(lock_path), (
+                f"lock file should exist while lock is held at {lock_path}"
+            )
             # Attempt to open with O_EXCL should fail
             with pytest.raises(FileExistsError):
                 os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -80,8 +86,12 @@ class TestLockedWriteState:
         _locked_write_state(sflo_dir, state)
 
         state2 = read_state(sflo_dir)
-        assert state2 is not None
-        assert state2["current_state"] == "scout"
+        assert state2 is not None, (
+            "read_state should return valid state after _locked_write_state"
+        )
+        assert state2["current_state"] == "scout", (
+            f"expected current_state 'scout', got {state2['current_state']!r}"
+        )
 
     def test_concurrent_writes_produce_valid_json(self, tmp_path):
         """Two threads writing state concurrently must not produce truncated JSON."""
@@ -111,7 +121,9 @@ class TestLockedWriteState:
         # Final state must be parseable JSON
         final = read_state(sflo_dir)
         assert final is not None, "state.json corrupted (not parseable)"
-        assert final["current_state"] in ("gate-1", "gate-2")
+        assert final["current_state"] in ("gate-1", "gate-2"), (
+            f"expected current_state in ('gate-1', 'gate-2'), got {final['current_state']!r}"
+        )
 
     def test_runner_uses_locked_write_not_bare(self):
         """Verify runner.py only calls write_state inside _locked_write_state."""
@@ -144,6 +156,6 @@ class TestLockedWriteState:
                     violations.append(f"line {lineno}: {line.rstrip()}")
 
         assert not violations, (
-            "runner.py calls bare write_state() outside _locked_write_state:\n"
-            + "\n".join(violations)
+            f"runner.py calls bare write_state() outside _locked_write_state "
+            f"({len(violations)} violation(s)):\n" + "\n".join(violations)
         )

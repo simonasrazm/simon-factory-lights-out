@@ -4,13 +4,8 @@ These tests verify that each toggle ACTUALLY changes the options handed to
 ClaudeAgentOptions / ClaudeSDKClient — not just that it parses (the parser
 is covered by test_bindings.py::TestLoadSecurityConfig).
 
-Mocking strategy:
-  - Patch ClaudeSDKClient with a dummy async context manager so no real
-    subprocess is spawned.
-  - Patch ClaudeAgentOptions to capture the kwargs it receives.
-  - Patch resolve_bindings_path to point at a tmp file we control.
-  - Run ClaudeCodeAdapter._run_agent in an event loop and inspect the
-    captured kwargs.
+Strategy: call build_sdk_options() directly with a security_config dict.
+Pure function — no SDK import, no async, no mocks needed.
 
 Coverage matrix:
   Toggle               default_off → expected option absence
@@ -29,129 +24,58 @@ Coverage matrix:
   require_permission  permission_mode == "default"
   wipe_sandbox        sandbox dir deleted in finally (when sibling on)
 
-Per-role artifact-delivery coverage (each of 6 SFLO pipeline roles):
-  scout, pm, dev, qa, sflo, interrogator — verify resolved tools list
+Per-role artifact-delivery coverage (each of 5 SFLO pipeline roles):
+  scout, pm, dev, qa, sflo — verify resolved tools list
   contains what the role's SOUL/runner needs to deliver its artifact
   with all toggles in their DEFAULT (off / permissive) state.
 """
 
-import asyncio
 import os
 import sys
 import unittest
-from unittest import mock
 
-SFLO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-sys.path.insert(0, SFLO_ROOT)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-
-# ---------------------------------------------------------------------------
-# Stub the claude_agent_sdk import so the adapter loads even without the
-# real SDK installed in the test env. We replace ClaudeSDKClient and
-# ClaudeAgentOptions per-test, but the module must exist at import time.
-# ---------------------------------------------------------------------------
-
-if "claude_agent_sdk" not in sys.modules:
-    _fake_sdk = mock.MagicMock()
-    sys.modules["claude_agent_sdk"] = _fake_sdk
+from src.adapters.claude_code import build_sdk_options, resolve_allowed_tools
 
 
 # ---------------------------------------------------------------------------
-# Test scaffolding
+# Test helpers
 # ---------------------------------------------------------------------------
 
 
-class _DummySDKClient:
-    """Async context manager that records every options kwarg it received
-    via ClaudeAgentOptions, then short-circuits the run so no real LLM
-    invocation happens. The receive_response() iterator yields nothing,
-    so _run_agent breaks out of its message loop immediately.
+def _security_config(**overrides):
+    """Return a security config dict matching load_security_config() defaults.
+
+    All toggles default to False (permissive). Pass keyword overrides to
+    flip individual toggles for the test.
     """
-
-    captured_options = None  # set when ClaudeAgentOptions is instantiated
-
-    def __init__(self, options):
-        # `options` is the ClaudeAgentOptions instance our mock captured
-        # below. Recording it here would lose the kwargs view, so we read
-        # back from the captured-options class attribute.
-        self._options = options
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def query(self, prompt):
-        return None
-
-    def receive_response(self):
-        async def _empty():
-            if False:
-                yield
-        return _empty()
-
-    async def get_mcp_status(self):
-        return {"mcpServers": []}
-
-    async def disconnect(self):
-        return None
+    cfg = {
+        "require_permission": False,
+        "isolate_user_settings": False,
+        "isolate_all_settings": False,
+        "no_session_persistence": False,
+        "sandbox_config_dir": False,
+        "wipe_sandbox": False,
+    }
+    cfg.update(overrides)
+    return cfg
 
 
-def _patch_sdk_classes():
-    """Returns (patches, captured_kwargs_list).
+def _build(sec=None, **kwargs):
+    """Shorthand: call build_sdk_options with sensible defaults.
 
-    captured_kwargs_list is mutated by the ClaudeAgentOptions side_effect
-    to hold one dict per call. _run_agent only calls it once per spawn.
+    Returns (opts_dict, sandbox_dir_or_None).
     """
-    captured = []
-
-    def _capture_options(**kwargs):
-        captured.append(kwargs)
-        # Return a SimpleNamespace-like object so attribute access works
-        # if the adapter introspects it (it doesn't currently, but defensive).
-        opts_obj = mock.MagicMock()
-        for k, v in kwargs.items():
-            setattr(opts_obj, k, v)
-        return opts_obj
-
-    sdk_mock = mock.patch(
-        "claude_agent_sdk.ClaudeSDKClient",
-        new=_DummySDKClient,
+    if sec is None:
+        sec = _security_config()
+    opts, sandbox_dir, _needs_mcp = build_sdk_options(
+        system_prompt=kwargs.pop("system_prompt", "test"),
+        model=kwargs.pop("model", "sonnet"),
+        security_config=sec,
+        **kwargs,
     )
-    opts_mock = mock.patch(
-        "claude_agent_sdk.ClaudeAgentOptions",
-        side_effect=_capture_options,
-    )
-    return [sdk_mock, opts_mock], captured
-
-
-def _write_bindings(tmp_path, security_block: str = ""):
-    """Write a minimal bindings.yaml with optional security: section.
-
-    Returns the absolute path. Pure helper.
-    """
-    p = os.path.join(tmp_path, "bindings.yaml")
-    body = "roles:\n  pm:\n    model: sonnet\n"
-    if security_block:
-        body += "\n" + security_block + "\n"
-    with open(p, "w") as f:
-        f.write(body)
-    return p
-
-
-def _run(adapter, **kwargs):
-    """Drive _run_agent to completion in an event loop. Returns nothing
-    interesting — the assertions are made on the captured options after.
-    """
-    asyncio.run(
-        adapter._run_agent(
-            model="sonnet",
-            system_prompt="test",
-            user_prompt="test",
-            **kwargs,
-        )
-    )
+    return opts, sandbox_dir
 
 
 # ---------------------------------------------------------------------------
@@ -160,79 +84,46 @@ def _run(adapter, **kwargs):
 
 
 class TestSecurityTogglesDefaultOff(unittest.TestCase):
-    """With no security: block in bindings.yaml, all 5 toggles must be off
-    and the SDK options must reflect the permissive default.
+    """With all security toggles at default (False), the SDK options must
+    reflect the permissive default — no isolation, no sandbox, bypass perms.
     """
 
-    def setUp(self):
-        from src.adapters.claude_code import ClaudeCodeAdapter
-        self.adapter = ClaudeCodeAdapter()
-
-    def _drive(self, tmp_path, security_block=""):
-        bindings_path = _write_bindings(str(tmp_path), security_block)
-        patches, captured = _patch_sdk_classes()
-        for p in patches:
-            p.start()
-        try:
-            with mock.patch(
-                "src.bindings.resolve_bindings_path",
-                return_value=bindings_path,
-            ):
-                _run(self.adapter, role="dev")
-        finally:
-            for p in patches:
-                p.stop()
-        return captured
-
     def test_default_permission_mode_bypasses(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            captured = self._drive(td)
-            self.assertEqual(len(captured), 1, "expected one spawn")
-            opts = captured[0]
-            self.assertEqual(
-                opts.get("permission_mode"),
-                "bypassPermissions",
-                "default toggle state must NOT prompt for permission",
-            )
+        opts, _ = _build()
+        self.assertEqual(
+            opts.get("permission_mode"),
+            "bypassPermissions",
+            "default toggle state must NOT prompt for permission",
+        )
 
     def test_default_no_setting_sources_isolation(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            captured = self._drive(td)
-            opts = captured[0]
-            # When isolate_settings is false the adapter must NOT pass
-            # setting_sources at all (lets SDK use its own default which
-            # loads project + user settings).
-            self.assertNotIn(
-                "setting_sources",
-                opts,
-                "default must let SDK load its normal settings sources",
-            )
+        opts, _ = _build()
+        # When isolate_settings is false the adapter must NOT pass
+        # setting_sources at all (lets SDK use its own default which
+        # loads project + user settings).
+        self.assertNotIn(
+            "setting_sources",
+            opts,
+            "default must let SDK load its normal settings sources",
+        )
 
     def test_default_no_session_persistence_flag(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            captured = self._drive(td)
-            opts = captured[0]
-            extra = opts.get("extra_args") or {}
-            self.assertNotIn(
-                "no-session-persistence",
-                extra,
-                "default must NOT block session persistence",
-            )
+        opts, _ = _build()
+        extra = opts.get("extra_args") or {}
+        self.assertNotIn(
+            "no-session-persistence",
+            extra,
+            "default must NOT block session persistence",
+        )
 
     def test_default_no_sandbox_env(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            captured = self._drive(td)
-            opts = captured[0]
-            env = opts.get("env") or {}
-            self.assertNotIn(
-                "CLAUDE_CONFIG_DIR",
-                env,
-                "default must NOT redirect CLAUDE_CONFIG_DIR",
-            )
+        opts, _ = _build()
+        env = opts.get("env") or {}
+        self.assertNotIn(
+            "CLAUDE_CONFIG_DIR",
+            env,
+            "default must NOT redirect CLAUDE_CONFIG_DIR",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -241,57 +132,55 @@ class TestSecurityTogglesDefaultOff(unittest.TestCase):
 
 
 class TestSecurityTogglesIndividualOn(unittest.TestCase):
-    def setUp(self):
-        from src.adapters.claude_code import ClaudeCodeAdapter
-        self.adapter = ClaudeCodeAdapter()
-
-    def _drive(self, tmp_path, sec_block):
-        bindings_path = _write_bindings(str(tmp_path), sec_block)
-        patches, captured = _patch_sdk_classes()
-        for p in patches:
-            p.start()
-        try:
-            with mock.patch(
-                "src.bindings.resolve_bindings_path",
-                return_value=bindings_path,
-            ):
-                _run(self.adapter, role="dev")
-        finally:
-            for p in patches:
-                p.stop()
-        return captured
-
     def test_isolate_all_settings_on_passes_empty_setting_sources(self):
-        import tempfile
-        sec = "security:\n  isolate_all_settings: true\n"
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            self.assertEqual(opts.get("setting_sources"), [])
+        sec = _security_config(isolate_all_settings=True)
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("setting_sources"),
+            [],
+            "isolate_all_settings=True must yield empty setting_sources",
+        )
 
     def test_no_session_persistence_on_adds_extra_arg(self):
-        import tempfile
-        sec = "security:\n  no_session_persistence: true\n"
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            extra = opts.get("extra_args") or {}
-            self.assertIn("no-session-persistence", extra)
+        sec = _security_config(no_session_persistence=True)
+        opts, _ = _build(sec)
+        extra = opts.get("extra_args") or {}
+        self.assertIn(
+            "no-session-persistence",
+            extra,
+            "no_session_persistence=True must add flag to extra_args",
+        )
 
     def test_sandbox_config_dir_on_redirects_env(self):
         import tempfile
-        sec = "security:\n  sandbox_config_dir: true\n"
+
+        sec = _security_config(sandbox_config_dir=True)
         with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
+            opts, sandbox_dir = _build(sec, cwd=td)
             env = opts.get("env") or {}
-            self.assertIn("CLAUDE_CONFIG_DIR", env)
+            self.assertIn(
+                "CLAUDE_CONFIG_DIR",
+                env,
+                "sandbox_config_dir=True must set CLAUDE_CONFIG_DIR in env",
+            )
             # Should point at a sandbox subdir, not user's real config
-            self.assertIn(".claude_sandbox", env["CLAUDE_CONFIG_DIR"])
+            self.assertIn(
+                ".claude_sandbox",
+                env["CLAUDE_CONFIG_DIR"],
+                "CLAUDE_CONFIG_DIR must point at .claude_sandbox subdir",
+            )
+            self.assertIsNotNone(
+                sandbox_dir, "sandbox_dir must be returned when sandbox_config_dir=True"
+            )
 
     def test_require_permission_on_uses_default_mode(self):
-        import tempfile
-        sec = "security:\n  require_permission: true\n"
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            self.assertEqual(opts.get("permission_mode"), "default")
+        sec = _security_config(require_permission=True)
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("permission_mode"),
+            "default",
+            "require_permission=True must set permission_mode to 'default'",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -305,57 +194,49 @@ class TestIsolateSettingsSplit(unittest.TestCase):
     isolate_all_settings (severe — kills everything).
     """
 
-    def _drive(self, tmp_path, sec_block):
-        bindings_path = _write_bindings(str(tmp_path), sec_block)
-        patches, captured = _patch_sdk_classes()
-        for p in patches:
-            p.start()
-        try:
-            with mock.patch(
-                "src.bindings.resolve_bindings_path",
-                return_value=bindings_path,
-            ):
-                from src.adapters.claude_code import ClaudeCodeAdapter
-                _run(ClaudeCodeAdapter(), role="dev")
-        finally:
-            for p in patches:
-                p.stop()
-        return captured
-
     def test_isolate_user_settings_keeps_project_alive(self):
         """isolate_user_settings → setting_sources=['project','local']."""
-        import tempfile
-        sec = "security:\n  isolate_user_settings: true\n"
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            self.assertEqual(opts.get("setting_sources"), ["project", "local"])
+        sec = _security_config(isolate_user_settings=True)
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("setting_sources"),
+            ["project", "local"],
+            "isolate_user_settings must keep project and local sources",
+        )
 
     def test_isolate_all_settings_severs_everything(self):
         """isolate_all_settings → setting_sources=[]."""
-        import tempfile
-        sec = "security:\n  isolate_all_settings: true\n"
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            self.assertEqual(opts.get("setting_sources"), [])
+        sec = _security_config(isolate_all_settings=True)
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("setting_sources"),
+            [],
+            "isolate_all_settings must yield empty setting_sources",
+        )
 
     def test_all_wins_over_user_when_both_set(self):
         """If a host sets both, the more restrictive wins."""
-        import tempfile
-        sec = ("security:\n"
-               "  isolate_user_settings: true\n"
-               "  isolate_all_settings: true\n")
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, sec)[0]
-            self.assertEqual(opts.get("setting_sources"), [])
+        sec = _security_config(
+            isolate_user_settings=True,
+            isolate_all_settings=True,
+        )
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("setting_sources"),
+            [],
+            "both isolation toggles set must resolve to empty (most restrictive)",
+        )
 
     def test_default_off_loads_everything(self):
         """No isolation toggles set → adapter doesn't pass setting_sources
         at all → SDK loads its normal default (project + user).
         """
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            opts = self._drive(td, "")[0]
-            self.assertNotIn("setting_sources", opts)
+        opts, _ = _build()
+        self.assertNotIn(
+            "setting_sources",
+            opts,
+            "no isolation toggles must omit setting_sources entirely",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -379,24 +260,17 @@ class TestPerRoleToolResolution(unittest.TestCase):
       qa           full      → writes QA-REPORT.md via Write, runs tests
                               via Bash
       sflo         full      → writes SHIP-DECISION.md via Write
-      interrogator readonly  → emits markdown via response text (runner
-                              captures + writes file). SOUL says
-                              "Do not use tools".
     """
 
-    def setUp(self):
-        from src.adapters.claude_code import resolve_allowed_tools
-        self.resolve = resolve_allowed_tools
-
     def test_scout_readonly_can_read_briefs(self):
-        tools = self.resolve("readonly", caller_supplied=None)
-        self.assertIn("Read", tools)
-        self.assertIn("Glob", tools)
+        tools = resolve_allowed_tools("readonly", caller_supplied=None)
+        self.assertIn("Read", tools, "scout readonly must include Read")
+        self.assertIn("Glob", tools, "scout readonly must include Glob")
         self.assertNotIn("Write", tools, "scout must NOT be able to Write")
         self.assertNotIn("Bash", tools, "scout must NOT be able to Bash")
 
     def test_pm_default_full_includes_write(self):
-        tools = self.resolve(None, caller_supplied=None)
+        tools = resolve_allowed_tools(None, caller_supplied=None)
         # tools_mode unset → full → None (means "all session tools")
         self.assertIsNone(
             tools,
@@ -404,10 +278,8 @@ class TestPerRoleToolResolution(unittest.TestCase):
         )
 
     def test_dev_default_full_includes_write_edit_bash(self):
-        tools = self.resolve(None, caller_supplied=None)
-        self.assertIsNone(
-            tools, "dev default = full → all session tools incl. Bash"
-        )
+        tools = resolve_allowed_tools(None, caller_supplied=None)
+        self.assertIsNone(tools, "dev default = full → all session tools incl. Bash")
 
     def test_qa_default_full_includes_write(self):
         """Regression test for the historical 'qa cannot write report' bug.
@@ -416,7 +288,7 @@ class TestPerRoleToolResolution(unittest.TestCase):
         (NO Write). QA-REPORT.md write call was blocked → no artifact.
         Post-refactor, tools_mode unset → full → None → all tools allowed.
         """
-        tools = self.resolve(None, caller_supplied=None)
+        tools = resolve_allowed_tools(None, caller_supplied=None)
         self.assertIsNone(
             tools,
             "qa default = full → must allow Write so QA-REPORT.md "
@@ -424,23 +296,17 @@ class TestPerRoleToolResolution(unittest.TestCase):
         )
 
     def test_sflo_default_full_includes_write(self):
-        tools = self.resolve(None, caller_supplied=None)
+        tools = resolve_allowed_tools(None, caller_supplied=None)
         self.assertIsNone(tools, "sflo default = full → can Write SHIP-DECISION.md")
-
-    def test_interrogator_readonly_no_write(self):
-        """Interrogator emits markdown via response stream; runner persists
-        it. Agent itself doesn't need Write — readonly is correct.
-        """
-        tools = self.resolve("readonly", caller_supplied=None)
-        self.assertNotIn(
-            "Write", tools,
-            "interrogator's SOUL says 'Do not use tools'; readonly correct",
-        )
 
     def test_caller_override_wins(self):
         """Runner can pass an explicit allowed_tools that overrides the mode."""
-        tools = self.resolve("readonly", caller_supplied=["Read", "WebFetch"])
-        self.assertEqual(tools, ["Read", "WebFetch"])
+        tools = resolve_allowed_tools("readonly", caller_supplied=["Read", "WebFetch"])
+        self.assertEqual(
+            tools,
+            ["Read", "WebFetch"],
+            "caller_supplied must override the tools_mode list",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -456,28 +322,79 @@ class TestRequirePermissionDeadlockRisk(unittest.TestCase):
     """
 
     def test_require_permission_sets_default_mode_no_safeguard(self):
+        sec = _security_config(require_permission=True)
+        opts, _ = _build(sec)
+        self.assertEqual(
+            opts.get("permission_mode"),
+            "default",
+            "require_permission=True must set permission_mode='default'",
+        )
+        # No paired allow-list / approval mechanism is set —
+        # documented risk that a real spawn will hang.
+
+
+# ---------------------------------------------------------------------------
+# MCP and extra_args pass-through
+# ---------------------------------------------------------------------------
+
+
+class TestMCPAndExtraArgs(unittest.TestCase):
+    """Verify MCP servers and extra CLI args are wired through build_sdk_options."""
+
+    def test_mcp_servers_passed_when_not_readonly(self):
+        sec = _security_config()
+        mcp = {"chrome-devtools": {"command": "npx", "args": []}}
+        opts, _ = _build(sec, mcp_servers=mcp, tools_mode="full")
+        self.assertEqual(
+            opts.get("mcp_servers"),
+            mcp,
+            "mcp_servers must pass through in full tools_mode",
+        )
+
+    def test_mcp_servers_excluded_in_readonly_mode(self):
+        sec = _security_config()
+        mcp = {"chrome-devtools": {"command": "npx", "args": []}}
+        opts, _ = _build(sec, mcp_servers=mcp, tools_mode="readonly")
+        self.assertNotIn(
+            "mcp_servers", opts, "mcp_servers must be excluded in readonly mode"
+        )
+
+    def test_extra_cli_args_passed_when_not_readonly(self):
+        sec = _security_config()
+        extra = {"verbose": None}
+        opts, _ = _build(sec, extra_cli_args=extra, tools_mode="full")
+        self.assertIn(
+            "verbose",
+            opts.get("extra_args", {}),
+            "extra_cli_args must pass through in full tools_mode",
+        )
+
+    def test_sandbox_dir_returned_when_sandbox_config_on(self):
         import tempfile
-        sec = "security:\n  require_permission: true\n"
+
+        sec = _security_config(sandbox_config_dir=True)
         with tempfile.TemporaryDirectory() as td:
-            from src.adapters.claude_code import ClaudeCodeAdapter
-            adapter = ClaudeCodeAdapter()
-            bindings_path = _write_bindings(td, sec)
-            patches, captured = _patch_sdk_classes()
-            for p in patches:
-                p.start()
-            try:
-                with mock.patch(
-                    "src.bindings.resolve_bindings_path",
-                    return_value=bindings_path,
-                ):
-                    _run(adapter, role="dev")
-            finally:
-                for p in patches:
-                    p.stop()
-            opts = captured[0]
-            self.assertEqual(opts.get("permission_mode"), "default")
-            # No paired allow-list / approval mechanism is set —
-            # documented risk that a real spawn will hang.
+            _, sandbox_dir = _build(sec, cwd=td)
+            self.assertIsNotNone(
+                sandbox_dir, "sandbox_dir must be returned when toggle is on"
+            )
+            self.assertTrue(sandbox_dir.exists(), "sandbox_dir path must exist on disk")
+
+    def test_no_sandbox_dir_when_toggle_off(self):
+        sec = _security_config()
+        _, sandbox_dir = _build(sec)
+        self.assertIsNone(sandbox_dir, "sandbox_dir must be None when toggle is off")
+
+    def test_mcp_defaults_append_system_prompt(self):
+        sec = _security_config()
+        mcp = {"test-server": {"command": "test"}}
+        defaults = {"test-server": {"system_prompt_append": "Use test-server for X."}}
+        opts, _ = _build(sec, mcp_servers=mcp, mcp_defaults=defaults, tools_mode="full")
+        self.assertIn(
+            "Use test-server for X.",
+            opts.get("system_prompt", ""),
+            "mcp_defaults system_prompt_append must be merged into system_prompt",
+        )
 
 
 if __name__ == "__main__":

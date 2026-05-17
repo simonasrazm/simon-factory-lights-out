@@ -10,6 +10,25 @@ from ..constants import SFLO_ROOT
 class RuntimeAdapter:
     """Base class — spawn an agent and return its response text."""
 
+    # --- Model alias resolution ---
+    # Subclasses override MODEL_ALIASES to map generic names (e.g. "sonnet")
+    # to vendor-specific model IDs. Unknown values pass through unchanged.
+    MODEL_ALIASES: dict = {}
+
+    @classmethod
+    def resolve_model(cls, model):
+        """Map generic alias to adapter-specific model ID.
+
+        Pipeline.yaml uses short names ("sonnet", "opus") for portability.
+        Each adapter translates to its vendor's expected format.
+        Unknown values pass through — power users can put raw vendor IDs
+        in pipeline.yaml and they work unchanged.
+        If model is falsy, returns it as-is — pipeline.yaml owns model config.
+        """
+        if not model:
+            return model
+        return cls.MODEL_ALIASES.get(model.lower(), model)
+
     # MCP server configs — shared across all adapters via configure_mcp().
     # Each adapter subclass honors what it can.
     _mcp_servers = None
@@ -50,7 +69,7 @@ class RuntimeAdapter:
         """Load MCP defaults from mcp-defaults.json.
 
         Resolution: cwd → cwd/sflo → SFLO_PARENT → SFLO_ROOT.
-        Same walk-up pattern as bindings.yaml.
+        Same walk-up pattern as pipeline.yaml.
         """
         if cls._mcp_defaults is not None:
             return cls._mcp_defaults

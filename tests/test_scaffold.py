@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from conftest import run_scaffold, BINDINGS_YAML, PASSING_ARTIFACTS
+from conftest import run_scaffold, PASSING_ARTIFACTS
 
 
 class TestInitCommand(unittest.TestCase):
@@ -22,45 +22,35 @@ class TestInitCommand(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
-    def write_bindings(self, content):
-        path = os.path.join(self.tmpdir, "bindings.yaml")
-        with open(path, "w") as f:
-            f.write(content)
-        return path
-
     def test_init_creates_state(self):
-        path = self.write_bindings(BINDINGS_YAML)
-        result = run_scaffold("init", "--bindings", path, "--sflo-dir", self.sflo_dir)
+        result = run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         self.assertTrue(result["ok"])
         with open(os.path.join(self.sflo_dir, "state.json")) as f:
             state = json.load(f)
         self.assertEqual(state["current_state"], "scout")
 
     def test_init_returns_roles(self):
-        path = self.write_bindings(BINDINGS_YAML)
-        result = run_scaffold("init", "--bindings", path, "--sflo-dir", self.sflo_dir)
-        self.assertEqual(result["roles"]["pm"]["model"], "opus")
-        self.assertEqual(result["roles"]["dev"]["model"], "sonnet")
+        result = run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
+        # Roles derived from pipeline.yaml — check structure, not specific values
+        self.assertIn("roles", result)
+        self.assertIsInstance(result["roles"], dict)
 
-    def test_init_missing_bindings(self):
+    def test_init_derives_from_pipeline(self):
+        """Init derives roles from pipeline.yaml (bindings.yaml no longer used)."""
         result = run_scaffold(
             "init",
-            "--bindings",
-            "/nonexistent.yaml",
             "--sflo-dir",
             self.sflo_dir,
             cwd=self.tmpdir,
         )
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["source"], "pipeline.yaml")
 
 
 class TestAssignCommand(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.sflo_dir = os.path.join(self.tmpdir, ".sflo")
-        path = os.path.join(self.tmpdir, "bindings.yaml")
-        with open(path, "w") as f:
-            f.write(BINDINGS_YAML)
         run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
 
     def tearDown(self):
@@ -121,12 +111,7 @@ class TestNextCommand(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.sflo_dir = os.path.join(self.tmpdir, ".sflo")
         os.makedirs(os.path.join(self.tmpdir, "gates"), exist_ok=True)
-        path = os.path.join(self.tmpdir, "bindings.yaml")
-        with open(path, "w") as f:
-            f.write(BINDINGS_YAML)
-        run_scaffold(
-            "init", "--bindings", path, "--sflo-dir", self.sflo_dir, cwd=self.tmpdir
-        )
+        run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         run_scaffold(
             "assign",
             "--pm",
@@ -149,11 +134,30 @@ class TestNextCommand(unittest.TestCase):
 
     def test_full_pipeline_traversal(self):
         """Walk through all 5 gates via next, verify pipeline completes."""
-        for name, content in PASSING_ARTIFACTS.items():
-            self.artifact(name, content)
+        # Group artifacts by gate — parallel gates need all artifacts present
+        # before calling next (e.g. gate 3 = QA-REPORT.md + SECURITY-REPORT.md)
+        from src.constants import GATES
+
+        gate_artifacts = {}
+        for g, info in sorted(GATES.items()):
+            if isinstance(info, list):
+                for entry in info:
+                    a = entry.get("artifact")
+                    if a and a in PASSING_ARTIFACTS:
+                        gate_artifacts.setdefault(g, []).append(a)
+            else:
+                a = info.get("artifact")
+                if a and a in PASSING_ARTIFACTS:
+                    gate_artifacts.setdefault(g, []).append(a)
+
+        for g in sorted(gate_artifacts.keys()):
+            for name in gate_artifacts[g]:
+                self.artifact(name, PASSING_ARTIFACTS[name])
             result = run_scaffold("next", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
-            self.assertTrue(result["ok"])
-            self.assertTrue(result["pass"])
+            self.assertTrue(result["ok"], f"Gate {g} next failed: {result}")
+            self.assertTrue(
+                result.get("pass", False), f"Gate {g} validation failed: {result}"
+            )
 
         # Final state should be done
         with open(os.path.join(self.sflo_dir, "state.json")) as f:
@@ -173,7 +177,7 @@ class TestStatusCommand(unittest.TestCase):
     def test_status_shows_grades(self):
         state = {
             "current_state": "done",
-            "bindings": {},
+            "roles": {},
             "assignments": {},
             "inner_loops": 0,
             "outer_loops": 0,
@@ -211,12 +215,7 @@ class TestPromptCommand(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.sflo_dir = os.path.join(self.tmpdir, ".sflo")
         os.makedirs(os.path.join(self.tmpdir, "gates"), exist_ok=True)
-        path = os.path.join(self.tmpdir, "bindings.yaml")
-        with open(path, "w") as f:
-            f.write(BINDINGS_YAML)
-        run_scaffold(
-            "init", "--bindings", path, "--sflo-dir", self.sflo_dir, cwd=self.tmpdir
-        )
+        run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         run_scaffold(
             "assign",
             "--pm",

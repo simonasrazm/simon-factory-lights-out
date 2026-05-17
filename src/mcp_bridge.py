@@ -25,7 +25,6 @@ Usage:
 
 import asyncio
 import os
-import sys
 
 from ._stderr import _safe_stderr
 

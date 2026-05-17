@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from conftest import run_scaffold, run_hook, BINDINGS_YAML, PASSING_ARTIFACTS
+from conftest import run_scaffold, run_hook, PASSING_ARTIFACTS
 
 
 class TestHookDecisions(unittest.TestCase):
@@ -26,7 +26,7 @@ class TestHookDecisions(unittest.TestCase):
     def write_state(self, current):
         state = {
             "current_state": current,
-            "bindings": {
+            "roles": {
                 "pm": {"model": "opus"},
                 "dev": {"model": "sonnet"},
                 "qa": {"model": "sonnet"},
@@ -92,12 +92,7 @@ class TestHookPipelineTraversal(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         self.sflo_dir = os.path.join(self.tmpdir, ".sflo")
         os.makedirs(os.path.join(self.tmpdir, "gates"), exist_ok=True)
-        bindings = os.path.join(self.tmpdir, "bindings.yaml")
-        with open(bindings, "w") as f:
-            f.write(BINDINGS_YAML)
-        run_scaffold(
-            "init", "--bindings", bindings, "--sflo-dir", self.sflo_dir, cwd=self.tmpdir
-        )
+        run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         run_scaffold(
             "assign",
             "--pm",
@@ -126,20 +121,28 @@ class TestHookPipelineTraversal(unittest.TestCase):
 
     def test_full_traversal(self):
         """Prompt returns correct agent for each gate in sequence."""
+        from src.constants import GATES
+
         gate_sequence = {
-            "gate-1": ("SCOPE.md", "PM"),
-            "gate-2": ("BUILD-STATUS.md", "DEV"),
-            "gate-3": ("QA-REPORT.md", "QA"),
-            "gate-4": ("PM-VERIFY.md", "PM-VERIFY"),
-            "gate-5": ("SHIP-DECISION.md", "SHIP-DECISION"),
+            "gate-1": (["SCOPE.md"], "PM"),
+            "gate-2": (["BUILD-STATUS.md"], "DEV"),
+            "gate-3": (
+                [e["artifact"] for e in GATES[3]]
+                if isinstance(GATES[3], list)
+                else [GATES[3]["artifact"]],
+                "QA",
+            ),
+            "gate-4": (["PM-VERIFY.md"], "PM-VERIFY"),
+            "gate-5": (["SHIP-DECISION.md"], "SHIP-DECISION"),
         }
-        for gate, (artifact_name, expected_keyword) in gate_sequence.items():
+        for gate, (artifact_names, expected_keyword) in gate_sequence.items():
             r = self.prompt()
             self.assertTrue(r["ok"], f"Prompt failed at {gate}")
             self.assertIn(
                 expected_keyword, r["prompt"], f"Missing {expected_keyword} at {gate}"
             )
-            self.artifact(artifact_name, PASSING_ARTIFACTS[artifact_name])
+            for name in artifact_names:
+                self.artifact(name, PASSING_ARTIFACTS[name])
             self.advance()
 
         # Final prompt should indicate terminal
@@ -148,11 +151,19 @@ class TestHookPipelineTraversal(unittest.TestCase):
 
     def test_loop_back_prompts_dev(self):
         """After QA failure, prompt should re-target DEV."""
+        from src.constants import GATES
+
         self.artifact("SCOPE.md", PASSING_ARTIFACTS["SCOPE.md"])
         self.advance()
         self.artifact("BUILD-STATUS.md", PASSING_ARTIFACTS["BUILD-STATUS.md"])
         self.advance()
+        # Write failing QA report + passing security report for parallel gate 3
         self.artifact("QA-REPORT.md", "### Grade: F\n### Issues Found\n1. CRITICAL\n")
+        if isinstance(GATES.get(3), list):
+            for entry in GATES[3]:
+                a = entry.get("artifact")
+                if a and a != "QA-REPORT.md" and a in PASSING_ARTIFACTS:
+                    self.artifact(a, PASSING_ARTIFACTS[a])
         result = self.advance()
         self.assertEqual(result["state"], "loop-inner")
 

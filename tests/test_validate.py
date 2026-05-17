@@ -17,7 +17,27 @@ from src.validate import (
     save_qa_feedback,
     PLACEHOLDER_PATTERN,
 )
-from src.constants import GRADE_MAP, GRADE_THRESHOLD
+from src.constants import GRADE_MAP, GRADE_THRESHOLD, GATES
+
+
+def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
+    """Write minimal passing artifacts for all entries in a list gate except skip_artifact."""
+    from tests.conftest import PASSING_ARTIFACTS
+
+    info = GATES.get(gate_num)
+    if not isinstance(info, list):
+        return
+    for entry in info:
+        artifact = entry.get("artifact")
+        if not artifact or artifact == skip_artifact:
+            continue
+        path = os.path.join(tmpdir, artifact)
+        if not os.path.isfile(path):
+            content = PASSING_ARTIFACTS.get(
+                artifact, f"# {artifact}\n\nMinimal content.\n### Grade: A\n"
+            )
+            with open(path, "w") as f:
+                f.write(content)
 
 
 class TestExtractField(unittest.TestCase):
@@ -160,13 +180,11 @@ class TestValidateGate(unittest.TestCase):
     # Gate 3
     def test_gate3_grade_a(self):
         self.write("QA-REPORT.md", self.FULL_QA)
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, _ = validate_gate(3, self.tmpdir)
         self.assertTrue(passed)
 
     def test_gate3_grade_b_plus(self):
-        # Grade equal to the configured threshold (whatever pipeline.yaml sets)
-        # must pass. Letter derived from GRADE_THRESHOLD so this test stays
-        # green when the project bumps the bar (e.g. B+ → A).
         threshold_letter = next(
             (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
         )
@@ -174,6 +192,7 @@ class TestValidateGate(unittest.TestCase):
             "### Grade: A\n", f"### Grade: {threshold_letter}\n"
         )
         self.write("QA-REPORT.md", content)
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, _ = validate_gate(3, self.tmpdir)
         self.assertTrue(
             passed,
@@ -184,15 +203,12 @@ class TestValidateGate(unittest.TestCase):
         below_val = max(
             (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
         )
-        below_letter = next(
-            (k for k, v in GRADE_MAP.items() if v == below_val), None
-        )
+        below_letter = next((k for k, v in GRADE_MAP.items() if v == below_val), None)
         if below_letter is None:
             self.skipTest("No grade below threshold in GRADE_MAP")
-        content = self.FULL_QA.replace(
-            "### Grade: A\n", f"### Grade: {below_letter}\n"
-        )
+        content = self.FULL_QA.replace("### Grade: A\n", f"### Grade: {below_letter}\n")
         self.write("QA-REPORT.md", content)
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, _ = validate_gate(3, self.tmpdir)
         self.assertFalse(
             passed,
@@ -202,6 +218,7 @@ class TestValidateGate(unittest.TestCase):
     def test_gate3_unrecognized_grade(self):
         content = self.FULL_QA.replace("### Grade: A\n", "### Grade: A+\n")
         self.write("QA-REPORT.md", content)
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed)
         grade_check = next(c for c in checks if c["name"] == "grade_recognized")
@@ -209,6 +226,7 @@ class TestValidateGate(unittest.TestCase):
 
     def test_gate3_auto_fail_mock_data(self):
         self.write("QA-REPORT.md", self.FULL_QA + "### Issues Found\nUses mock data\n")
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed)
 
@@ -262,6 +280,66 @@ class TestValidateGate(unittest.TestCase):
         self.assertFalse(passed)
         decision_check = next(c for c in checks if c["name"] == "decision_present")
         self.assertFalse(decision_check["pass"])
+
+
+class TestSecurityValidator(unittest.TestCase):
+    """Tests for _validate_security_content — M3 bug regression."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def write(self, name, content):
+        with open(os.path.join(self.tmpdir, name), "w") as f:
+            f.write(content)
+
+    def _full_security(self, grade="A"):
+        return (
+            f"## Security Audit\n"
+            f"- Critical: 0\n- High: 0\n"
+            f"### Findings\n| # | Severity | Finding |\n| 1 | Low | Minor |\n"
+            f"### Grade: {grade}\n"
+        )
+
+    def test_security_grade_a_passes(self):
+        self.write("SECURITY-REPORT.md", self._full_security("A"))
+        self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
+        passed, _ = validate_gate(3, self.tmpdir)
+        self.assertTrue(passed)
+
+    def test_security_grade_b_fails(self):
+        self.write("SECURITY-REPORT.md", self._full_security("B"))
+        self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
+        passed, checks = validate_gate(3, self.tmpdir)
+        self.assertFalse(passed)
+        # Verify security grade_sufficient check is the failing one
+        sec_grade = [
+            c for c in checks if c["name"] == "grade_sufficient" and not c["pass"]
+        ]
+        self.assertTrue(len(sec_grade) > 0)
+
+    def test_security_no_grade_fails(self):
+        """M3 regression: security report without grade must FAIL validation."""
+        self.write(
+            "SECURITY-REPORT.md",
+            "## Security Audit\n- Critical: 0\n### Findings\n| None |\n",
+        )
+        self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
+        passed, checks = validate_gate(3, self.tmpdir)
+        self.assertFalse(passed, "Security report with no grade must fail")
+
+    def test_security_critical_findings_fails(self):
+        self.write(
+            "SECURITY-REPORT.md",
+            "## Security Audit\n- Critical: 2\n### Grade: A\n",
+        )
+        self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
+        passed, checks = validate_gate(3, self.tmpdir)
+        self.assertFalse(passed)
+        critical_check = next(c for c in checks if c["name"] == "no_critical_findings")
+        self.assertFalse(critical_check["pass"])
 
 
 class TestQAFeedback(unittest.TestCase):
@@ -320,10 +398,76 @@ class TestQAFeedback(unittest.TestCase):
         feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
         with open(feedback_path) as f:
             content = f.read()
-        self.assertIn("QA Round 1", content)
+        self.assertIn(
+            "QA Round 1", content, "expected QA Round 1 in accumulated feedback"
+        )
         self.assertIn("Bug 1", content)
         self.assertIn("QA Round 2", content)
         self.assertIn("Bug 2", content)
+
+
+class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
+    """Integration: save_qa_feedback must include findings from ALL parallel agents."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def write(self, name, content):
+        with open(os.path.join(self.tmpdir, name), "w") as f:
+            f.write(content)
+
+    def test_security_findings_in_feedback(self):
+        """SECURITY-REPORT.md findings appear in QA-FEEDBACK.md."""
+        self.write(
+            "SECURITY-REPORT.md",
+            "# Security Report\n\n"
+            "- Critical: 1\n- High: 0\n"
+            "### Findings\nXSS in form input.\n"
+            "### Grade: C\n",
+        )
+        self.write(
+            "QA-REPORT.md",
+            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | PASS |\n"
+            "### Grade: B\n"
+            "### Stranger Test\nYes.\n",
+        )
+        save_qa_feedback(self.tmpdir)
+        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
+        self.assertTrue(os.path.isfile(feedback_path))
+        with open(feedback_path) as f:
+            content = f.read()
+        self.assertIn("XSS in form input", content, "Security findings must reach dev")
+        self.assertIn("Security Grade: C", content, "Security grade must be included")
+
+    def test_qa_and_security_both_in_feedback(self):
+        """Both QA and security feedback appear in same QA-FEEDBACK.md."""
+        self.write(
+            "SECURITY-REPORT.md",
+            "# Security Report\n\n"
+            "- Critical: 0\n- High: 1\n"
+            "### Findings\nCSRF missing on POST endpoint.\n"
+            "### Grade: B\n",
+        )
+        self.write(
+            "QA-REPORT.md",
+            "### Test Results\n| Test | Result |\n|------|--------|\n| Core | FAIL |\n"
+            "### Grade: C\n"
+            "### Issues\nButton misaligned on mobile.\n"
+            "### Stranger Test\nNo.\n",
+        )
+        save_qa_feedback(self.tmpdir)
+        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
+        with open(feedback_path) as f:
+            content = f.read()
+        # Both agents' findings present
+        self.assertIn("CSRF missing", content)
+        self.assertIn("Button misaligned", content)
+        # Both grades present
+        self.assertIn("QA Grade: C", content)
+        self.assertIn("Security Grade: B", content)
 
 
 class TestValidateAgentPath(unittest.TestCase):

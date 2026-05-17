@@ -2,31 +2,94 @@
 # Override by placing pipeline.yaml in your project root (cwd).
 # The scaffold loads cwd/pipeline.yaml first, falls back to this file.
 
-threshold: B+
+threshold: A
 
 gates:
   1:
     artifact: SCOPE.md
     role: pm
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
+    skills:
+      - spec-driven-development
+      - debugging-and-error-recovery
     gate_doc: gates/discovery.md
   2:
     artifact: BUILD-STATUS.md
     role: dev
+    agent: agents/dev
+    model: sonnet
+    thinking: adaptive
+    effort: low
+    skills:
+      - test-driven-development
+      - frontend-ui-engineering
+      - api-and-interface-design
+      - source-driven-development
     gate_doc: gates/build.md
   # Insert custom float-keyed gates (e.g. 2.5 for static analysis, 3.5 for
   # security audit) by extending this map in your project's pipeline.yaml.
-  # The runner's `run_stst_gate` action handles non-LLM CLI gates when role
-  # == "stst" — see src/runner.py for the integration shape; the gate_doc
-  # and CLI tool are host-provided.
+  # Use `runner:` to point at a custom Python module (must expose run_gate()
+  # or run()), and `validator:` for a custom validation script. See
+  # src/runner.py _load_custom_runner() for the integration contract.
   3:
-    artifact: QA-REPORT.md
-    role: qa
-    gate_doc: gates/test.md
+    - artifact: QA-REPORT.md
+      role: qa
+      agents:
+        - agents/qa-w-agent-skills
+        - vendor/agent-skills/agents/code-reviewer
+      model: sonnet
+      thinking: adaptive
+      effort: max
+      threshold: A
+      skills:
+        - code-review-and-quality
+        - performance-optimization
+      gate_doc: gates/test.md
+    - artifact: SECURITY-REPORT.md
+      role: security
+      agent: agents/security
+      model: claude-opus-4-6
+      thinking: adaptive
+      effort: max
+      threshold: A
+      gate_doc: gates/security-review.md
   4:
     artifact: PM-VERIFY.md
-    role: pm
+    role: pm-verify
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
     gate_doc: gates/verify.md
   5:
     artifact: SHIP-DECISION.md
     role: sflo
     gate_doc: gates/ship.md
+
+# Scout configuration
+scout:
+  agent: agents/scout
+  model: sonnet
+  thinking: adaptive
+  effort: medium
+  tools: readonly
+
+# SFLO orchestrator
+sflo:
+  model: claude-opus-4-6
+  thinking: adaptive
+  effort: max
+
+# Scout filtering (optional)
+# exclude_agents: pm-website, foo
+# exclude_agent_dirs: vendor/agents
+
+# Security toggles (optional, all default false)
+# security:
+#   isolate_user_settings: false
+#   isolate_all_settings: false
+#   no_session_persistence: false
+#   sandbox_config_dir: false
+#   require_permission: false
+#   wipe_sandbox: false

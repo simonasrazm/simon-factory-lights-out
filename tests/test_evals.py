@@ -100,9 +100,13 @@ def test_tc1_default_methods_pass():
         "pre_artifact",
     ):
         result = run(getattr(inst, method_name)(ctx))
-        assert isinstance(result, EvalResult)
-        assert result.triggered is False
-        assert result.action == EvalAction.PASS
+        assert isinstance(result, EvalResult), (
+            f"{method_name} should return EvalResult, got {type(result).__name__}"
+        )
+        assert result.triggered is False, f"{method_name} default should not trigger"
+        assert result.action == EvalAction.PASS, (
+            f"{method_name} default should return PASS, got {result.action}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -117,14 +121,16 @@ def test_tc2_empty_evals_section(tmp_path):
     bindings = tmp_path / "bindings.yaml"
     bindings.write_text("roles:\n  dev:\n    model: sonnet\n")
     result = load_evals_from_bindings(bindings)
-    assert result == []
-    assert len(_LOADED_EVALS) == 0
+    assert result == [], f"no evals key should yield empty list, got {result}"
+    assert len(_LOADED_EVALS) == 0, (
+        f"registry should be empty, got {len(_LOADED_EVALS)} entries"
+    )
 
     # Explicit empty list
     clear_registry()
     bindings.write_text("evals: []\n")
     result = load_evals_from_bindings(bindings)
-    assert result == []
+    assert result == [], f"explicit empty evals should yield empty list, got {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -178,8 +184,12 @@ def test_tc3_one_plugin_loaded(tmp_path):
         assert len(result) == 1, (
             f"Expected 1 plugin, got {len(result)}; warnings: {[str(x.message) for x in w]}"
         )
-        assert result[0].name == "my_eval"  # type: ignore[attr-defined]
-        assert len(_LOADED_EVALS) == 1
+        assert result[0].name == "my_eval", (
+            f"plugin name should be 'my_eval', got {result[0].name!r}"
+        )  # type: ignore[attr-defined]
+        assert len(_LOADED_EVALS) == 1, (
+            f"registry should have 1 entry, got {len(_LOADED_EVALS)}"
+        )
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -206,12 +216,12 @@ def test_tc4_bad_module(tmp_path):
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         result = load_evals_from_bindings(bindings)
-    assert result == []
+    assert result == [], f"bad module should yield empty result, got {result}"
     assert any(
         "cannot import" in str(warning.message).lower()
         or "nonexistent" in str(warning.message)
         for warning in w
-    )
+    ), f"should warn about bad import, warnings: {[str(x.message) for x in w]}"
     clear_registry()
 
 
@@ -245,12 +255,12 @@ def test_tc5_bad_class_name(tmp_path):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = load_evals_from_bindings(bindings)
-        assert result == []
+        assert result == [], f"bad class should yield empty result, got {result}"
         assert any(
             "not found" in str(warning.message).lower()
             or "NonExistentClass" in str(warning.message)
             for warning in w
-        )
+        ), f"should warn about missing class, warnings: {[str(x.message) for x in w]}"
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -319,9 +329,11 @@ def test_tc6_priority_sort(tmp_path):
             f"    priority: 50\n"
         )
         result = load_evals_from_bindings(bindings)
-        assert len(result) == 3
+        assert len(result) == 3, f"expected 3 evals loaded, got {len(result)}"
         names = [e.name for e in result]  # type: ignore[attr-defined]
-        assert names == ["high_pri", "mid_pri", "low_pri"]
+        assert names == ["high_pri", "mid_pri", "low_pri"], (
+            f"evals should be sorted by priority, got {names}"
+        )
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -374,15 +386,21 @@ def test_tc7_match_roles_filter(tmp_path):
 
         # dev role — should see eval
         dev_evals = registered_evals_for_site(HookSite.POST_RESPONSE, role="dev")
-        assert len(dev_evals) == 1
+        assert len(dev_evals) == 1, (
+            f"dev should match role filter, got {len(dev_evals)} evals"
+        )
 
         # pm role — should NOT see eval
         pm_evals = registered_evals_for_site(HookSite.POST_RESPONSE, role="pm")
-        assert len(pm_evals) == 0
+        assert len(pm_evals) == 0, (
+            f"pm should be excluded by role filter, got {len(pm_evals)} evals"
+        )
 
         # No role specified — should see eval (role filter not applied)
         any_evals = registered_evals_for_site(HookSite.POST_RESPONSE)
-        assert len(any_evals) == 1
+        assert len(any_evals) == 1, (
+            f"no role filter should include all evals, got {len(any_evals)}"
+        )
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -435,15 +453,21 @@ def test_tc8_match_gates_filter(tmp_path):
 
         # Gate 2 — should match
         g2_evals = registered_evals_for_site(HookSite.POST_RESPONSE, gate=2)
-        assert len(g2_evals) == 1
+        assert len(g2_evals) == 1, (
+            f"gate 2 should match filter, got {len(g2_evals)} evals"
+        )
 
         # Gate 1 — should NOT match
         g1_evals = registered_evals_for_site(HookSite.POST_RESPONSE, gate=1)
-        assert len(g1_evals) == 0
+        assert len(g1_evals) == 0, (
+            f"gate 1 should be excluded by filter, got {len(g1_evals)} evals"
+        )
 
         # No gate specified — should see eval (gate filter not applied)
         all_evals = registered_evals_for_site(HookSite.POST_RESPONSE)
-        assert len(all_evals) == 1
+        assert len(all_evals) == 1, (
+            f"no gate filter should include all evals, got {len(all_evals)}"
+        )
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -470,23 +494,33 @@ def test_tc9_decorator():
             triggered=True, severity=EvalSeverity.WARN, category=EvalCategory.QUALITY
         )
 
-    assert issubclass(check_fn, SfloEval)
-    assert check_fn.name == "check_fn"
-    assert HookSite.POST_RESPONSE in check_fn.sites
-    assert check_fn.priority == 42
+    assert issubclass(check_fn, SfloEval), (
+        f"decorated fn should be SfloEval subclass, got {check_fn}"
+    )
+    assert check_fn.name == "check_fn", (
+        f"name should be 'check_fn', got {check_fn.name!r}"
+    )
+    assert HookSite.POST_RESPONSE in check_fn.sites, (
+        f"POST_RESPONSE should be in sites, got {check_fn.sites}"
+    )
+    assert check_fn.priority == 42, f"priority should be 42, got {check_fn.priority}"
 
     inst = check_fn()
     ctx = _make_ctx()
 
     # post_response fires the wrapped function
     result = run(inst.post_response(ctx))
-    assert result.triggered is True
-    assert result.severity == EvalSeverity.WARN
+    assert result.triggered is True, "decorated post_response should trigger"
+    assert result.severity == EvalSeverity.WARN, (
+        f"severity should be WARN, got {result.severity}"
+    )
 
     # pre_prompt returns default PASS
     result2 = run(inst.pre_prompt(ctx))
-    assert result2.triggered is False
-    assert result2.action == EvalAction.PASS
+    assert result2.triggered is False, "non-decorated site should not trigger"
+    assert result2.action == EvalAction.PASS, (
+        f"non-decorated site should PASS, got {result2.action}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -512,14 +546,20 @@ def test_tc10_modify_action():
     ctx = _make_ctx(payload={"response_text": "original text"})
     result = run(inst.post_response(ctx))
 
-    assert result.action == EvalAction.MODIFY
-    assert result.payload == {"response_text": "REDACTED"}
+    assert result.action == EvalAction.MODIFY, (
+        f"action should be MODIFY, got {result.action}"
+    )
+    assert result.payload == {"response_text": "REDACTED"}, (
+        f"payload should contain REDACTED, got {result.payload}"
+    )
 
     # Simulate adapter: apply MODIFY
     response_text = ctx.payload.get("response_text", "")
     if result.action == EvalAction.MODIFY and result.payload:
         response_text = result.payload.get("response_text", response_text)
-    assert response_text == "REDACTED"
+    assert response_text == "REDACTED", (
+        f"MODIFY should replace text, got {response_text!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +585,9 @@ def test_tc11_abort_raises():
     ctx = _make_ctx()
     result = run(inst.post_response(ctx))
 
-    assert result.action == EvalAction.ABORT
+    assert result.action == EvalAction.ABORT, (
+        f"action should be ABORT, got {result.action}"
+    )
 
     # Simulate adapter raising EvalAbortError on ABORT
     with pytest.raises(EvalAbortError) as exc_info:
@@ -556,8 +598,12 @@ def test_tc11_abort_raises():
                 result.incident,
             )
 
-    assert exc_info.value.eval_name == "aborter"
-    assert "blocked by policy" in str(exc_info.value)
+    assert exc_info.value.eval_name == "aborter", (
+        f"eval_name should be 'aborter', got {exc_info.value.eval_name!r}"
+    )
+    assert "blocked by policy" in str(exc_info.value), (
+        f"error should mention reason, got {exc_info.value}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -593,10 +639,18 @@ def test_tc12_failsafe_eval_crash():
         stderr_lines.append(f"[Eval] {inst.name} crashed: {e}")
 
     # Pipeline continues with original payload
-    assert response_text == original_text
-    assert len(stderr_lines) == 1
-    assert "crasher" in stderr_lines[0]
-    assert "simulated eval crash" in stderr_lines[0]
+    assert response_text == original_text, (
+        f"pipeline should continue with original text, got {response_text!r}"
+    )
+    assert len(stderr_lines) == 1, (
+        f"expected 1 error log, got {len(stderr_lines)}: {stderr_lines}"
+    )
+    assert "crasher" in stderr_lines[0], (
+        f"error log should mention eval name 'crasher', got {stderr_lines[0]!r}"
+    )
+    assert "simulated eval crash" in stderr_lines[0], (
+        f"error log should mention crash reason, got {stderr_lines[0]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +692,7 @@ def test_tc13_disabled_entry(tmp_path):
             f"    enabled: false\n"
         )
         result = load_evals_from_bindings(bindings)
-        assert result == []
+        assert result == [], f"disabled eval should not be loaded, got {result}"
     finally:
         if str(tmp_path) in sys.path:
             sys.path.remove(str(tmp_path))
@@ -680,11 +734,13 @@ def test_tc14_non_sfloeval_class(tmp_path):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             result = load_evals_from_bindings(bindings)
-        assert result == []
+        assert result == [], f"non-SfloEval class should not be loaded, got {result}"
         assert any(
             "not a sfloeval" in str(warning.message).lower()
             or "SfloEval" in str(warning.message)
             for warning in w
+        ), (
+            f"should warn about non-SfloEval class, warnings: {[str(x.message) for x in w]}"
         )
     finally:
         if str(tmp_path) in sys.path:
@@ -709,9 +765,15 @@ def test_tc15_no_match_block_always_passes():
     inst._match = {}  # type: ignore[attr-defined]
 
     # No role or gate filter → always passes
-    assert matches_filter(inst) is True
-    assert matches_filter(inst, role="dev") is True
-    assert matches_filter(inst, role="pm", gate=1) is True
+    assert matches_filter(inst) is True, (
+        "no match block should always pass without args"
+    )
+    assert matches_filter(inst, role="dev") is True, (
+        "no match block should pass for any role"
+    )
+    assert matches_filter(inst, role="pm", gate=1) is True, (
+        "no match block should pass for any role+gate combo"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -753,9 +815,15 @@ def test_tc16_call_adapter_with_evals_no_evals_passes_through():
             role="dev",
         )
     )
-    assert result == "raw response"
-    assert adapter.last_call_kwargs["model"] == "sonnet"
-    assert adapter.last_call_kwargs["role"] == "dev"
+    assert result == "raw response", (
+        f"no evals should pass through adapter response, got {result!r}"
+    )
+    assert adapter.last_call_kwargs["model"] == "sonnet", (
+        f"model should be 'sonnet', got {adapter.last_call_kwargs['model']!r}"
+    )
+    assert adapter.last_call_kwargs["role"] == "dev", (
+        f"role should be 'dev', got {adapter.last_call_kwargs['role']!r}"
+    )
     clear_registry()
 
 
@@ -796,7 +864,9 @@ def test_tc17_call_adapter_with_evals_post_response_modify():
             role="dev",
         )
     )
-    assert result == "REDACTED"
+    assert result == "REDACTED", (
+        f"POST_RESPONSE MODIFY should replace response, got {result!r}"
+    )
     clear_registry()
 
 
@@ -840,7 +910,9 @@ def test_tc18_call_adapter_with_evals_pre_prompt_modify():
             role="pm",
         )
     )
-    assert adapter.last_call_kwargs["system_prompt"] == "MODIFIED SOUL"
+    assert adapter.last_call_kwargs["system_prompt"] == "MODIFIED SOUL", (
+        f"PRE_PROMPT MODIFY should change system_prompt, got {adapter.last_call_kwargs['system_prompt']!r}"
+    )
     clear_registry()
 
 
@@ -882,8 +954,12 @@ def test_tc19_call_adapter_with_evals_abort_raises():
                 role="dev",
             )
         )
-    assert exc_info.value.eval_name == "blocker"
-    assert "blocked by policy" in str(exc_info.value)
+    assert exc_info.value.eval_name == "blocker", (
+        f"eval_name should be 'blocker', got {exc_info.value.eval_name!r}"
+    )
+    assert "blocked by policy" in str(exc_info.value), (
+        f"error should mention reason, got {exc_info.value}"
+    )
     clear_registry()
 
 
@@ -919,5 +995,7 @@ def test_tc20_call_adapter_with_evals_crash_logs_and_continues():
         )
     )
     # Pipeline continues with original response despite eval crash
-    assert result == "original response"
+    assert result == "original response", (
+        f"crash should not alter response, got {result!r}"
+    )
     clear_registry()

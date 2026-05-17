@@ -1,9 +1,16 @@
 """sflo eval framework — runner-level integration helper.
 
-call_adapter_with_evals() is the SINGLE eval call site for all adapters.
-Every adapter.spawn_agent() call in runner.py goes through this helper,
-which fires PRE_PROMPT evals (before the adapter call) and POST_RESPONSE
-evals (after), with fail-safe exception handling per plugin.
+call_adapter_with_evals() wraps every adapter.spawn_agent() call in runner.py,
+firing PRE_PROMPT evals (before the adapter call) and POST_RESPONSE evals
+(after), with fail-safe exception handling per plugin.
+
+run_tool_call_evals() dispatches PRE_TOOL_CALL evals for a single tool
+invocation; runtime adapters wire it to their pre-tool-call hook (the
+claude-code adapter wires it to Claude Code's native PreToolUse hook).
+
+Hook-site dispatch coverage: PRE_PROMPT, POST_RESPONSE and PRE_TOOL_CALL are
+dispatched. POST_TOOL_CALL / ON_RESPONSE_CHUNK / PRE_ARTIFACT are defined in
+the framework (base.py HookSite) but not yet dispatched — no eval targets them.
 
 Pattern credit: LangChain CallbackManager (callbacks around LLM call, not
 inside LLM), Guardrails AI Guard.wrap() pattern, MS Semantic Kernel
@@ -16,7 +23,6 @@ provided by host projects via the eval registry.
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any
 
 from .base import EvalAbortError, EvalAction, EvalContext, HookSite
@@ -50,7 +56,7 @@ async def call_adapter_with_evals(
         model: Model identifier forwarded to adapter.spawn_agent()
         system_prompt: Agent soul/system prompt (PRE_PROMPT evals may modify)
         user_prompt: User request / task description (PRE_PROMPT evals may modify)
-        role: Agent role label (scout/pm/dev/qa/sflo/interrogator) for eval filtering
+        role: Agent role label (scout/pm/dev/qa/sflo) for eval filtering
         metadata: Contextual data forwarded to EvalContext.metadata
                   (session_id, output_dir, gate_num, cwd, etc.)
         **adapter_kwargs: Forwarded verbatim to adapter.spawn_agent()
@@ -166,3 +172,59 @@ async def call_adapter_with_evals(
             )
 
     return response
+
+
+async def run_tool_call_evals(
+    tool_name: str,
+    tool_args: dict,
+    *,
+    role: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Dispatch PRE_TOOL_CALL evals for a single tool invocation.
+
+    Runtime-agnostic: a runtime adapter calls this from whatever pre-tool-call
+    hook its runtime exposes. Mirrors the PRE_PROMPT / POST_RESPONSE dispatch
+    inside call_adapter_with_evals — same fail-safe, same incident logging.
+
+    A tool call is allowed or denied, not rewritten: only EvalAction.ABORT is
+    acted on (raised as EvalAbortError for the adapter to translate into a tool
+    denial); non-abort triggers are logged as incidents. MODIFY of tool args is
+    intentionally unsupported — no eval needs it; add it here if one ever does.
+
+    Raises:
+        EvalAbortError: when a PRE_TOOL_CALL eval returns EvalAction.ABORT.
+    """
+    _metadata = dict(metadata) if metadata else {}
+    for eval_inst in registered_evals_for_site(HookSite.PRE_TOOL_CALL, role=role):
+        try:
+            ctx = EvalContext(
+                role=role or "unknown",
+                site=HookSite.PRE_TOOL_CALL,
+                payload={"tool_name": tool_name, "tool_args": tool_args},
+                metadata=_metadata,
+                config=eval_inst.config,
+            )
+            result = await eval_inst.pre_tool_call(ctx)
+            if result.triggered:
+                if result.action == EvalAction.ABORT:
+                    _reason = (
+                        (result.incident or {}).get("reason", "abort")
+                        if result.incident
+                        else "abort"
+                    )
+                    raise EvalAbortError(eval_inst.name, _reason, result.incident)
+                if result.incident:
+                    _safe_stderr(
+                        f"  [Eval] {eval_inst.name} "
+                        f"severity={result.severity.value} "
+                        f"{json.dumps(result.incident)}"
+                    )
+        except EvalAbortError:
+            raise  # propagate aborts to the adapter
+        except Exception as exc:
+            # Fail-safe: an eval crash never blocks the tool call
+            _safe_stderr(
+                f"  [Eval] {eval_inst.name} crashed "
+                f"(pre_tool_call — passing through): {exc}"
+            )

@@ -23,7 +23,7 @@ BINDINGS_YAML = "roles:\n  pm:\n    model: opus\n  dev:\n    model: sonnet\n  qa
 GATE_ARTIFACTS = {
     1: "SCOPE.md",
     2: "BUILD-STATUS.md",
-    3: "QA-REPORT.md",
+    3: "QA-REPORT.md",  # parallel gate — SECURITY-REPORT.md handled separately
     4: "PM-VERIFY.md",
     5: "SHIP-DECISION.md",
 }
@@ -58,6 +58,12 @@ PASSING_ARTIFACTS = {
         "### Scope Alignment\nIn scope.\n"
         "### Verdict: APPROVED\n"
         "## Process Reflection\nWent smoothly.\n"
+    ),
+    "SECURITY-REPORT.md": (
+        "# Security Report\n\n"
+        "- Critical: 0\n- High: 0\n"
+        "### Findings\nNo critical vulnerabilities found.\n"
+        "### Grade: A\n"
     ),
     "SHIP-DECISION.md": (
         "### Pipeline Evidence\nAll gates passed.\n"
@@ -133,7 +139,7 @@ def make_state(current, inner=0, outer=0, bindings=None, assignments=None):
     """Create a state dict for testing."""
     return {
         "current_state": current,
-        "bindings": bindings or DEFAULT_BINDINGS,
+        "roles": bindings or DEFAULT_BINDINGS,
         "assignments": assignments or DEFAULT_ASSIGNMENTS,
         "inner_loops": inner,
         "outer_loops": outer,

@@ -3,7 +3,14 @@
 import os
 import re
 
-from .constants import GATES, SFLO_ROOT, GRADE_MAP, GRADE_THRESHOLD
+from .constants import (
+    GATES,
+    SFLO_ROOT,
+    GRADE_MAP,
+    GRADE_THRESHOLD,
+    inner_loop_gate_key,
+    outer_loop_gate_key,
+)
 
 
 def read_artifact(sflo_dir, filename):
@@ -39,6 +46,173 @@ def section_body(content, heading_pattern):
     next_heading = re.search(r"\n##", rest)
     body = rest[: next_heading.start()] if next_heading else rest
     return body.strip()
+
+
+# ---------------------------------------------------------------------------
+# Reusable role validators — shared by both parallel-gate and single-gate paths
+# ---------------------------------------------------------------------------
+
+# Auto-fail patterns for QA reports — universal red flags regardless of project type.
+_QA_AUTO_FAIL_PATTERNS = [
+    (r"mock.data|sample.data", "mock_data"),
+    (r"doesn.t start|does not start|won.t run", "doesnt_start"),
+    (r"purpose.*(unclear|confusing)", "purpose_unclear"),
+]
+
+
+def _extract_grade(content):
+    """Extract grade letter from QA/PM report content.
+
+    Priority chain (first match wins):
+      1. Dedicated heading: ### Grade: A  (canonical format)
+      2. Fallback: **Final grade: A** or - Final grade: A (legacy/improvised)
+
+    Returns grade string or None.
+    """
+    # Primary: dedicated heading line — tighter regex avoids matching section headers
+    # like "## Grade Calculation" by requiring the grade value to be a valid letter
+    m = re.search(
+        r"###?\s*Grade[:\s]+([A-DF][+-]?)\s*$", content, re.IGNORECASE | re.MULTILINE
+    )
+    if m:
+        return m.group(1).strip().upper()
+
+    # Fallback: "Final grade: X" anywhere (bold, bullet, or plain)
+    m = re.search(r"[Ff]inal\s+[Gg]rade[:\s*]+([A-DF][+-]?)", content)
+    if m:
+        return m.group(1).strip().upper()
+
+    return None
+
+
+def _check_grade(content, threshold, require_grade=False):
+    """Shared grade validation: extract, recognize, check threshold.
+
+    Args:
+        content: artifact text
+        threshold: numeric grade threshold from config
+        require_grade: if True, missing grade fails validation (security).
+                       if False, missing grade just means threshold not met (QA).
+
+    Returns (passed: bool, checks: list[dict]).
+    """
+    checks = []
+    passed = True
+
+    grade_str = _extract_grade(content)
+    grade_val = GRADE_MAP.get(grade_str, -1) if grade_str else -1
+    checks.append(
+        {"name": "grade_present", "pass": grade_str is not None, "value": grade_str}
+    )
+
+    if not grade_str:
+        if require_grade:
+            passed = False
+    elif grade_val < 0:
+        checks.append(
+            {
+                "name": "grade_recognized",
+                "pass": False,
+                "detail": f"Unrecognized grade '{grade_str}'. "
+                f"Valid: {', '.join(sorted(GRADE_MAP.keys()))}",
+            }
+        )
+        passed = False
+    else:
+        _threshold_grade = next(
+            (k for k, v in GRADE_MAP.items() if v == threshold), "?"
+        )
+        grade_pass = grade_val >= threshold
+        checks.append(
+            {
+                "name": "grade_sufficient",
+                "pass": grade_pass,
+                "value": grade_str,
+                "minimum": _threshold_grade,
+                "detail": f"{grade_str} ({'pass' if grade_pass else f'below {_threshold_grade}'})",
+            }
+        )
+        if not grade_pass:
+            passed = False
+
+    return passed, checks
+
+
+def _validate_qa_content(content, threshold):
+    """Validate QA artifact: grade present, meets threshold, no auto-fails.
+
+    Returns (passed: bool, checks: list[dict]).
+    """
+    checks = []
+    passed = True
+
+    grade_passed, grade_checks = _check_grade(content, threshold)
+    checks.extend(grade_checks)
+    if not grade_passed:
+        passed = False
+
+    for pat, name in _QA_AUTO_FAIL_PATTERNS:
+        issues_section = re.split(r"###?\s*Issues", content, flags=re.IGNORECASE)
+        if len(issues_section) > 1:
+            found = bool(re.search(pat, issues_section[1], re.IGNORECASE))
+            if found:
+                checks.append(
+                    {
+                        "name": f"auto_fail_{name}",
+                        "pass": False,
+                        "detail": f"Auto-fail trigger: {name}",
+                    }
+                )
+                passed = False
+
+    return passed, checks
+
+
+def _validate_security_content(content, threshold):
+    """Validate security artifact: grade present, meets threshold, no Criticals.
+
+    Returns (passed: bool, checks: list[dict]).
+    """
+    checks = []
+    passed = True
+
+    # Auto-fail: any Critical findings
+    critical_match = re.search(r"[Cc]ritical[:\s]+(\d+)", content)
+    critical_count = int(critical_match.group(1)) if critical_match else 0
+    if critical_count > 0:
+        checks.append(
+            {
+                "name": "no_critical_findings",
+                "pass": False,
+                "detail": f"{critical_count} Critical finding(s) — auto-fail",
+            }
+        )
+        passed = False
+    else:
+        checks.append({"name": "no_critical_findings", "pass": True, "detail": "OK"})
+
+    # Grade check — require_grade=True because security reports MUST include a grade
+    grade_passed, grade_checks = _check_grade(content, threshold, require_grade=True)
+    checks.extend(grade_checks)
+    if not grade_passed:
+        passed = False
+
+    return passed, checks
+
+
+def _validate_pm_content(content):
+    """Validate PM artifact: verdict present and APPROVED.
+
+    Returns (passed: bool, checks: list[dict]).
+    """
+    checks = []
+    verdict = extract_field(content, r"###?\s*Verdict[: ]*(.+)")
+    is_approved = verdict and "APPROVED" in verdict.upper()
+    checks.append(
+        {"name": "verdict_present", "pass": verdict is not None, "value": verdict}
+    )
+    checks.append({"name": "verdict_approved", "pass": is_approved, "value": verdict})
+    return is_approved, checks
 
 
 # Patterns that indicate template placeholders rather than real content.
@@ -90,24 +264,41 @@ PLACEHOLDER_PATTERN = re.compile(
 )
 
 
-def extract_qa_feedback(sflo_dir):
-    """Extract Issues section and grade from QA-REPORT.md for dev feedback.
+def extract_agent_feedback(sflo_dir, artifact, role):
+    """Extract grade and findings from any gate agent's report artifact.
 
-    Returns the feedback text, or None if no QA report or no issues found.
+    Generic extractor — works for QA, Security, or any future parallel agent.
+    Searches for common report sections: Grade, Findings, Issues, Test Results.
+
+    Args:
+        sflo_dir: path to .sflo directory
+        artifact: filename of the report (e.g. "QA-REPORT.md")
+        role: agent role name (used as label in extracted feedback)
+
+    Returns: feedback text string, or None if artifact missing/empty.
     """
-    qa_artifact = GATES.get(3, {}).get("artifact", "QA-REPORT.md")
-    content, err = read_artifact(sflo_dir, qa_artifact)
+    content, err = read_artifact(sflo_dir, artifact)
     if content is None:
         return None
 
     parts = []
 
     # Extract grade
-    grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
+    grade_str = extract_field(content, r"###?\s*Grade[: ]*(.+)")
     if grade_str:
-        parts.append(f"### QA Grade: {grade_str}")
+        label = role.upper() if len(role) <= 4 else role.title()
+        parts.append(f"### {label} Grade: {grade_str}")
 
-    # Extract Issues section (everything between ### Issues and the next ### heading)
+    # Extract Findings section (Security reports, generic)
+    findings_match = re.search(
+        r"(###?\s*Findings.*?)(?=\n###?\s|\Z)",
+        content,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if findings_match:
+        parts.append(findings_match.group(1).strip())
+
+    # Extract Issues section (QA reports)
     issues_match = re.search(
         r"(###?\s*Issues.*?)(?=\n###?\s|\Z)",
         content,
@@ -116,7 +307,7 @@ def extract_qa_feedback(sflo_dir):
     if issues_match:
         parts.append(issues_match.group(1).strip())
 
-    # Extract Test Results section
+    # Extract Test Results section (QA reports)
     test_match = re.search(
         r"(###?\s*Test Results.*?)(?=\n###?\s|\Z)",
         content,
@@ -132,12 +323,30 @@ def extract_qa_feedback(sflo_dir):
 
 
 def save_qa_feedback(sflo_dir):
-    """Save QA findings to QA-FEEDBACK.md so the dev agent can see what to fix.
+    """Save feedback from ALL parallel inner-loop gate agents to QA-FEEDBACK.md.
 
-    Appends to existing feedback to accumulate findings across retries.
+    Iterates every agent defined in the inner-loop gate, extracts
+    findings from each report artifact, and writes combined feedback.
+    Dev sees all issues regardless of which agent found them.
+
+    OCP: adding a new parallel agent in pipeline.yaml automatically
+    includes its feedback — no code change needed.
     """
-    feedback = extract_qa_feedback(sflo_dir)
-    if not feedback:
+    gate_key = inner_loop_gate_key()
+    gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
+    agents = gate_info if isinstance(gate_info, list) else [gate_info]
+
+    sections = []
+    for agent in agents:
+        artifact = agent.get("artifact")
+        role = agent.get("role", "unknown")
+        if not artifact:
+            continue
+        feedback = extract_agent_feedback(sflo_dir, artifact, role)
+        if feedback:
+            sections.append(feedback)
+
+    if not sections:
         return
 
     feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
@@ -146,22 +355,47 @@ def save_qa_feedback(sflo_dir):
         with open(feedback_path, "r", encoding="utf-8") as f:
             existing = f.read()
 
-    # Count existing rounds to label the new one
     round_count = existing.count("## QA Round")
     header = f"## QA Round {round_count + 1}\n\n"
 
     with open(feedback_path, "w", encoding="utf-8") as f:
-        content = existing + header + feedback + "\n\n"
+        content = existing + header + "\n\n".join(sections) + "\n\n"
         f.write(content)
 
 
+def extract_qa_feedback(sflo_dir):
+    """Backward-compat wrapper — extracts QA agent feedback only.
+
+    Prefer extract_agent_feedback() for new code. This exists for tests
+    and any external callers that expect the old interface.
+    """
+    gate_key = inner_loop_gate_key()
+    gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
+    if isinstance(gate_info, list):
+        qa_artifact = next(
+            (e.get("artifact") for e in gate_info if e.get("role") == "qa"),
+            "QA-REPORT.md",
+        )
+    else:
+        qa_artifact = gate_info.get("artifact", "QA-REPORT.md")
+    return extract_agent_feedback(sflo_dir, qa_artifact, "qa")
+
+
 def save_pm_feedback(sflo_dir):
-    """Copy PM-VERIFY.md to PM-FEEDBACK.md before it's deleted by cleanup.
+    """Copy PM verification artifact to PM-FEEDBACK.md before cleanup.
 
     Same pattern as save_qa_feedback: gate artifact is deleted for
     auto_transition, but a feedback copy persists for dev's context map.
     """
-    pm_artifact = GATES.get(4, {}).get("artifact", "PM-VERIFY.md")
+    gate_key = outer_loop_gate_key()
+    gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
+    if isinstance(gate_info, list):
+        pm_artifact = next(
+            (e.get("artifact") for e in gate_info if e.get("role") == "pm"),
+            "PM-VERIFY.md",
+        )
+    else:
+        pm_artifact = gate_info.get("artifact", "PM-VERIFY.md")
     content, err = read_artifact(sflo_dir, pm_artifact)
     if content is None:
         return
@@ -187,12 +421,21 @@ def clean_artifacts_from(start_gate, sflo_dir, preserve=None):
     to_archive = []
     for g in sorted(GATES.keys()):
         if g >= start_gate:
-            artifact = GATES[g]["artifact"]
-            if artifact in preserve_names:
-                continue
-            p = os.path.join(sflo_dir, artifact)
-            if os.path.isfile(p):
-                to_archive.append(p)
+            g_info = GATES[g]
+            if isinstance(g_info, list):
+                for entry in g_info:
+                    artifact = entry.get("artifact")
+                    if artifact and artifact not in preserve_names:
+                        p = os.path.join(sflo_dir, artifact)
+                        if os.path.isfile(p):
+                            to_archive.append(p)
+            else:
+                artifact = g_info.get("artifact")
+                if not artifact or artifact in preserve_names:
+                    continue
+                p = os.path.join(sflo_dir, artifact)
+                if os.path.isfile(p):
+                    to_archive.append(p)
 
     if to_archive:
         archive_to_logs(sflo_dir, to_archive)
@@ -203,20 +446,60 @@ def validate_agent_path(agent_path):
     resolved = os.path.realpath(agent_path)
     cwd = os.path.realpath(os.getcwd())
     sflo_root = os.path.realpath(SFLO_ROOT)
-    if resolved.startswith(cwd) or resolved.startswith(sflo_root):
+    if (
+        resolved == cwd
+        or resolved.startswith(cwd + os.sep)
+        or resolved == sflo_root
+        or resolved.startswith(sflo_root + os.sep)
+    ):
         return True, None
     return False, f"Agent path '{agent_path}' resolves outside project directory"
 
 
-def validate_gate(gate_num, sflo_dir):
+def _load_validator_module(validator_path):
+    """Load a validator module from a relative file path via importlib.
+
+    Returns (module, error_string). Rejects absolute paths and '..' traversal.
+    Path resolved relative to cwd, contained within cwd or SFLO_ROOT.
+    """
+    import importlib.util
+
+    if not validator_path:
+        return None, "validator path is empty"
+    if os.path.isabs(validator_path):
+        return None, f"Validator path must be relative: {validator_path}"
+    if ".." in validator_path.replace("\\", "/").split("/"):
+        return None, f"Validator path must not contain '..': {validator_path}"
+
+    abs_path = os.path.realpath(os.path.join(os.getcwd(), validator_path))
+    ok, err = validate_agent_path(abs_path)
+    if not ok:
+        return None, err
+
+    if not os.path.isfile(abs_path):
+        return None, f"Validator file not found: {abs_path}"
+
+    spec = importlib.util.spec_from_file_location("_sflo_validator", abs_path)
+    if spec is None:
+        return None, f"Cannot load module from {abs_path}"
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        return None, f"Failed to load validator {abs_path}: {e}"
+    return module, None
+
+
+def validate_gate(gate_num, sflo_dir, gates=None):
     """Validate a gate's artifact. Returns (passed, checks_list).
 
     For unknown gates (not in built-in gates 1-5), falls back to
     file-existence check only via validate_ext registry.
     """
+    _gates = gates if gates is not None else GATES
     from .validate_ext import get_validator
 
-    if gate_num not in GATES:
+    if gate_num not in _gates:
         return False, [
             {
                 "name": "gate_not_found",
@@ -225,14 +508,124 @@ def validate_gate(gate_num, sflo_dir):
             }
         ]
 
-    info = GATES[gate_num]
+    info = _gates[gate_num]
+
+    # List-based parallel gates: validate each entry's artifact
+    if isinstance(info, list):
+        all_checks = []
+        all_passed = True
+        for entry in info:
+            artifact = entry.get("artifact")
+            if not artifact:
+                continue
+            content, err = read_artifact(sflo_dir, artifact)
+            all_checks.append(
+                {
+                    "name": f"file_exists:{artifact}",
+                    "pass": content is not None,
+                    "detail": err or "OK",
+                }
+            )
+            if content is None:
+                all_passed = False
+                continue
+
+            entry_validator = entry.get("validator")
+            if entry_validator:
+                mod, load_err = _load_validator_module(entry_validator)
+                if load_err:
+                    all_checks.append(
+                        {
+                            "name": f"validator_load_error:{artifact}",
+                            "pass": False,
+                            "detail": load_err,
+                        }
+                    )
+                    all_passed = False
+                elif hasattr(mod, "validate"):
+                    try:
+                        entry_passed, entry_checks = mod.validate(
+                            gate_num, content, sflo_dir, []
+                        )
+                        all_checks.extend(entry_checks)
+                        if not entry_passed:
+                            all_passed = False
+                    except Exception as e:
+                        all_checks.append(
+                            {
+                                "name": f"validator_error:{artifact}",
+                                "pass": False,
+                                "detail": f"Validator failed: {e}",
+                            }
+                        )
+                        all_passed = False
+                else:
+                    all_checks.append(
+                        {
+                            "name": f"validator_missing_fn:{artifact}",
+                            "pass": False,
+                            "detail": f"{entry_validator} has no validate() function",
+                        }
+                    )
+                    all_passed = False
+                continue
+
+            entry_role = entry.get("role")
+            # Per-gate threshold: entry.threshold -> global GRADE_THRESHOLD
+            entry_threshold_str = entry.get("threshold")
+            entry_threshold = (
+                GRADE_MAP.get(entry_threshold_str, GRADE_THRESHOLD)
+                if entry_threshold_str
+                else GRADE_THRESHOLD
+            )
+            if entry_role == "qa":
+                qa_passed, qa_checks = _validate_qa_content(content, entry_threshold)
+                all_checks.extend(qa_checks)
+                if not qa_passed:
+                    all_passed = False
+            elif entry_role == "security":
+                sec_passed, sec_checks = _validate_security_content(
+                    content, entry_threshold
+                )
+                all_checks.extend(sec_checks)
+                if not sec_passed:
+                    all_passed = False
+            elif entry_role == "pm":
+                pm_passed, pm_checks = _validate_pm_content(content)
+                all_checks.extend(pm_checks)
+                if not pm_passed:
+                    all_passed = False
+
+        return all_passed, all_checks
+
     checks = []
 
-    content, err = read_artifact(sflo_dir, info["artifact"])
+    artifact_name = info.get("artifact", f"gate-{gate_num}")
+    content, err = read_artifact(sflo_dir, artifact_name)
     checks.append(
         {"name": "file_exists", "pass": content is not None, "detail": err or "OK"}
     )
     if content is None:
+        return False, checks
+
+    # Config-driven validator: gate has `validator` field pointing to a script
+    validator_path = info.get("validator")
+    if validator_path:
+        mod, load_err = _load_validator_module(validator_path)
+        if load_err:
+            checks.append(
+                {"name": "validator_load_error", "pass": False, "detail": load_err}
+            )
+            return False, checks
+        if hasattr(mod, "validate"):
+            return mod.validate(gate_num, content, sflo_dir, checks)
+        checks.append(
+            {
+                "name": "validator_missing_fn",
+                "pass": False,
+                "detail": f"{validator_path} has no validate() function",
+            }
+        )
         return False, checks
 
     # Check for custom validator from extension registry (if available)
@@ -240,9 +633,12 @@ def validate_gate(gate_num, sflo_dir):
     if custom_validator is not None:
         return custom_validator(gate_num, content, sflo_dir, checks)
 
-    # Resolve threshold grade name for error messages
-    _threshold_grade = next(
-        (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?"
+    # Resolve per-gate threshold: gate entry threshold -> global GRADE_THRESHOLD
+    gate_threshold_str = info.get("threshold") if isinstance(info, dict) else None
+    effective_threshold = (
+        GRADE_MAP.get(gate_threshold_str, GRADE_THRESHOLD)
+        if gate_threshold_str
+        else GRADE_THRESHOLD
     )
 
     if gate_num == 1:
@@ -340,66 +736,16 @@ def validate_gate(gate_num, sflo_dir):
                 )
 
     elif gate_num == 3:
-        # Grade present and meets threshold
-        grade_str = extract_field(content, r"###?\s*Grade[:\s]*(.+)")
-        grade_val = GRADE_MAP.get(grade_str, -1) if grade_str else -1
-        checks.append(
-            {"name": "grade_present", "pass": grade_str is not None, "value": grade_str}
-        )
-
-        if grade_str and grade_val < 0:
-            checks.append(
-                {
-                    "name": "grade_recognized",
-                    "pass": False,
-                    "detail": f"Unrecognized grade '{grade_str}'. "
-                    f"Valid: {', '.join(sorted(GRADE_MAP.keys()))}",
-                }
-            )
-        else:
-            checks.append(
-                {
-                    "name": "grade_sufficient",
-                    "pass": grade_val >= GRADE_THRESHOLD,
-                    "value": grade_str,
-                    "minimum": _threshold_grade,
-                    "detail": f"{grade_str} ({'pass' if grade_val >= GRADE_THRESHOLD else f'below {_threshold_grade}'})",
-                }
-            )
-
-        # Auto-fail triggers — universal red flags regardless of project type
-        auto_fail_patterns = [
-            (r"mock.data|sample.data", "mock_data"),
-            (r"doesn.t start|does not start|won.t run", "doesnt_start"),
-            (r"purpose.*(unclear|confusing)", "purpose_unclear"),
-        ]
-        for pat, name in auto_fail_patterns:
-            issues_section = re.split(r"###?\s*Issues", content, flags=re.IGNORECASE)
-            if len(issues_section) > 1:
-                found = bool(re.search(pat, issues_section[1], re.IGNORECASE))
-                if found:
-                    checks.append(
-                        {
-                            "name": f"auto_fail_{name}",
-                            "pass": False,
-                            "detail": f"Auto-fail trigger: {name}",
-                        }
-                    )
+        qa_passed, qa_checks = _validate_qa_content(content, effective_threshold)
+        checks.extend(qa_checks)
 
     elif gate_num == 4:
-        # Verdict present and approved
-        verdict = extract_field(content, r"###?\s*Verdict[:\s]*(.+)")
-        is_approved = verdict and "APPROVED" in verdict.upper()
-        checks.append(
-            {"name": "verdict_present", "pass": verdict is not None, "value": verdict}
-        )
-        checks.append(
-            {"name": "verdict_approved", "pass": is_approved, "value": verdict}
-        )
+        pm_passed, pm_checks = _validate_pm_content(content)
+        checks.extend(pm_checks)
 
     elif gate_num == 5:
         # Decision present and valid
-        decision = extract_field(content, r"###?\s*Decision[:\s]*(.+)")
+        decision = extract_field(content, r"###?\s*Decision[: ]*(.+)")
         valid_decisions = ["SHIP", "HOLD", "KILL"]
         is_valid = decision and decision.upper() in valid_decisions
         checks.append(

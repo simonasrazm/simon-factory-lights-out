@@ -1,7 +1,6 @@
 """OllamaAdapter — runs agents via local Ollama server with tool support."""
 
 import json
-import os
 import re
 import sys
 import time as _time
@@ -421,6 +420,7 @@ class OllamaAdapter(RuntimeAdapter):
         tools_mode=None,
         max_turns=None,
         timeout=None,
+        **kwargs,
     ):
         try:
             import ollama
@@ -473,7 +473,6 @@ class OllamaAdapter(RuntimeAdapter):
         # cwd is passed via subprocess cwd= kwarg — do NOT os.chdir here as it
         # mutates the process working directory for all threads and is not
         # reverted on exception paths in nested calls.
-        original_cwd = None  # retained for API compat; not used
 
         try:
             while turn_count < max_t:

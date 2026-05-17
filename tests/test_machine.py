@@ -12,6 +12,24 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 from conftest import TempDirMixin, PASSING_ARTIFACTS
 from src.machine import compute_next, apply_transition, auto_transition
+from src.constants import GATES
+
+
+def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
+    info = GATES.get(gate_num)
+    if not isinstance(info, list):
+        return
+    for entry in info:
+        artifact = entry.get("artifact")
+        if not artifact or artifact == skip_artifact:
+            continue
+        path = os.path.join(tmpdir, artifact)
+        if not os.path.isfile(path):
+            content = PASSING_ARTIFACTS.get(
+                artifact, f"# {artifact}\n\nMinimal content.\n### Grade: A\n"
+            )
+            with open(path, "w") as f:
+                f.write(content)
 
 
 class TestComputeNext(TempDirMixin, unittest.TestCase):
@@ -21,36 +39,59 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
         self.write_state("scout")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "spawn_agent")
-        self.assertEqual(result["agent"]["role"], "scout")
+        self.assertEqual(
+            result["action"],
+            "spawn_agent",
+            "scout state should produce spawn_agent action",
+        )
+        self.assertEqual(
+            result["agent"]["role"], "scout", "scout state should spawn scout role"
+        )
 
     def test_gate1_state(self):
         self.write_state("gate-1")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "spawn_agent")
-        self.assertEqual(result["agent"]["role"], "pm")
+        self.assertEqual(
+            result["action"], "spawn_agent", "gate-1 should produce spawn_agent action"
+        )
+        self.assertEqual(result["agent"]["role"], "pm", "gate-1 should spawn pm role")
 
     def test_gate5_produces_artifact(self):
         self.write_state("gate-5")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "produce_artifact")
-        self.assertEqual(result["role"], "sflo")
+        self.assertEqual(
+            result["action"],
+            "produce_artifact",
+            "gate-5 should produce produce_artifact action",
+        )
+        self.assertEqual(
+            result["role"], "sflo", "gate-5 artifact producer should be sflo role"
+        )
 
     def test_done_state(self):
         self.write_state("done")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "pipeline_complete")
+        self.assertEqual(
+            result["action"],
+            "pipeline_complete",
+            "done state should produce pipeline_complete action",
+        )
 
     def test_check_passed(self):
         self.write_state("check-3")
         self.write_artifact("QA-REPORT.md", PASSING_ARTIFACTS["QA-REPORT.md"])
+        _write_sibling_artifacts(self.sflo_dir, 3, "QA-REPORT.md")
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "validated")
-        self.assertTrue(result["pass"])
+        self.assertEqual(
+            result["action"],
+            "validated",
+            "passing QA check should produce validated action",
+        )
+        self.assertTrue(result["pass"], "passing QA check should set pass to True")
 
     def test_check_failed(self):
         self.write_state("check-3")
@@ -60,8 +101,12 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
         )
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "check_failed")
-        self.assertFalse(result["pass"])
+        self.assertEqual(
+            result["action"],
+            "check_failed",
+            "failing QA check should produce check_failed action",
+        )
+        self.assertFalse(result["pass"], "failing QA check should set pass to False")
 
     def test_does_not_mutate_state(self):
         self.write_state("check-1")
@@ -69,7 +114,11 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         original_state = state["current_state"]
         compute_next(state, self.sflo_dir)
-        self.assertEqual(state["current_state"], original_state)
+        self.assertEqual(
+            state["current_state"],
+            original_state,
+            "compute_next should not mutate current_state",
+        )
 
 
 class TestApplyTransition(TempDirMixin, unittest.TestCase):
@@ -81,8 +130,12 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(state["current_state"], "gate-2")
-        self.assertIn("next", result)
+        self.assertEqual(
+            state["current_state"],
+            "gate-2",
+            "validated check-1 should advance state to gate-2",
+        )
+        self.assertIn("next", result, "validated transition should include next key")
 
     def test_gate5_validated_reaches_done(self):
         self.write_state("check-5")
@@ -90,7 +143,11 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(state["current_state"], "done")
+        self.assertEqual(
+            state["current_state"],
+            "done",
+            "validated check-5 should advance state to done",
+        )
 
     def test_qa_failure_loops_inner(self):
         self.write_state("check-3", inner=2)
@@ -101,9 +158,17 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(result["state"], "loop-inner")
-        self.assertEqual(result["inner_count"], 3)
-        self.assertEqual(state["current_state"], "gate-2")
+        self.assertEqual(
+            result["state"],
+            "loop-inner",
+            "QA failure with retries left should loop inner",
+        )
+        self.assertEqual(
+            result["inner_count"], 3, "inner loop count should increment to 3"
+        )
+        self.assertEqual(
+            state["current_state"], "gate-2", "inner loop should reset state to gate-2"
+        )
 
     def test_qa_failure_exhausted(self):
         self.write_state("check-3", inner=9)
@@ -114,8 +179,16 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(result["state"], "loop-inner-exhausted")
-        self.assertEqual(state["current_state"], "gate-4")
+        self.assertEqual(
+            result["state"],
+            "loop-inner-exhausted",
+            "QA failure at max retries should exhaust inner loop",
+        )
+        self.assertEqual(
+            state["current_state"],
+            "gate-4",
+            "exhausted inner loop should advance state to gate-4",
+        )
 
     def test_pm_rejection_loops_outer(self):
         self.write_state("check-4", inner=5, outer=1)
@@ -126,9 +199,17 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(result["state"], "loop-outer")
-        self.assertEqual(state["inner_loops"], 0)
-        self.assertEqual(state["outer_loops"], 2)
+        self.assertEqual(
+            result["state"],
+            "loop-outer",
+            "PM rejection with retries left should loop outer",
+        )
+        self.assertEqual(
+            state["inner_loops"], 0, "outer loop should reset inner_loops to 0"
+        )
+        self.assertEqual(
+            state["outer_loops"], 2, "outer loop count should increment to 2"
+        )
 
     def test_pm_rejection_escalates(self):
         self.write_state("check-4", outer=9)
@@ -139,14 +220,22 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(result["state"], "escalate")
-        self.assertEqual(state["current_state"], "escalate")
+        self.assertEqual(
+            result["state"], "escalate", "PM rejection at max retries should escalate"
+        )
+        self.assertEqual(
+            state["current_state"],
+            "escalate",
+            "escalated state should be written to current_state",
+        )
 
     def test_non_check_actions_pass_through(self):
         result = {"action": "spawn_agent", "agent": {"role": "pm"}}
         state = {"current_state": "gate-1"}
         returned = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(returned, result)
+        self.assertEqual(
+            returned, result, "non-check actions should pass through unchanged"
+        )
 
 
 class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
@@ -165,27 +254,44 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
-        self.assertEqual(result["state"], "loop-inner")
+        self.assertEqual(
+            result["state"], "loop-inner", "QA failure should trigger inner loop"
+        )
 
         # QA-REPORT.md should be archived (moved to logs/, not at top level)
-        self.assertFalse(os.path.isfile(os.path.join(self.sflo_dir, "QA-REPORT.md")))
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.sflo_dir, "QA-REPORT.md")),
+            "QA-REPORT.md should be archived from top level after failure",
+        )
         self.assertTrue(
-            os.path.isfile(os.path.join(self.sflo_dir, "logs", "QA-REPORT.md"))
+            os.path.isfile(os.path.join(self.sflo_dir, "logs", "QA-REPORT.md")),
+            "QA-REPORT.md should be moved to logs/ directory",
         )
 
         # But QA-FEEDBACK.md should exist with the findings (preserved in place)
         feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
-        self.assertTrue(os.path.isfile(feedback_path))
+        self.assertTrue(
+            os.path.isfile(feedback_path),
+            "QA-FEEDBACK.md should be created with findings",
+        )
         with open(feedback_path) as f:
             content = f.read()
-        self.assertIn("Missing spacing scale", content)
-        self.assertIn("No error states", content)
+        self.assertIn(
+            "Missing spacing scale",
+            content,
+            "feedback should contain 'Missing spacing scale' finding",
+        )
+        self.assertIn(
+            "No error states",
+            content,
+            "feedback should contain 'No error states' finding",
+        )
 
     def test_qa_pass_cleans_feedback(self):
         """When QA finally passes, feedback file is removed."""
         self.write_state("check-3")
         self.write_artifact("QA-REPORT.md", PASSING_ARTIFACTS["QA-REPORT.md"])
-        # Simulate leftover feedback from prior failed round
+        _write_sibling_artifacts(self.sflo_dir, 3, "QA-REPORT.md")
         self.write_artifact("QA-FEEDBACK.md", "## QA Round 1\n### QA Grade: C\n")
 
         state = self.read_state_file()
@@ -193,7 +299,10 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         apply_transition(state, result, self.sflo_dir)
 
         # Feedback should be cleaned up
-        self.assertFalse(os.path.isfile(os.path.join(self.sflo_dir, "QA-FEEDBACK.md")))
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.sflo_dir, "QA-FEEDBACK.md")),
+            "QA-FEEDBACK.md should be removed after QA passes",
+        )
 
     def test_feedback_accumulates_across_retries(self):
         """Multiple QA failures accumulate findings in QA-FEEDBACK.md."""
@@ -220,10 +329,18 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
         with open(feedback_path) as f:
             content = f.read()
-        self.assertIn("Bug A", content)
-        self.assertIn("Bug B", content)
-        self.assertIn("QA Round 1", content)
-        self.assertIn("QA Round 2", content)
+        self.assertIn(
+            "Bug A", content, "feedback should accumulate Bug A from first failure"
+        )
+        self.assertIn(
+            "Bug B", content, "feedback should accumulate Bug B from second failure"
+        )
+        self.assertIn(
+            "QA Round 1", content, "feedback should contain QA Round 1 header"
+        )
+        self.assertIn(
+            "QA Round 2", content, "feedback should contain QA Round 2 header"
+        )
 
 
 class TestAutoTransition(TempDirMixin, unittest.TestCase):
@@ -232,21 +349,35 @@ class TestAutoTransition(TempDirMixin, unittest.TestCase):
         self.write_artifact("SCOPE.md", "content")
         state = self.read_state_file()
         changed = auto_transition(state, self.sflo_dir)
-        self.assertTrue(changed)
-        self.assertEqual(state["current_state"], "check-1")
+        self.assertTrue(
+            changed, "auto_transition should return True when artifact exists"
+        )
+        self.assertEqual(
+            state["current_state"],
+            "check-1",
+            "auto_transition should advance gate-1 to check-1",
+        )
 
     def test_no_transition_without_artifact(self):
         self.write_state("gate-1")
         state = self.read_state_file()
         changed = auto_transition(state, self.sflo_dir)
-        self.assertFalse(changed)
-        self.assertEqual(state["current_state"], "gate-1")
+        self.assertFalse(
+            changed, "auto_transition should return False without artifact"
+        )
+        self.assertEqual(
+            state["current_state"],
+            "gate-1",
+            "state should remain gate-1 without artifact",
+        )
 
     def test_no_transition_for_non_gate_state(self):
         self.write_state("done")
         state = self.read_state_file()
         changed = auto_transition(state, self.sflo_dir)
-        self.assertFalse(changed)
+        self.assertFalse(
+            changed, "auto_transition should return False for non-gate state"
+        )
 
 
 class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
@@ -270,9 +401,17 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
     def test_compute_next_returns_check_failed(self):
         state = self._gate1_failure_state()
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "check_failed")
-        self.assertEqual(result["gate"], 1)
-        self.assertFalse(result["pass"])
+        self.assertEqual(
+            result["action"],
+            "check_failed",
+            "gate-1 with placeholder should produce check_failed",
+        )
+        self.assertEqual(
+            result["gate"], 1, "check_failed result should reference gate 1"
+        )
+        self.assertFalse(
+            result["pass"], "gate-1 with placeholder should fail validation"
+        )
 
     def test_first_failure_retries_with_loop_back(self):
         """First gate-1 failure should loop_back (retry), not escalate."""
@@ -280,11 +419,25 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
 
-        self.assertEqual(result["action"], "loop_back")
-        self.assertEqual(result["gate_retry_count"], 1)
+        self.assertEqual(
+            result["action"],
+            "loop_back",
+            "first gate-1 failure should loop back, not escalate",
+        )
+        self.assertEqual(
+            result["gate_retry_count"],
+            1,
+            "gate retry count should be 1 after first failure",
+        )
         on_disk = self.read_state_file()
-        self.assertEqual(on_disk["current_state"], "gate-1")
-        self.assertEqual(on_disk["gates"]["1"]["status"], "pending")
+        self.assertEqual(
+            on_disk["current_state"], "gate-1", "loop_back should reset state to gate-1"
+        )
+        self.assertEqual(
+            on_disk["gates"]["1"]["status"],
+            "pending",
+            "loop_back should reset gate-1 status to pending",
+        )
 
     def test_retries_exhaust_then_escalate(self):
         """After INNER_LOOP_MAX retries, gate-1 failure escalates to ask_human."""
@@ -300,15 +453,45 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
 
-        self.assertEqual(result["action"], "ask_human")
+        self.assertEqual(
+            result["action"],
+            "ask_human",
+            "exhausted retries should produce ask_human action",
+        )
         on_disk = self.read_state_file()
-        self.assertEqual(on_disk["current_state"], "escalate")
-        self.assertIn("escalate_reason", on_disk)
-        self.assertIn("SCOPE.md", on_disk["escalate_reason"])
-        self.assertIn("escalate_options", on_disk)
-        self.assertGreaterEqual(len(on_disk["escalate_options"]), 1)
-        self.assertIn("escalate_failed_checks", on_disk)
-        self.assertGreaterEqual(len(on_disk["escalate_failed_checks"]), 1)
+        self.assertEqual(
+            on_disk["current_state"],
+            "escalate",
+            "exhausted retries should set state to escalate",
+        )
+        self.assertIn(
+            "escalate_reason", on_disk, "escalated state should contain escalate_reason"
+        )
+        self.assertIn(
+            "SCOPE.md",
+            on_disk["escalate_reason"],
+            "escalate_reason should reference SCOPE.md",
+        )
+        self.assertIn(
+            "escalate_options",
+            on_disk,
+            "escalated state should contain escalate_options",
+        )
+        self.assertGreaterEqual(
+            len(on_disk["escalate_options"]),
+            1,
+            "escalate_options should have at least one option",
+        )
+        self.assertIn(
+            "escalate_failed_checks",
+            on_disk,
+            "escalated state should contain escalate_failed_checks",
+        )
+        self.assertGreaterEqual(
+            len(on_disk["escalate_failed_checks"]),
+            1,
+            "escalate_failed_checks should have at least one entry",
+        )
 
     def test_escalated_state_returns_stored_reason(self):
         """Once escalated, compute_next on escalate state returns the gate-specific reason."""
@@ -326,9 +509,21 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         state2 = self.read_state_file()
         result2 = compute_next(state2, self.sflo_dir)
 
-        self.assertEqual(result2["action"], "ask_human")
-        self.assertIn("SCOPE.md", result2["reason"])
-        self.assertNotIn("PM rejected", result2["reason"])
+        self.assertEqual(
+            result2["action"],
+            "ask_human",
+            "escalated state should return ask_human on re-read",
+        )
+        self.assertIn(
+            "SCOPE.md",
+            result2["reason"],
+            "escalated reason should reference the failing artifact",
+        )
+        self.assertNotIn(
+            "PM rejected",
+            result2["reason"],
+            "gate-specific escalation should not use PM rejection message",
+        )
 
     def test_compute_next_on_escalate_falls_back_when_no_stored_reason(self):
         """Backwards compat: if state.escalate_reason is missing (old
@@ -343,14 +538,22 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
 
         result = compute_next(state, self.sflo_dir)
-        self.assertEqual(result["action"], "ask_human")
-        self.assertIn("PM rejected", result["reason"])
+        self.assertEqual(
+            result["action"],
+            "ask_human",
+            "escalate state without stored reason should still return ask_human",
+        )
+        self.assertIn(
+            "PM rejected",
+            result["reason"],
+            "missing escalate_reason should fall back to PM rejection default",
+        )
 
     def test_gate1_failure_does_not_silent_spin(self):
         """Regression guard: apply_transition on a gate-1 check_failed must
         mutate state (change current_state or gate status)."""
         state = self._gate1_failure_state()
-        pre_current = state["current_state"]
+        state["current_state"]
 
         result = compute_next(state, self.sflo_dir)
         apply_transition(state, result, self.sflo_dir)
@@ -364,6 +567,109 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
             "pending",
             "apply_transition failed to reset gate 1 status — would cause silent spin",
         )
+
+
+class TestResolveAgentPath(unittest.TestCase):
+    """Test _resolve_agent_path priority chain including agents: plural."""
+
+    def setUp(self):
+        from src.machine import _resolve_agent_path
+
+        self.resolve = _resolve_agent_path
+        self.sflo_base = "/fake/sflo"
+
+    def test_singular_agent_wins(self):
+        """agent: (singular) takes highest priority."""
+        entry = {"role": "qa", "agent": "agents/custom-qa"}
+        result = self.resolve(entry, self.sflo_base, {}, {})
+        self.assertEqual(result, "/fake/sflo/agents/custom-qa")
+
+    def test_agents_plural_first_entry(self):
+        """agents: list uses first entry as primary when no singular agent:."""
+        entry = {
+            "role": "qa",
+            "agents": ["agents/qa-combo", "vendor/x/agents/reviewer"],
+        }
+        result = self.resolve(entry, self.sflo_base, {}, {})
+        self.assertEqual(result, "/fake/sflo/agents/qa-combo")
+
+    def test_singular_takes_precedence_over_plural(self):
+        """agent: (singular) wins even when agents: (plural) also present."""
+        entry = {
+            "role": "qa",
+            "agent": "agents/explicit",
+            "agents": ["agents/from-list", "agents/other"],
+        }
+        result = self.resolve(entry, self.sflo_base, {}, {})
+        self.assertEqual(result, "/fake/sflo/agents/explicit")
+
+    def test_empty_agents_list_falls_through(self):
+        """Empty agents: [] should fall through to role config / scout."""
+        entry = {"role": "qa", "agents": []}
+        assignments = {"qa": "/assigned/by/scout"}
+        result = self.resolve(entry, self.sflo_base, {}, assignments)
+        self.assertEqual(result, "/assigned/by/scout")
+
+    def test_no_agent_fields_uses_scout_assignment(self):
+        """No agent: or agents: → scout assignment."""
+        entry = {"role": "dev"}
+        assignments = {"dev": "/scout/picked/this"}
+        result = self.resolve(entry, self.sflo_base, {}, assignments)
+        self.assertEqual(result, "/scout/picked/this")
+
+    def test_no_agent_no_scout_convention_default(self):
+        """No agent:, no agents:, no scout → convention: sflo_base/agents/<role>."""
+        entry = {"role": "pm"}
+        result = self.resolve(entry, self.sflo_base, {}, {})
+        self.assertEqual(result, "/fake/sflo/agents/pm")
+
+    def test_absolute_agents_path_preserved(self):
+        """Absolute path in agents: list is not joined with sflo_base."""
+        entry = {"role": "qa", "agents": ["/abs/path/to/agent"]}
+        result = self.resolve(entry, self.sflo_base, {}, {})
+        self.assertEqual(result, "/abs/path/to/agent")
+
+
+class TestRolesWithExplicitAgents(unittest.TestCase):
+    """Test _roles_with_explicit_agents extracts pre-assigned roles from gates config."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from src.runner import _roles_with_explicit_agents
+
+        self.extract = _roles_with_explicit_agents
+
+    def test_singular_agent_detected(self):
+        """Gate with agent: (singular) marks role as pre-assigned."""
+        gates = {1: {"role": "dev", "agent": "agents/dev", "artifact": "X.md"}}
+        self.assertEqual(self.extract(gates), {"dev"})
+
+    def test_plural_agents_detected(self):
+        """Gate with agents: (plural list) marks role as pre-assigned."""
+        gates = {
+            3: [
+                {"role": "qa", "agents": ["agents/qa-combo"], "artifact": "QA.md"},
+                {"role": "security", "artifact": "SEC.md"},
+            ]
+        }
+        self.assertEqual(self.extract(gates), {"qa"})
+
+    def test_no_agents_not_detected(self):
+        """Gate without agent:/agents: is NOT pre-assigned."""
+        gates = {1: {"role": "pm", "artifact": "SCOPE.md"}}
+        self.assertEqual(self.extract(gates), set())
+
+    def test_mixed_gates(self):
+        """Mix of pre-assigned and discoverable roles."""
+        gates = {
+            1: {"role": "pm", "artifact": "SCOPE.md"},
+            2: {"role": "dev", "agent": "agents/dev", "artifact": "BUILD.md"},
+            3: [
+                {"role": "qa", "agents": ["agents/qa-h17"], "artifact": "QA.md"},
+                {"role": "security", "artifact": "SEC.md"},
+            ],
+        }
+        self.assertEqual(self.extract(gates), {"dev", "qa"})
 
 
 if __name__ == "__main__":

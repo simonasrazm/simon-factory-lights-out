@@ -68,6 +68,22 @@ def check_agent_soul(role, agent_path):
     return issues
 
 
+def check_pipeline_yaml():
+    """Verify pipeline.yaml is discoverable.
+
+    Returns issue string if missing, None if found.
+    """
+    from .config import resolve_pipeline_path
+
+    if not resolve_pipeline_path():
+        return (
+            "pipeline.yaml not found. SFLO requires pipeline.yaml at "
+            "cwd/, cwd/sflo/, or SFLO_ROOT/. "
+            "Copy sflo/pipeline.yaml to your project root to get started."
+        )
+    return None
+
+
 def preflight_check(assignments, sflo_dir=None):
     """Run pre-flight validation on all assigned agents.
 
@@ -81,11 +97,16 @@ def preflight_check(assignments, sflo_dir=None):
     """
     all_issues = []
 
+    # Check pipeline.yaml exists
+    yaml_issue = check_pipeline_yaml()
+    if yaml_issue:
+        all_issues.append(yaml_issue)
+
     # Scout may return metadata keys alongside the agent-role assignments
     # (e.g. host projects can extend scout to emit complexity scores or
     # routing hints). Only agent-role keys point to filesystem agent paths —
     # metadata keys hold ints/strings and must not be path-resolved.
-    _AGENT_ROLES = {"pm", "dev", "qa", "scout", "interrogator", "troubleshooter"}
+    _AGENT_ROLES = {"pm", "dev", "qa", "scout"}
 
     for role, agent_path in (assignments or {}).items():
         if role not in _AGENT_ROLES:

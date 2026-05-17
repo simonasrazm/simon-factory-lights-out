@@ -22,7 +22,25 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.validate import validate_gate, section_body, PLACEHOLDER_PATTERN
-from src.constants import GRADE_MAP, GRADE_THRESHOLD
+from src.constants import GRADE_MAP, GRADE_THRESHOLD, GATES
+
+
+def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
+    """Write minimal passing artifacts for all entries in a list gate except skip_artifact."""
+    info = GATES.get(gate_num)
+    if not isinstance(info, list):
+        return
+    for entry in info:
+        artifact = entry.get("artifact")
+        if not artifact or artifact == skip_artifact:
+            continue
+        path = os.path.join(tmpdir, artifact)
+        if not os.path.isfile(path):
+            with open(path, "w") as f:
+                f.write(
+                    f"# {artifact}\n\n### Summary\n- Critical: 0\n\n"
+                    f"### Findings\nNone.\n\n### Grade: A\n"
+                )
 
 
 class TestScaffoldingDecoysRejected(unittest.TestCase):
@@ -105,9 +123,7 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
         below_val = max(
             (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
         )
-        below_letter = next(
-            (k for k, v in GRADE_MAP.items() if v == below_val), None
-        )
+        below_letter = next((k for k, v in GRADE_MAP.items() if v == below_val), None)
         if below_letter is None:
             self.skipTest("No grade below threshold in GRADE_MAP")
         self.write(
@@ -118,8 +134,11 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
                 "### Stranger Test\nNo.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
-        self.assertFalse(passed, f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}")
+        self.assertFalse(
+            passed, f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}"
+        )
         failed_names = {c["name"] for c in checks if not c["pass"]}
         self.assertIn("grade_sufficient", failed_names)
 
@@ -134,6 +153,7 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
                 "### Stranger Test\nYes — very useful.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(passed, "Mock data auto-fail should trigger")
         failed_names = {c["name"] for c in checks if not c["pass"]}
@@ -290,15 +310,13 @@ class TestContentDepthPassPath(unittest.TestCase):
                 "### Stranger Test\nYes — useful.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
         self.assertTrue(passed, f"Minimum viable QA-REPORT.md should pass: {failed}")
 
     def test_gate3_fail_entries_dont_block_grade(self):
         """FAIL entries in test results don't block if grade is sufficient."""
-        # Use the threshold-equal letter so this test tracks the configured
-        # bar (pipeline.yaml `threshold:`). Hardcoding "B+" broke when the
-        # project bumped the QA bar to A.
         threshold_letter = next(
             (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
         )
@@ -314,6 +332,7 @@ class TestContentDepthPassPath(unittest.TestCase):
                 "### Stranger Test\nNo — missing critical styling.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         # Grade at threshold, no auto-fail triggers.
         grade_check = next(c for c in checks if c["name"] == "grade_sufficient")
@@ -324,8 +343,6 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_mixed_case_grade(self):
         """Grade field extraction should work with various formats."""
-        # Pick the threshold-equal letter so the gate passes regardless of
-        # the project's configured bar.
         threshold_letter = next(
             (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
         )
@@ -337,11 +354,10 @@ class TestContentDepthPassPath(unittest.TestCase):
                 "### Stranger Test\nYes — reasonable value.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         failed = [c for c in checks if not c["pass"]]
-        self.assertTrue(
-            passed, f"Grade {threshold_letter} should pass: {failed}"
-        )
+        self.assertTrue(passed, f"Grade {threshold_letter} should pass: {failed}")
 
     def test_gate3_prose_only_still_passes_if_grade_ok(self):
         """QA with prose-only test results still passes if grade meets threshold.
@@ -355,6 +371,7 @@ class TestContentDepthPassPath(unittest.TestCase):
                 "### Stranger Test\nYes — would recommend.\n"
             ),
         )
+        _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         # Grade A meets threshold, no auto-fail triggers
         self.assertTrue(

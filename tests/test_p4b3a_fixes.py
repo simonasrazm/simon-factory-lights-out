@@ -1,13 +1,11 @@
 """Tests for the 26 fixes (14 MAJOR + 12 MINOR) applied in one batch."""
 
-import asyncio
 import json
 import os
 import sys
 import tempfile
 import time
 
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,7 +23,9 @@ def test_m1_ollama_no_os_chdir():
     # Strip comments — comments may mention os.chdir for documentation purposes
     code_lines = [ln for ln in src.splitlines() if not ln.strip().startswith("#")]
     code_only = "\n".join(code_lines)
-    assert "os.chdir(" not in code_only, "os.chdir() call must not appear in OllamaAdapter.spawn_agent()"
+    assert "os.chdir(" not in code_only, (
+        "os.chdir() call must not appear in OllamaAdapter.spawn_agent()"
+    )
 
 
 def test_m1_original_cwd_not_mutated(monkeypatch):
@@ -33,10 +33,12 @@ def test_m1_original_cwd_not_mutated(monkeypatch):
     from src.adapters.ollama import OllamaAdapter
 
     original = os.getcwd()
-    adapter = OllamaAdapter()
+    OllamaAdapter()
     # We just verify the attribute is initialised (not set to a real path)
     # and that no chdir happens during object creation.
-    assert os.getcwd() == original
+    assert os.getcwd() == original, (
+        "OllamaAdapter creation must not change process working directory"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +53,9 @@ def test_m2_check_agent_soul_uses_clean_path():
 
     src = inspect.getsource(mod.preflight_check)
     # The fix changes `check_agent_soul(role, agent_path)` to `check_agent_soul(role, clean_path)`
-    assert "check_agent_soul(role, clean_path)" in src
+    assert "check_agent_soul(role, clean_path)" in src, (
+        "preflight_check must pass clean_path (not raw agent_path) to check_agent_soul"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +69,10 @@ def test_m3_openclaw_no_id_modulo():
     import src.adapters.openclaw as mod
 
     src = inspect.getsource(mod)
-    assert "id(message)" not in src
-    assert "uuid4" in src
+    assert "id(message)" not in src, (
+        "id(message) modulo pattern must be removed from openclaw"
+    )
+    assert "uuid4" in src, "openclaw must use uuid4() for session-id generation"
 
 
 def test_m3_openclaw_session_id_unique():
@@ -74,43 +80,36 @@ def test_m3_openclaw_session_id_unique():
     from uuid import uuid4
 
     ids = {uuid4().hex for _ in range(100)}
-    assert len(ids) == 100
+    assert len(ids) == 100, "100 uuid4 calls must produce 100 unique hex values"
 
 
 # ---------------------------------------------------------------------------
-# M4: bindings.py — load_evals_section deleted
+# M4: bindings.py — removed (migrated to config.py + security.py)
 # ---------------------------------------------------------------------------
 
 
-def test_m4_load_evals_section_removed():
-    """load_evals_section dead-code wrapper must be removed from bindings."""
-    import src.bindings as mod
+def test_m4_bindings_module_removed():
+    """bindings.py must be deleted — functionality migrated to config.py + security.py."""
+    import importlib
+    import importlib.util
 
-    assert not hasattr(mod, "load_evals_section"), (
-        "load_evals_section dead-code wrapper should have been removed"
-    )
+    spec = importlib.util.find_spec("src.bindings")
+    assert spec is None, "src.bindings module should no longer exist"
 
 
 # ---------------------------------------------------------------------------
-# M5: bindings.py docstring — thinking/effort consumed by adapter integrations
+# M5: security config available from security.py
 # ---------------------------------------------------------------------------
 
 
-def test_m5_bindings_docstring_documents_thinking_consumption():
-    """bindings.py module docstring must clarify how thinking/effort are consumed."""
-    import src.bindings as mod
+def test_m5_security_config_from_security_module():
+    """Security config must be loadable from the new security.py module."""
+    from src.security import load_security_config, SECURITY_KEYS
 
-    doc = mod.__doc__ or ""
-    # Generic assertion: docstring must mention that thinking/effort are
-    # consumed by adapter integrations (or similar consumer-side language).
-    # Avoid naming any specific host-project module.
-    assert any(
-        marker in doc.lower()
-        for marker in ("adapter integration", "consumed by", "consumer-side", "consumed")
-    ), (
-        "bindings.py docstring must document thinking/effort consumption via "
-        "adapter integrations (no specific host-project module name required)."
-    )
+    config = load_security_config()
+    assert isinstance(config, dict)
+    for key in SECURITY_KEYS:
+        assert key in config
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +151,9 @@ def test_m7_stale_lock_recovery():
         # Should recover without raising
         fd = acquire_lock(d)
         # Verify we got a valid fd
-        assert fd >= 0
+        assert fd >= 0, (
+            "acquire_lock must return a valid file descriptor after stale-lock recovery"
+        )
         release_lock(d, fd)
 
 
@@ -186,7 +187,9 @@ def test_m8_install_signal_handler_public():
     assert hasattr(mod, "install_signal_handler"), (
         "install_signal_handler must be a public name in runner module"
     )
-    assert callable(mod.install_signal_handler)
+    assert callable(mod.install_signal_handler), (
+        "install_signal_handler must be callable"
+    )
 
 
 def test_m8_private_still_exists():
@@ -202,12 +205,12 @@ def test_m8_private_still_exists():
 
 
 def test_m9_degraded_verdict_in_source():
-    """Runner STST gate must produce DEGRADED when tool_errors but no REJECT."""
+    """Runner must produce DEGRADED when tool_errors but no REJECT."""
     import inspect
     import src.runner as mod
 
     src = inspect.getsource(mod.run_pipeline)
-    assert "DEGRADED" in src
+    assert "DEGRADED" in src, "run_pipeline source must contain DEGRADED verdict string"
 
 
 def test_m9_verdict_logic():
@@ -220,7 +223,9 @@ def test_m9_verdict_logic():
         overall_verdict = "DEGRADED"
     else:
         overall_verdict = "PASS"
-    assert overall_verdict == "DEGRADED"
+    assert overall_verdict == "DEGRADED", (
+        "expected DEGRADED when tool_errors present but no reject"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -234,9 +239,13 @@ def test_m10_mcp_bridge_narrow_except():
     import src.mcp_bridge as mod
 
     src = inspect.getsource(mod.OllamaMCPBridge.close)
-    assert "except (RuntimeError, asyncio.CancelledError, OSError)" in src
+    assert "except (RuntimeError, asyncio.CancelledError, OSError)" in src, (
+        "mcp_bridge.close must catch specific exceptions, not bare Exception"
+    )
     # bare Exception catch is gone
-    assert ", Exception)" not in src
+    assert ", Exception)" not in src, (
+        "bare Exception catch must be removed from mcp_bridge.close"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -249,35 +258,50 @@ def test_m11_non_retryable_prompt_errors():
     import inspect
     import src.runner as mod
 
-    src = inspect.getsource(mod.run_pipeline)
-    assert "non-retryable" in src.lower() or "_is_prompt_error" in src
-    assert "JSONDecodeError" in src
-    assert "KeyError" in src
+    # Retry logic lives in default_agent_runner (extracted from run_pipeline)
+    src = inspect.getsource(mod.default_agent_runner)
+    assert "non-retryable" in src.lower() or "_is_prompt_error" in src, (
+        "default_agent_runner must contain non-retryable classification logic"
+    )
+    assert "JSONDecodeError" in src, (
+        "JSONDecodeError must be classified as non-retryable"
+    )
+    assert "KeyError" in src, "KeyError must be classified as non-retryable"
 
 
-def test_m11_transient_errors_retried():
-    """ConnectionError and TimeoutError are classified as transient."""
+def test_m11_typed_exceptions_for_retry():
+    """Retry logic uses typed exceptions (TransientError/NonRetryableError)."""
     import inspect
     import src.runner as mod
 
-    src = inspect.getsource(mod.run_pipeline)
-    assert "ConnectionError" in src
-    assert "TimeoutError" in src
+    # Retry logic lives in default_agent_runner (extracted from run_pipeline)
+    src = inspect.getsource(mod.default_agent_runner)
+    assert "NonRetryableError" in src, (
+        "Must use NonRetryableError for non-retryable classification"
+    )
+    # Typed exceptions imported from adapters.errors
+    from src.adapters.errors import TransientError, NonRetryableError
+
+    assert issubclass(TransientError, Exception)
+    assert issubclass(NonRetryableError, Exception)
 
 
 # ---------------------------------------------------------------------------
-# M12: scaffold.py — known_files includes STST-REPORT.md etc.
+# M12: scaffold.py — known_files derived from GATES config
 # ---------------------------------------------------------------------------
 
 
-def test_m12_known_files_includes_stst():
-    """cmd_clean known_files must include STST-REPORT.md, STST-FEEDBACK.md, state.lock, .last_hook_state."""
+def test_m12_known_files_from_gates():
+    """cmd_clean known_files must include artifacts from GATES, state.lock, .last_hook_state."""
     import inspect
     import src.scaffold as mod
 
     src = inspect.getsource(mod.cmd_clean)
-    for name in ("STST-REPORT.md", "STST-FEEDBACK.md", "state.lock", ".last_hook_state"):
+    for name in ("state.lock", ".last_hook_state"):
         assert name in src, f"{name} missing from cmd_clean known_files"
+    assert "_SCAFFOLD_GATES" in src or "GATES" in src, (
+        "cmd_clean must derive artifact list from GATES"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -289,15 +313,21 @@ def test_m13_eval_registry_class_exists():
     """EvalRegistry class must be defined in registry module."""
     import src.evals.registry as mod
 
-    assert hasattr(mod, "EvalRegistry")
-    assert isinstance(mod.EvalRegistry, type)
+    assert hasattr(mod, "EvalRegistry"), (
+        "EvalRegistry class must be defined in src.evals.registry"
+    )
+    assert isinstance(mod.EvalRegistry, type), (
+        "EvalRegistry must be a class, not an instance or function"
+    )
 
 
 def test_m13_loaded_evals_same_object_as_registry_store():
     """_LOADED_EVALS and _registry._store must be the same list object."""
     import src.evals.registry as mod
 
-    assert mod._LOADED_EVALS is mod._registry._store
+    assert mod._LOADED_EVALS is mod._registry._store, (
+        "_LOADED_EVALS must be the same object as _registry._store"
+    )
 
 
 def test_m13_clear_registry_clears_loaded_evals():
@@ -306,9 +336,11 @@ def test_m13_clear_registry_clears_loaded_evals():
 
     # Temporarily add a sentinel
     mod._LOADED_EVALS.append("sentinel")
-    assert len(mod._LOADED_EVALS) > 0
+    assert len(mod._LOADED_EVALS) > 0, "sentinel must be present before clear"
     mod.clear_registry()
-    assert len(mod._LOADED_EVALS) == 0
+    assert len(mod._LOADED_EVALS) == 0, (
+        "_LOADED_EVALS must be empty after clear_registry()"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +354,12 @@ def test_m14_cmd_assign_role_validation_source():
     import src.scaffold as mod
 
     src = inspect.getsource(mod.cmd_assign)
-    assert "_ASSIGNABLE_ROLES" in src
-    assert "_INTERNAL_TOKENS" in src
+    assert "_ASSIGNABLE_ROLES" in src, (
+        "cmd_assign must reference _ASSIGNABLE_ROLES for validation"
+    )
+    assert "_INTERNAL_TOKENS" in src, (
+        "cmd_assign must reference _INTERNAL_TOKENS for filtering"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +384,12 @@ def test_m1_minor_no_inline_imports():
 
     # Check run_pipeline specifically
     src = inspect.getsource(mod.run_pipeline)
-    for banned in ("import shutil", "import subprocess", "import glob", "import traceback"):
+    for banned in (
+        "import shutil",
+        "import subprocess",
+        "import glob",
+        "import traceback",
+    ):
         assert banned not in src, f"Inline '{banned}' found in run_pipeline"
 
 
@@ -365,7 +406,7 @@ def test_m2_minor_section_body_local_removed():
         "_section_body_local should be removed"
     )
     assert hasattr(mod, "section_body"), "section_body must exist"
-    assert callable(mod.section_body)
+    assert callable(mod.section_body), "section_body must be callable"
 
 
 def test_m2_minor_section_body_works():
@@ -374,8 +415,12 @@ def test_m2_minor_section_body_works():
 
     content = "## Summary\nsome text\n## Next\nother"
     result = section_body(content, "Summary")
-    assert "some text" in result
-    assert "other" not in result
+    assert "some text" in result, (
+        "section_body must extract content under the matching heading"
+    )
+    assert "other" not in result, (
+        "section_body must not include content from the next heading"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +434,9 @@ def test_m3_minor_state_path_imported():
     import src.runner as mod
 
     src = inspect.getsource(mod)
-    assert "state_path" in src
+    assert "state_path" in src, (
+        "runner module must reference state_path from state module"
+    )
 
 
 def test_m3_minor_prior_state_path_uses_function():
@@ -398,7 +445,9 @@ def test_m3_minor_prior_state_path_uses_function():
     import src.runner as mod
 
     src = inspect.getsource(mod.run_pipeline)
-    assert "state_path(sflo_dir)" in src
+    assert "state_path(sflo_dir)" in src, (
+        "run_pipeline must call state_path(sflo_dir) instead of hardcoded path"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +476,7 @@ def test_m5_minor_logger_has_close():
 
     with tempfile.TemporaryDirectory() as d:
         log = make_logger(d, verbose=False)
-        assert callable(log)
+        assert callable(log), "make_logger must return a callable"
         assert hasattr(log, "close"), "logger must have close() method"
         log("test message")
         log.close()
@@ -444,12 +493,15 @@ def test_m6_minor_json_sliding_window_in_source():
     import src.runner as mod
 
     src = inspect.getsource(mod.run_pipeline)
-    assert "_extract_json_obj" in src
+    assert "_extract_json_obj" in src, (
+        "run_pipeline must use _extract_json_obj sliding-window extractor"
+    )
     assert r'[^{}]*"pm"' not in src, "Old regex pattern must be removed"
 
 
 def test_m6_minor_nested_brace_extraction():
     """_extract_json_obj-equivalent must handle nested braces in JSON."""
+
     # Simulate the sliding-window function inline
     def _extract_json_obj(text):
         start = text.find("{")
@@ -466,21 +518,27 @@ def test_m6_minor_nested_brace_extraction():
 
     nested = 'some text {"pm": "/path/{a}/b", "dev": "/x", "qa": "/y"} end'
     result = _extract_json_obj(nested)
-    assert result is not None
-    assert result["pm"] == "/path/{a}/b"
+    assert result is not None, (
+        "sliding-window extractor must find JSON object in text with nested braces"
+    )
+    assert result["pm"] == "/path/{a}/b", (
+        "extracted JSON must preserve nested braces in values"
+    )
 
 
 # ---------------------------------------------------------------------------
-# m7: runner.py docstring — --bindings documented
+# m7: runner.py docstring — pipeline.yaml documented
 # ---------------------------------------------------------------------------
 
 
-def test_m7_minor_bindings_in_docstring():
-    """runner.py module docstring must document --bindings flag."""
+def test_m7_minor_pipeline_in_docstring():
+    """runner.py module docstring must reference pipeline.yaml."""
     import src.runner as mod
 
     doc = mod.__doc__ or ""
-    assert "--bindings" in doc, "runner module docstring must document --bindings"
+    assert "sflo-dir" in doc or "pipeline" in doc.lower(), (
+        "runner module docstring must reference pipeline configuration"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -489,12 +547,18 @@ def test_m7_minor_bindings_in_docstring():
 
 
 def test_m8_minor_grade_threshold_refactor():
-    """load_pipeline_config must use _default_numeric variable."""
+    """load_pipeline_config uses inline numeric fallback (no _DEFAULT_THRESHOLD constant)."""
     import inspect
     import src.config as mod
 
     src = inspect.getsource(mod.load_pipeline_config)
-    assert "_default_numeric" in src
+    # After cleanup: no _DEFAULT_THRESHOLD constant, fallback is inlined as 5
+    assert "_DEFAULT_THRESHOLD" not in src, (
+        "load_pipeline_config should not reference _DEFAULT_THRESHOLD constant"
+    )
+    assert "grade_threshold" in src, (
+        "load_pipeline_config must still set grade_threshold"
+    )
 
 
 def test_m8_minor_load_pipeline_config_defaults():
@@ -503,7 +567,9 @@ def test_m8_minor_load_pipeline_config_defaults():
 
     cfg = load_pipeline_config(path=None)
     assert isinstance(cfg["grade_threshold"], (int, float))
-    assert cfg["grade_threshold"] > 0
+    assert cfg["grade_threshold"] > 0, (
+        "default grade_threshold must be a positive number"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -517,8 +583,12 @@ def test_m9_minor_prompt_uses_sys_executable():
     import src.prompt as mod
 
     src = inspect.getsource(mod)
-    assert "sys.executable" in src
-    assert "PYTHON_CMD" not in src
+    assert "sys.executable" in src, (
+        "prompt.py must use sys.executable for Python invocation"
+    )
+    assert "PYTHON_CMD" not in src, (
+        "PYTHON_CMD constant must not appear in prompt.py source"
+    )
 
 
 def test_m9_minor_format_prompt_no_python_cmd_import():
@@ -539,8 +609,10 @@ def test_m10_minor_loop_count_try_except():
     import src.hooks.cursor.stop_hook as mod
 
     src = inspect.getsource(mod.main)
-    assert "try:" in src
-    assert "loop_count = 0" in src  # default in except
+    assert "try:" in src, "stop_hook main must wrap int(loop_count) in try block"
+    assert "loop_count = 0" in src, (
+        "stop_hook must default loop_count to 0 in except block"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +625,7 @@ def test_m11_minor_strip_think_tags_exists():
     import src.adapters.ollama as mod
 
     assert hasattr(mod, "strip_think_tags")
-    assert callable(mod.strip_think_tags)
+    assert callable(mod.strip_think_tags), "strip_think_tags must be callable"
 
 
 def test_m11_minor_strip_think_tags_works():
@@ -562,9 +634,13 @@ def test_m11_minor_strip_think_tags_works():
 
     text = "before <think>hidden</think> after"
     result = strip_think_tags(text)
-    assert "hidden" not in result
-    assert "before" in result
-    assert "after" in result
+    assert "hidden" not in result, (
+        "strip_think_tags must remove content inside <think> blocks"
+    )
+    assert "before" in result, (
+        "strip_think_tags must preserve text before <think> block"
+    )
+    assert "after" in result, "strip_think_tags must preserve text after <think> block"
 
 
 def test_m11_minor_no_duplicate_re_sub_blocks():
@@ -574,7 +650,9 @@ def test_m11_minor_no_duplicate_re_sub_blocks():
 
     src = inspect.getsource(mod.OllamaAdapter.spawn_agent)
     count = src.count('r"<think>.*?</think>"')
-    assert count == 0, "Duplicated re.sub think blocks must be replaced with strip_think_tags()"
+    assert count == 0, (
+        "Duplicated re.sub think blocks must be replaced with strip_think_tags()"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -588,4 +666,8 @@ def test_m12_minor_placeholder_pattern_has_tradeoff_comment():
     import src.validate as mod
 
     src = inspect.getsource(mod)
-    assert "trade-off" in src.lower() or "tradeoff" in src.lower() or "PLACEHOLDER_PATTERN trade" in src
+    assert (
+        "trade-off" in src.lower()
+        or "tradeoff" in src.lower()
+        or "PLACEHOLDER_PATTERN trade" in src
+    ), "validate.py must have a trade-off comment near PLACEHOLDER_PATTERN"

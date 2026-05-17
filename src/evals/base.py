@@ -47,7 +47,7 @@ class EvalAction(str, Enum):
 
 @dataclass
 class EvalContext:
-    role: str  # current agent role (scout/pm/dev/qa/sflo/interrogator)
+    role: str  # current agent role (scout/pm/dev/qa/sflo)
     site: HookSite  # which lifecycle moment fired
     payload: dict  # site-specific (response_text, tool_args, etc)
     metadata: dict  # session_id, run_id, output_dir, gate_num, cwd, etc

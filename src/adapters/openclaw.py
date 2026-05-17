@@ -11,7 +11,14 @@ class OpenClawAdapter(RuntimeAdapter):
     """Uses `openclaw agent` CLI — full tool access, real agent sessions."""
 
     async def spawn_agent(
-        self, model, system_prompt, user_prompt, cwd=None, role=None, allowed_tools=None
+        self,
+        model,
+        system_prompt,
+        user_prompt,
+        cwd=None,
+        role=None,
+        allowed_tools=None,
+        **kwargs,
     ):
         # role/allowed_tools/cwd accepted for API compatibility
         # with ClaudeCodeAdapter; openclaw CLI doesn't currently honor them.
@@ -30,7 +37,6 @@ class OpenClawAdapter(RuntimeAdapter):
         ]
 
         # Map bindings thinking mode
-        thinking_map = {"off": "off", "adaptive": "adaptive", "extended": "extended"}
         # thinking is passed via model bindings — not directly available here
         # but the CLI defaults are reasonable
 

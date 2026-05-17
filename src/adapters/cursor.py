@@ -27,26 +27,7 @@ import sys
 import time as _time
 
 from .base import RuntimeAdapter
-
-
-# Map SFLO's generic model aliases (used in bindings.yaml: "opus", "sonnet")
-# to Cursor model identifiers. Cursor accepts vendor-specific names directly,
-# so unknown models are passed through unchanged — power users can put any
-# `cursor-agent --list-models` value in bindings.yaml and it will work.
-_MODEL_ALIASES = {
-    "opus": "claude-opus-4-7-thinking-high",
-    "sonnet": "claude-4.6-sonnet-medium-thinking",
-    "haiku": "claude-4.5-haiku-thinking",
-    "gpt": "gpt-5.4-medium",
-    "gpt-codex": "gpt-5.3-codex",
-    "auto": "auto",
-}
-
-
-def _resolve_model(model):
-    if not model:
-        return "auto"
-    return _MODEL_ALIASES.get(model.lower(), model)
+from .errors import TransientError, NonRetryableError
 
 
 class CursorAdapter(RuntimeAdapter):
@@ -57,6 +38,17 @@ class CursorAdapter(RuntimeAdapter):
     parse the final result string.
     """
 
+    # Cursor uses vendor-specific model identifiers. Generic aliases from
+    # pipeline.yaml are mapped here; unknown values pass through unchanged.
+    MODEL_ALIASES = {
+        "opus": "claude-opus-4-7-thinking-high",
+        "sonnet": "claude-4.6-sonnet-medium-thinking",
+        "haiku": "claude-4.5-haiku-thinking",
+        "gpt": "gpt-5.5",
+        "gpt-codex": "gpt-5.2-codex",
+        "auto": "auto",
+    }
+
     # Hard cap on a single gate spawn. Most gates finish well under this;
     # a runaway tool loop would otherwise hang the runner indefinitely.
     SPAWN_TIMEOUT_SECONDS = int(os.environ.get("SFLO_CURSOR_TIMEOUT", "1800"))
@@ -65,7 +57,14 @@ class CursorAdapter(RuntimeAdapter):
     BIN = os.environ.get("SFLO_CURSOR_BIN", "cursor-agent")
 
     async def spawn_agent(
-        self, model, system_prompt, user_prompt, cwd=None, role=None, allowed_tools=None
+        self,
+        model,
+        system_prompt,
+        user_prompt,
+        cwd=None,
+        role=None,
+        allowed_tools=None,
+        **kwargs,
     ):
         # cwd accepted for parity with other adapters (runner.py:729 sets it
         # for dev/qa roles); cursor-agent doesn't expose --cwd in print mode,
@@ -107,7 +106,7 @@ class CursorAdapter(RuntimeAdapter):
             "json",
             "--force",  # auto-approve shell/file tools (yolo)
             "--model",
-            _resolve_model(model),
+            self.resolve_model(model),
         ]
 
         # Honor scout's read-only contract by switching to ask mode. ask mode
@@ -150,13 +149,13 @@ class CursorAdapter(RuntimeAdapter):
             stdout_b = proc.stdout or b""
             stderr_b = proc.stderr or b""
         except subprocess.TimeoutExpired:
-            raise RuntimeError(
+            raise TransientError(
                 f"cursor-agent timed out after {self.SPAWN_TIMEOUT_SECONDS}s "
                 f"(role={role}, model={model}). "
                 "Increase via SFLO_CURSOR_TIMEOUT env var if expected."
             )
         except FileNotFoundError as e:
-            raise RuntimeError(
+            raise NonRetryableError(
                 f"Failed to spawn cursor-agent: {e}. "
                 "Verify the CLI is installed and on PATH."
             )
@@ -167,18 +166,23 @@ class CursorAdapter(RuntimeAdapter):
         elapsed = _time.time() - start
 
         if proc.returncode != 0:
-            # Surface auth errors with an actionable hint so the user knows
-            # to run `cursor-agent login` instead of debugging adapter code.
-            hint = ""
             low = (stderr + stdout).lower()
-            if "unauthor" in low or "login" in low or "401" in low:
-                hint = " (run `cursor-agent login` or set CURSOR_API_KEY)"
             tail = stderr.strip().splitlines()[-20:]
-            raise RuntimeError(
+            msg = (
                 f"cursor-agent failed (exit {proc.returncode}, "
-                f"elapsed {elapsed:.0f}s){hint}\n"
+                f"elapsed {elapsed:.0f}s)\n"
                 f"stderr (last 20 lines):\n  " + "\n  ".join(tail)
             )
+            # Auth failures are non-retryable — user must fix credentials
+            if "unauthor" in low or "login" in low or "401" in low:
+                raise NonRetryableError(
+                    msg + " (run `cursor-agent login` or set CURSOR_API_KEY)"
+                )
+            # Rate limits and server errors are transient
+            if "429" in low or "rate" in low or "503" in low or "502" in low:
+                raise TransientError(msg)
+            # Unknown failures — treat as transient (safe default for retry)
+            raise TransientError(msg)
 
         # In --output-format json mode, cursor-agent emits exactly ONE JSON
         # object on stdout when the run completes. Parse defensively — fall
@@ -186,7 +190,7 @@ class CursorAdapter(RuntimeAdapter):
         text = self._extract_text(stdout)
 
         print(
-            f"  [Cursor agent — role={role}, model={_resolve_model(model)}, "
+            f"  [Cursor agent — role={role}, model={self.resolve_model(model)}, "
             f"elapsed={elapsed:.0f}s, chars={len(text)}]",
             file=sys.stderr,
         )

@@ -1,0 +1,1 @@
+Generic security auditor. Finds exploitable vulnerabilities across 12 security angles using STRIDE, OWASP, and client-side threat models. Produces severity-classified findings with actionable fixes and PoCs. Use for any web or application project.

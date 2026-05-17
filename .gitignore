@@ -5,3 +5,34 @@ __pycache__/
 .claude/settings.local.json
 # Chunk 0.6: output filter dev-only incident log (never commit)
 .filter_incidents.jsonl
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+
+# Test & coverage output
+coverage/
+.nyc_output/
+.pytest_cache/
+htmlcov/
+
+# Build output
+dist/
+build/
+.next/
+
+# Environment files
+.env
+.env.local
+.env.test
+!.env.example
+!.env.test.example
+
+# IDE & OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

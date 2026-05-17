@@ -11,9 +11,8 @@ Usage (called by runtime hook/skill, not directly):
     result = await run_pipeline("Build a click counter", sflo_dir=".sflo")
 
 CLI (for testing):
-    python3 sflo/src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet] [--bindings PATH]
+    python3 sflo/src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet]
 
-    --bindings PATH   Path to bindings.yaml (overrides auto-resolve).
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
     --quiet           Suppress verbose logging to stderr.
 """
@@ -21,21 +20,14 @@ CLI (for testing):
 import asyncio
 import atexit
 import datetime as _datetime
-import glob
 import json
 import os
 import re
 import shutil
 import signal
-import subprocess
 import sys
 import time as _time
 import traceback
-
-# Sentinel that uses `re` at module level so ruff won't strip the import.
-# Module-level `import re` enforced by test_runner_re.py — required because
-# inner functions reference re without their own import (post-fix).
-_RE_MODULE_GUARD = re.compile(r"")
 
 
 from ._stderr import _safe_stderr  # noqa: E402 — must be early, before any stderr use
@@ -76,13 +68,6 @@ def _install_signal_handler(sflo_dir=None):
       • atexit hook fires on clean exits + any uncaught exception path
         (caveat: not on os._exit / SIGKILL).
     """
-
-    def _safe_stderr(msg):
-        """Print to stderr, swallowing OSError when stdio is broken."""
-        try:
-            print(msg, file=sys.stderr, flush=True)
-        except (OSError, ValueError):
-            pass
 
     def _write_death_marker(reason, sig_num=None):
         if not sflo_dir:
@@ -157,12 +142,6 @@ def _install_signal_handler(sflo_dir=None):
 # Allow running as script or module
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.bindings import (
-        parse_bindings,
-        resolve_bindings_path,
-        load_exclude_agents,
-        load_exclude_agent_dirs,
-    )
     from src.state import (
         read_state,
         write_state,
@@ -177,18 +156,17 @@ if __name__ == "__main__":
         apply_transition,
         build_context_map,
     )
-    from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES, INNER_LOOP_MAX
+    from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    from src.config import (
+        derive_roles_from_pipeline,
+        load_pipeline_config as _load_pipeline_config,
+    )
     from src.archive import archive_to_logs
     from src.preflight import preflight_check, check_browser
     from src import evals as _evals
     from src.evals.integration import call_adapter_with_evals
+    from src.adapters.errors import NonRetryableError
 else:
-    from .bindings import (
-        parse_bindings,
-        resolve_bindings_path,
-        load_exclude_agents,
-        load_exclude_agent_dirs,
-    )
     from .state import (
         read_state,
         write_state,
@@ -203,11 +181,16 @@ else:
         apply_transition,
         build_context_map,
     )
-    from .constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES, INNER_LOOP_MAX
+    from .constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    from .config import (
+        derive_roles_from_pipeline,
+        load_pipeline_config as _load_pipeline_config,
+    )
     from .archive import archive_to_logs
     from .preflight import preflight_check, check_browser
     from . import evals as _evals
     from .evals.integration import call_adapter_with_evals
+    from .adapters.errors import NonRetryableError
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +205,25 @@ def _locked_write_state(sflo_dir, state):
         write_state(sflo_dir, state)
     finally:
         release_lock(sflo_dir, fd)
+
+
+def _roles_with_explicit_agents(gates):
+    """Return set of roles that have agent: or agents: declared in pipeline.yaml.
+
+    These roles are pre-assigned by config — scout should not re-assign them.
+    Handles both single-gate entries and list-based parallel gate entries.
+    """
+    pre_assigned = set()
+    for gate_info in gates.values():
+        entries = gate_info if isinstance(gate_info, list) else [gate_info]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("agent") or entry.get("agents"):
+                role = entry.get("role")
+                if role:
+                    pre_assigned.add(role)
+    return pre_assigned
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +256,258 @@ def read_file(path):
         return f"[ERROR reading {path}: {e}]"
 
 
+# ---------------------------------------------------------------------------
+# Pluggable runner/validator loaders
+# ---------------------------------------------------------------------------
+
+
+def _load_custom_runner(runner_path):
+    """Load a custom runner module from a relative file path via importlib.
+
+    Returns (module, error_string). Rejects absolute paths and '..' traversal.
+    Path resolved relative to cwd, contained within cwd or SFLO_ROOT.
+    """
+    import importlib.util
+
+    if not runner_path:
+        return None, "runner path is empty"
+    if os.path.isabs(runner_path):
+        return None, f"Runner path must be relative: {runner_path}"
+    parts = runner_path.replace("\\", "/").split("/")
+    if ".." in parts:
+        return None, f"Runner path must not contain '..': {runner_path}"
+
+    abs_path = os.path.realpath(os.path.join(os.getcwd(), runner_path))
+    cwd_real = os.path.realpath(os.getcwd())
+    sflo_root_real = os.path.realpath(
+        os.environ.get("SFLO_ROOT")
+        or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    if not (
+        abs_path.startswith(cwd_real + os.sep)
+        or abs_path == cwd_real
+        or abs_path.startswith(sflo_root_real + os.sep)
+        or abs_path == sflo_root_real
+    ):
+        return None, f"Runner path resolves outside project: {abs_path}"
+
+    if not os.path.isfile(abs_path):
+        return None, f"Runner file not found: {abs_path}"
+
+    spec = importlib.util.spec_from_file_location("_sflo_runner", abs_path)
+    if spec is None:
+        return None, f"Cannot load module from {abs_path}"
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        return None, f"Failed to load runner {abs_path}: {e}"
+
+    if not hasattr(module, "run_gate") and not hasattr(module, "run"):
+        return None, f"Runner {abs_path} has no run_gate() or run() function"
+
+    return module, None
+
+
+# Public alias for testing / external callers
+load_custom_runner = _load_custom_runner
+
+
+def _recover_artifact(produces, spawn_start, response, log):
+    """Verify agent wrote artifact; recover from wrong location or response fallback.
+
+    Shared logic for spawn_agent, produce_artifact, and spawn_parallel gates.
+    """
+    if not produces:
+        return
+    artifact_name = os.path.basename(produces)
+    if os.path.isfile(produces) and os.path.getmtime(produces) > spawn_start:
+        log(f"  {artifact_name} ✓")
+        return
+    # Search candidate locations
+    cwd = os.getcwd()
+    candidates = [
+        os.path.join(cwd, artifact_name),
+        os.path.join(cwd, ".sflo", artifact_name),
+    ]
+    found = None
+    for c in candidates:
+        if os.path.isfile(c) and os.path.getmtime(c) > spawn_start:
+            found = c
+            break
+    if found:
+        os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
+        shutil.move(found, produces)
+        log(f"  {artifact_name} ✓ (moved from {found})")
+    else:
+        os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
+        if os.path.isdir(produces):
+            shutil.rmtree(produces)
+        with open(produces, "w", encoding="utf-8") as f:
+            f.write(response or "")
+        log(f"  {artifact_name} (from response)")
+
+
+def _filter_mcp_for_gate(agent_info, all_mcp_servers):
+    """Filter MCP servers based on gate's mcp: config list.
+
+    If gate declares mcp: [server1, server2], only those servers are passed.
+    If gate has no mcp: field (None), all servers pass (backward compat).
+    If gate declares mcp: [] (empty list), no MCP servers are passed.
+
+    Returns filtered dict or None (meaning use all/class-level).
+    """
+    gate_mcp = agent_info.get("mcp")
+    if gate_mcp is None:
+        return None  # no filter → adapter uses class-level (all servers)
+    if not gate_mcp:
+        return {}  # explicit empty → no servers
+    if not all_mcp_servers:
+        return None
+    filtered = {k: v for k, v in all_mcp_servers.items() if k in gate_mcp}
+    if gate_mcp and not filtered:
+        from ._stderr import _safe_stderr
+
+        unknown = [s for s in gate_mcp if s not in all_mcp_servers]
+        _safe_stderr(
+            f"  [MCP warning] gate requests {gate_mcp} "
+            f"but none matched available servers. Unknown: {unknown}"
+        )
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# Factory venv — pass .sflo/.venv (created by setup.sh) to spawned agents
+# ---------------------------------------------------------------------------
+
+
+def _get_factory_env(sflo_dir):
+    """Return env dict for the factory venv, creating it if absent."""
+    if not sflo_dir:
+        return None
+    venv_path = os.path.join(sflo_dir, ".venv")
+    if not os.path.isdir(venv_path):
+        import subprocess as _sp
+        import sys as _sys
+        try:
+            _sp.run([_sys.executable, "-m", "venv", venv_path],
+                    check=True, capture_output=True)
+        except _sp.CalledProcessError:
+            return None
+    venv_bin = os.path.join(venv_path, "bin")
+    return {
+        "VIRTUAL_ENV": venv_path,
+        "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+
+
+async def default_agent_runner(
+    agent, sflo_dir, output_dir, *, adapter, runtime, user_prompt, log
+):
+    """Default runner: spawns an LLM agent for a gate.
+
+    Extracted standalone so external code can import and wrap this function
+    to override default agent behaviour without forking run_pipeline.
+
+    Handles: prompt building, 3-attempt retry with crash context, artifact
+    verification/recovery. Does NOT handle validation/transition (caller does that).
+    """
+    role = agent["role"]
+    model = agent.get("model")
+
+    system_prompt, user_msg = build_agent_prompt(
+        agent, user_prompt, sflo_dir, runtime=runtime, output_dir=output_dir
+    )
+
+    # Log skill injection summary
+    skills = agent.get("skills", [])
+    if skills:
+        skill_names = [os.path.basename(os.path.dirname(p)) for p in skills]
+        log(f"  Skills injected [{role}]: {', '.join(skill_names)}")
+    gate_mcp_cfg = agent.get("mcp")
+    if gate_mcp_cfg is not None:
+        log(f"  MCP filter [{role}]: {gate_mcp_cfg or '(none)'}")
+
+    agent_env = _get_factory_env(sflo_dir)
+
+    response = None
+    crash_context = ""
+
+    for attempt in range(3):
+        if attempt > 0:
+            log(f"  Gate [{role}/{model}] resume attempt {attempt + 1}/3 ...")
+        else:
+            log(f"  Gate [{role}/{model}] ...")
+
+        spawn_start = _time.time()
+        try:
+            # Filter MCP servers per gate config
+            gate_mcp = _filter_mcp_for_gate(agent, adapter._mcp_servers)
+            spawn_kwargs = dict(
+                model=model,
+                system_prompt=system_prompt,
+                user_prompt=user_msg + crash_context,
+                role=role,
+                tools_mode=agent.get("tools_mode"),
+                thinking=agent.get("thinking"),
+                effort=agent.get("effort"),
+                allow_task=agent.get("allow_task"),
+            )
+            if gate_mcp is not None:
+                spawn_kwargs["mcp_servers"] = gate_mcp
+            if role in ("dev", "qa") and output_dir is not None:
+                spawn_kwargs["cwd"] = output_dir
+            if agent_env is not None:
+                spawn_kwargs["env"] = agent_env
+            response = await call_adapter_with_evals(
+                adapter,
+                **spawn_kwargs,
+                metadata={"session_id": sflo_dir, "output_dir": output_dir},
+            )
+            break  # success
+        except Exception as e:
+            log(f"  Gate [{role}] agent crashed: {e}")
+            log(f"  {traceback.format_exc()}")
+            if hasattr(adapter, "_last_stderr") and adapter._last_stderr:
+                log(f"  [CLI stderr ({len(adapter._last_stderr)} lines):]")
+                for sl in adapter._last_stderr[-20:]:
+                    log(f"    {sl.rstrip()}")
+
+            # Typed exceptions: adapters classify their own errors.
+            # NonRetryableError = auth/config (abort immediately).
+            # TransientError = timeout/rate-limit/5xx (retry).
+            # Unknown exceptions = treat as transient (safe default).
+            if isinstance(e, NonRetryableError):
+                log(f"  Non-retryable error — skipping retries: {e}")
+                response = f"[Agent error (non-retryable): {e}]"
+                break
+
+            if isinstance(e, (json.JSONDecodeError, KeyError, ValueError)):
+                log(f"  Prompt/parse error — skipping retries: {type(e).__name__}")
+                response = f"[Agent error (non-retryable): {e}]"
+                break
+
+            if attempt < 2:
+                crash_context = (
+                    f"\n\n---\n\n## IMPORTANT: Previous attempt crashed\n\n"
+                    f"Your previous attempt crashed with this error:\n"
+                    f"```\n{e}\n```\n"
+                    f"Your partial work (files on disk) is still intact. "
+                    f"Read the existing files to understand what was already done. "
+                    f"Do NOT start from scratch — continue from where the crash happened. "
+                    f"Avoid the command or approach that caused the crash. "
+                    f"If a CLI tool failed, check its help/docs before retrying."
+                )
+                log("  Resuming with crash context...")
+            else:
+                log("  All resume attempts exhausted — gate will fail validation")
+                response = f"[Agent error after 3 attempts: {e}]"
+
+    # Verify agent wrote the artifact
+    produces = agent.get("produces", "")
+    _recover_artifact(produces, spawn_start, response, log)
+
+
 def make_logger(sflo_dir, verbose=True):
     """Create a logger that writes to stderr and .sflo/pipeline.log.
 
@@ -262,7 +516,6 @@ def make_logger(sflo_dir, verbose=True):
     ``atexit``) to ensure all buffered lines reach disk before the process
     exits.
     """
-    import logging as _logging
 
     os.makedirs(sflo_dir, exist_ok=True)
     log_path = os.path.join(sflo_dir, "pipeline.log")
@@ -315,6 +568,36 @@ def format_validation_feedback(checks):
     return "\n".join(lines)
 
 
+def _resolve_skill_references(skill_path, skill_content):
+    """Extract relative .md references from skill content and resolve to absolute paths.
+
+    Skills may reference companion documents (e.g. `references/testing-patterns.md`).
+    This function finds those references, resolves them relative to the vendor root
+    (two levels up from SKILL.md: vendor/<name>/skills/<skill>/SKILL.md), and returns
+    a list of (ref_text, absolute_path) tuples for existing files.
+
+    Pattern: backtick-wrapped paths ending in .md, e.g. `references/foo.md`
+    """
+    if not skill_content:
+        return []
+
+    # Vendor root is 3 levels up from SKILL.md:
+    # vendor/<vendor>/skills/<skill>/SKILL.md → vendor/<vendor>/
+    skill_dir = os.path.dirname(skill_path)
+    vendor_root = os.path.dirname(os.path.dirname(skill_dir))
+
+    refs = []
+    seen = set()
+    for match in re.findall(r"`([^`]+\.md)`", skill_content):
+        if match in seen or ".." in match:
+            continue
+        seen.add(match)
+        abs_path = os.path.join(vendor_root, match)
+        if os.path.isfile(abs_path):
+            refs.append((match, abs_path))
+    return refs
+
+
 def build_agent_prompt(
     agent_info, user_prompt, sflo_dir, runtime=None, output_dir=None
 ):
@@ -331,14 +614,56 @@ def build_agent_prompt(
     reads = agent_info.get("reads", [])
     gate_num = agent_info.get("gate_num")
 
-    # System prompt: agent SOUL.md + gate doc
+    # System prompt: own SOUL + additional agents + vendor skills + gate doc
     system_parts = []
+    primary_soul = None
     if len(reads) >= 2:
         soul_content = read_file(reads[1])
         system_parts.append(soul_content)
+        primary_soul = os.path.realpath(reads[1])
+
+    # Additional agents (loaded from per-gate agents: list in pipeline.yaml)
+    # Skip any agent that resolves to the same file as the primary SOUL (dedup)
+    for agent_path in agent_info.get("agents", []):
+        if os.path.isfile(agent_path):
+            if primary_soul and os.path.realpath(agent_path) == primary_soul:
+                continue
+            agent_content = read_file(agent_path)
+            agent_name = os.path.splitext(os.path.basename(agent_path))[0]
+            if agent_name == "SOUL":
+                agent_name = os.path.basename(os.path.dirname(agent_path))
+            system_parts.append(f"## Agent: {agent_name}\n\n{agent_content}")
+
+    # Vendor methodology skills (loaded from per-gate skills: list in pipeline.yaml)
+    for skill_path in agent_info.get("skills", []):
+        if os.path.isfile(skill_path):
+            skill_content = read_file(skill_path)
+            skill_name = os.path.basename(os.path.dirname(skill_path))
+            # Resolve references mentioned in skill content → absolute paths
+            refs = _resolve_skill_references(skill_path, skill_content)
+            ref_section = ""
+            if refs:
+                ref_lines = [f"  - `{abs_p}` ({name})" for name, abs_p in refs]
+                ref_section = "\n\n### Reference files (read on demand)\n" + "\n".join(
+                    ref_lines
+                )
+            system_parts.append(
+                f"## Methodology: {skill_name}\n\n{skill_content}{ref_section}"
+            )
+
     if len(reads) >= 1:
         gate_content = read_file(reads[0])
         system_parts.append(f"## Gate Document\n\n{gate_content}")
+
+    # Task subagent restriction — inject when gate disallows Task spawning.
+    # Advisory: model follows the instruction; violations are logged as warnings.
+    if agent_info.get("allow_task") is False:
+        system_parts.append(
+            "## Tool Restriction\n\n"
+            "DO NOT use the Task tool to spawn subagents. "
+            "All work must be done directly — no delegation to child agents. "
+            "This gate requires direct execution for security and observability."
+        )
 
     system_prompt = "\n\n---\n\n".join(system_parts) if system_parts else ""
 
@@ -446,6 +771,19 @@ def build_agent_prompt(
 # Pipeline Runner
 # ---------------------------------------------------------------------------
 
+# Gate artifacts eligible for archive on stale-detection or prompt-change.
+# Single definition; used in two places within run_pipeline.
+_ARCHIVABLE_ARTIFACTS = [
+    "SCOPE.md",
+    "BUILD-STATUS.md",
+    "QA-REPORT.md",
+    "PM-VERIFY.md",
+    "SHIP-DECISION.md",
+    "QA-FEEDBACK.md",
+    "PM-FEEDBACK.md",
+    "pipeline.log",
+]
+
 
 async def run_pipeline(
     user_prompt,
@@ -454,7 +792,6 @@ async def run_pipeline(
     runtime=None,
     verbose=True,
     assignments=None,
-    bindings=None,
 ):
     """Run the full SFLO pipeline.
 
@@ -479,22 +816,30 @@ async def run_pipeline(
     adapter = get_adapter(runtime)
     log = make_logger(sflo_dir, verbose)
 
-    # --- Init ---
-    bindings_path = resolve_bindings_path(explicit=bindings)
-    if not bindings_path:
-        return {"ok": False, "error": "bindings.yaml not found"}
+    # --- Init: role config from pipeline.yaml ---
+    roles = derive_roles_from_pipeline()
 
-    roles, err = parse_bindings(bindings_path)
-    if err:
-        return {"ok": False, "error": err}
-
-    # --- Eval framework: load plugins from bindings.yaml `evals:` section ---
+    # --- Eval framework: load plugins from evals.yaml (if present) ---
     # Fail-safe: any load error logs a warning; pipeline always continues.
-    # Empty / missing `evals:` section = no-op (zero overhead).
+    # Eval status is ALWAYS announced to stderr — a missing evals.yaml must
+    # never silently disable the security guards (path-traversal, shell-metachar,
+    # etc.). A silent no-op here once hid that 0 evals were active.
     try:
         from pathlib import Path as _Path
+        from .config import resolve_pipeline_path as _resolve_pp
 
-        _evals.load_evals_from_bindings(_Path(bindings_path))
+        _pp = _resolve_pp()
+        _evals_candidate = (
+            os.path.join(os.path.dirname(_pp), "evals.yaml") if _pp else None
+        )
+        if _evals_candidate and os.path.isfile(_evals_candidate):
+            _loaded = _evals.load_evals_from_bindings(_Path(_evals_candidate))
+            _safe_stderr(f"  [evals] loaded {len(_loaded)} eval(s) from evals.yaml")
+        else:
+            _safe_stderr(
+                "  [evals] WARNING: no evals.yaml beside pipeline.yaml — "
+                "0 evals active (security + quality guards disabled)"
+            )
     except Exception as _eval_load_err:
         # Non-fatal: warn but never block pipeline startup
         _safe_stderr(f"  [evals] load warning: {_eval_load_err}")
@@ -533,7 +878,6 @@ async def run_pipeline(
     # Safety net: Warn if state.json exists at project root (not in .sflo/).
     # Archive if state.json is stale (>7 days old or wrong prompt context).
     cached_assignments = None
-    is_resume = False
     resumed_state = None
     prior_state_path = state_path(sflo_dir)
 
@@ -550,9 +894,7 @@ async def run_pipeline(
             # Archive stale root-level state.json
             archive_to_logs(sflo_dir, [project_root_state])
             if verbose:
-                _safe_stderr(
-                    "  Archived stale state.json from project root to logs/"
-                )
+                _safe_stderr("  Archived stale state.json from project root to logs/")
 
     if os.path.isfile(prior_state_path):
         try:
@@ -567,19 +909,10 @@ async def run_pipeline(
                     _safe_stderr(
                         f"  Stale state — state.json is {file_age_days:.1f} days old (max {STATE_MAX_AGE_DAYS}), archiving"
                     )
-                _stale_names = [
-                    "state.json",
-                    "SCOPE.md",
-                    "BUILD-STATUS.md",
-                    "QA-REPORT.md",
-                    "PM-VERIFY.md",
-                    "SHIP-DECISION.md",
-                    "QA-FEEDBACK.md",
-                    "PM-FEEDBACK.md",
-                    "pipeline.log",
-                ]
-                _stale_paths = [os.path.join(sflo_dir, n) for n in _stale_names]
-                archive_to_logs(sflo_dir, _stale_paths)
+                _stale_names = ["state.json"] + _ARCHIVABLE_ARTIFACTS
+                archive_to_logs(
+                    sflo_dir, [os.path.join(sflo_dir, n) for n in _stale_names]
+                )
             else:
                 # State recent enough — check prompt
                 with open(prior_state_path, "r") as f:
@@ -591,34 +924,24 @@ async def run_pipeline(
                     prior_prompt
                 ) == _norm_prompt(user_prompt):
                     # Same task — full resume
-                    is_resume = True
                     resumed_state = prior_state
-                    if all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
+                    if prior_assignments:
                         cached_assignments = prior_assignments
                 elif prior_prompt is not None:
                     # Prompt changed — archive stale gate artifacts
-                    _stale_names = [
-                        "SCOPE.md",
-                        "BUILD-STATUS.md",
-                        "QA-REPORT.md",
-                        "PM-VERIFY.md",
-                        "SHIP-DECISION.md",
-                        "QA-FEEDBACK.md",
-                        "PM-FEEDBACK.md",
-                        "pipeline.log",
+                    _stale_paths = [
+                        os.path.join(sflo_dir, n) for n in _ARCHIVABLE_ARTIFACTS
                     ]
-                    _stale_paths = [os.path.join(sflo_dir, n) for n in _stale_names]
                     _archived = archive_to_logs(sflo_dir, _stale_paths)
                     if _archived and verbose:
                         _safe_stderr(
                             f"  Stale state — prompt changed, archived to logs/: "
                             f"{', '.join(_archived)}"
                         )
-                elif all(prior_assignments.get(k) for k in ("pm", "dev", "qa")):
+                elif prior_assignments:
                     cached_assignments = prior_assignments
         except Exception:
             cached_assignments = None
-            is_resume = False
 
     if resumed_state:
         prior_cs = resumed_state.get("current_state", "")
@@ -626,19 +949,17 @@ async def run_pipeline(
             # Pipeline already completed — start fresh
             state = make_initial_state(roles)
             state["prompt"] = user_prompt
-            is_resume = False
             resumed_state = None
         elif prior_cs == S_ESCALATE:
             # Pipeline escalated — start fresh (human already intervened)
             state = make_initial_state(roles)
             state["prompt"] = user_prompt
-            is_resume = False
             resumed_state = None
         else:
             # Restore prior state — preserves loop counters, gate statuses,
-            # current_state. Only update bindings (may have changed).
+            # current_state. Only update roles (may have changed).
             state = resumed_state
-            state["bindings"] = roles
+            state["roles"] = roles
             state["prompt"] = user_prompt
             log_parts = [
                 f"inner={state.get('inner_loops', 0)}",
@@ -666,15 +987,15 @@ async def run_pipeline(
             log(f"  NOTICE: Chrome extension not connected — {browser_msg}")
 
     # --- Scout ---
-    scout_bindings = roles.get("scout", {})
-    scout_model = scout_bindings.get("model", "sonnet")
-    scout_agent_path = scout_bindings.get(
+    scout_config = roles.get("scout", {})
+    scout_model = scout_config.get("model")
+    scout_agent_path = scout_config.get(
         "agent", os.path.join(SFLO_ROOT, "agents", "scout")
     )
     scout_soul = read_file(os.path.join(scout_agent_path, "SOUL.md"))
 
     # Find available agent directories (respecting exclude_agent_dirs from
-    # bindings.yaml — configured dirs are filtered out so scout never sees
+    # pipeline.yaml — configured dirs are filtered out so scout never sees
     # their agents in the listing).
     #
     # Search chain — first hit wins for duplicate role names (de-dup is not
@@ -689,8 +1010,9 @@ async def run_pipeline(
     # #3 was added so that local agent dirs in the host project are
     # discoverable when the pipeline runs from a project subfolder. Without
     # it, only the submodule's agents are visible when cwd differs.
-    excluded_agents = load_exclude_agents(bindings_path)
-    excluded_dirs = load_exclude_agent_dirs(bindings_path)
+    _pipeline_cfg = _load_pipeline_config()
+    excluded_agents = set(_pipeline_cfg.get("exclude_agents", []))
+    excluded_dirs = set(_pipeline_cfg.get("exclude_agent_dirs", []))
 
     # Dedup via os.path.realpath — under some workspace layouts two of
     # the candidates below can resolve to the same physical directory
@@ -729,16 +1051,39 @@ async def run_pipeline(
                 if os.path.isfile(brief):
                     agent_listing += f"\n### {entry} ({d})\n{read_file(brief)}\n"
 
+    # Determine which roles need scout assignment vs. which are pre-declared
+    # in pipeline.yaml (have explicit agent: or agents: fields).
+    pre_assigned_roles = _roles_with_explicit_agents(GATES)
+    all_gate_roles = set()
+    for gate_info in GATES.values():
+        entries = gate_info if isinstance(gate_info, list) else [gate_info]
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("role"):
+                all_gate_roles.add(entry["role"])
+    # Roles that scout must discover — exclude pre-assigned and meta-roles
+    discoverable_roles = (all_gate_roles - pre_assigned_roles) - {"sflo"}
+    if pre_assigned_roles:
+        log(
+            f"  Scout: roles pre-assigned by pipeline.yaml: {sorted(pre_assigned_roles)}"
+        )
+
     # Caller-supplied assignments take precedence over everything else.
     # This is how extended runners avoid the double-scout call: they
     # already ran its extended scout for complexity classification and has
     # pm/dev/qa in hand, so core's scout would be redundant.
-    if assignments and all(assignments.get(k) for k in ("pm", "dev", "qa")):
+    if assignments and all(assignments.get(k) for k in discoverable_roles):
         log("  Scout: assignments supplied by caller, skipping LLM call")
     elif cached_assignments:
         log("  Scout: cache hit — reusing prior assignments, skipping LLM call")
         assignments = cached_assignments
+    elif not discoverable_roles:
+        log("  Scout: all roles pre-assigned by pipeline.yaml, skipping LLM call")
+        assignments = {}
     else:
+        # Build dynamic JSON template — only roles that need discovery
+        json_template = ", ".join(
+            f'"{role}": "<agent_path>"' for role in sorted(discoverable_roles)
+        )
         try:
             scout_response = await call_adapter_with_evals(
                 adapter,
@@ -748,14 +1093,16 @@ async def run_pipeline(
                     f"User prompt: {user_prompt}\n\n"
                     f"Available agents:\n{agent_listing}\n\n"
                     f"Return ONLY a JSON object with role assignments, no other text, no tool calls: "
-                    f'{{"pm": "<agent_path>", "dev": "<agent_path>", "qa": "<agent_path>"}}'
+                    f"{{{json_template}}}"
                 ),
                 role="scout",
                 # Scout is hard-coded readonly — it's pure recon, returns JSON
-                # via assistant text, never touches files. Bindings.yaml can
+                # via assistant text, never touches files. pipeline.yaml can
                 # bump this via `scout: tools: full` if a host extends scout
                 # to need more (e.g. classifier reading project HLA docs).
-                tools_mode=scout_bindings.get("tools", "readonly"),
+                tools_mode=scout_config.get("tools", "readonly"),
+                thinking=scout_config.get("thinking"),
+                effort=scout_config.get("effort"),
                 metadata={"session_id": sflo_dir, "output_dir": output_dir},
             )
         except Exception as e:
@@ -787,17 +1134,20 @@ async def run_pipeline(
             else:
                 assignments = json.loads(scout_response)
         except (json.JSONDecodeError, AttributeError):
-            # Fallback to generic agents
+            # Fallback: assign convention-default agents for discoverable roles only
             sflo_base = SFLO_ROOT
             assignments = {
-                "pm": os.path.join(sflo_base, "agents", "pm"),
-                "dev": os.path.join(sflo_base, "agents", "dev"),
-                "qa": os.path.join(sflo_base, "agents", "qa"),
+                role: os.path.join(sflo_base, "agents", role)
+                for role in discoverable_roles
             }
 
     state["assignments"] = assignments
-    state["current_state"] = "gate-1"
-    state["gates"]["1"]["status"] = "in_progress"
+    if resumed_state is None:
+        first_gate = min(GATES.keys()) if GATES else 1
+        first_gate_key = str(first_gate)
+        state["current_state"] = f"gate-{first_gate_key}"
+        if first_gate_key in state.get("gates", {}):
+            state["gates"][first_gate_key]["status"] = "in_progress"
     _locked_write_state(sflo_dir, state)
 
     log(f"  Scout: {', '.join(f'{k}={v}' for k, v in assignments.items())}")
@@ -855,128 +1205,16 @@ async def run_pipeline(
 
         if action == "spawn_agent":
             agent = result["agent"]
-            role = agent["role"]
-            model = agent.get("model", "sonnet")
 
-            system_prompt, user_msg = build_agent_prompt(
-                agent, user_prompt, sflo_dir, runtime=runtime, output_dir=output_dir
+            await default_agent_runner(
+                agent,
+                sflo_dir,
+                output_dir,
+                adapter=adapter,
+                runtime=runtime,
+                user_prompt=user_prompt,
+                log=log,
             )
-
-            response = None
-            crash_context = ""
-
-            for attempt in range(3):
-                if attempt > 0:
-                    log(f"  Gate [{role}/{model}] resume attempt {attempt + 1}/3 ...")
-                else:
-                    log(f"  Gate [{role}/{model}] ...")
-
-                spawn_start = _time.time()
-                try:
-                    # Dev/QA agents get output_dir as cwd (user deliverables land there).
-                    # PM/scout write to sflo_dir via absolute paths (no cwd override needed).
-                    spawn_kwargs = dict(
-                        model=model,
-                        system_prompt=system_prompt,
-                        user_prompt=user_msg + crash_context,
-                        role=role,
-                        # tools_mode flows from agent dict (machine.py reads
-                        # it from bindings.yaml `tools:` field). Unset = full
-                        # access; "readonly" clamps to Read/Glob/Grep.
-                        tools_mode=agent.get("tools_mode"),
-                    )
-                    if role in ("dev", "qa") and output_dir is not None:
-                        spawn_kwargs["cwd"] = output_dir
-                    response = await call_adapter_with_evals(
-                        adapter,
-                        **spawn_kwargs,
-                        metadata={"session_id": sflo_dir, "output_dir": output_dir},
-                    )
-                    break  # success
-                except Exception as e:
-                    log(f"  Gate [{role}] agent crashed: {e}")
-                    log(f"  {traceback.format_exc()}")
-                    # Log stderr from the crashed CLI process — this is the
-                    # only diagnostic data for exit code 1 crashes. The SDK's
-                    # "Check stderr output for details" is a hardcoded string,
-                    # not actual stderr. The real stderr is in adapter's callback.
-                    if hasattr(adapter, "_last_stderr") and adapter._last_stderr:
-                        log(f"  [CLI stderr ({len(adapter._last_stderr)} lines):]")
-                        for sl in adapter._last_stderr[-20:]:
-                            log(f"    {sl.rstrip()}")
-
-                    # Classify error: only retry transient failures.
-                    # Prompt/parse errors (bad JSON, missing key, value mismatch)
-                    # will not self-heal with retries — skip remaining attempts.
-                    _err_str = str(e)
-                    _is_transient = isinstance(
-                        e, (ConnectionError, TimeoutError)
-                    ) or any(
-                        marker in _err_str
-                        for marker in (
-                            "HTTP 5", "HTTP 429", "503", "502", "429",
-                            "timeout", "connection", "Connection",
-                        )
-                    )
-                    _is_prompt_error = isinstance(
-                        e, (json.JSONDecodeError, KeyError, ValueError)
-                    )
-                    if _is_prompt_error and not _is_transient:
-                        log(
-                            f"  Non-transient prompt error — skipping retries: {type(e).__name__}"
-                        )
-                        response = f"[Agent error (non-retryable): {e}]"
-                        break
-
-                    if attempt < 2:
-                        crash_context = (
-                            f"\n\n---\n\n## IMPORTANT: Previous attempt crashed\n\n"
-                            f"Your previous attempt crashed with this error:\n"
-                            f"```\n{e}\n```\n"
-                            f"Your partial work (files on disk) is still intact. "
-                            f"Read the existing files to understand what was already done. "
-                            f"Do NOT start from scratch — continue from where the crash happened. "
-                            f"Avoid the command or approach that caused the crash. "
-                            f"If a CLI tool failed, check its help/docs before retrying."
-                        )
-                        log("  Resuming with crash context...")
-                    else:
-                        log(
-                            "  All resume attempts exhausted — gate will fail validation"
-                        )
-                        response = f"[Agent error after 3 attempts: {e}]"
-
-            # Verify agent wrote the artifact
-            produces = agent.get("produces", "")
-            if produces:
-                artifact_name = os.path.basename(produces)
-                if os.path.isfile(produces):
-                    log(f"  {artifact_name} ✓")
-                else:
-                    # Agent didn't write to expected path — check common locations
-                    cwd = os.getcwd()
-                    candidates = [
-                        os.path.join(cwd, artifact_name),
-                        os.path.join(cwd, ".sflo", artifact_name),
-                    ]
-                    found = None
-                    for c in candidates:
-                        if os.path.isfile(c) and os.path.getmtime(c) > spawn_start:
-                            found = c
-                            break
-
-                    if found:
-                        os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
-                        shutil.move(found, produces)
-                        log(f"  {artifact_name} ✓ (moved from {found})")
-                    else:
-                        os.makedirs(os.path.dirname(produces) or ".", exist_ok=True)
-                        # Guard: if model created artifact path as directory, remove it
-                        if os.path.isdir(produces):
-                            shutil.rmtree(produces)
-                        with open(produces, "w", encoding="utf-8") as f:
-                            f.write(response)
-                        log(f"  {artifact_name} (from response)")
 
             # Validate
             auto_transition(state, sflo_dir)
@@ -1060,32 +1298,7 @@ async def run_pipeline(
                 log("  Gate 5 will fail validation")
                 response = f"[Agent error: {e}]"
 
-            # Verify agent wrote it (same logic as spawn_agent gates)
-            if (
-                os.path.isfile(artifact_path)
-                and os.path.getmtime(artifact_path) > spawn_start
-            ):
-                log(f"  Gate 5 [SFLO] ... {artifact_name} ✓")
-            else:
-                cwd = os.getcwd()
-                candidates = [
-                    os.path.join(cwd, artifact_name),
-                    os.path.join(cwd, ".sflo", artifact_name),
-                ]
-                found = None
-                for c in candidates:
-                    if os.path.isfile(c) and os.path.getmtime(c) > spawn_start:
-                        found = c
-                        break
-                if found:
-                    os.makedirs(os.path.dirname(artifact_path) or ".", exist_ok=True)
-                    shutil.move(found, artifact_path)
-                    log(f"  Gate 5 [SFLO] ... {artifact_name} ✓ (moved)")
-                else:
-                    os.makedirs(os.path.dirname(artifact_path) or ".", exist_ok=True)
-                    with open(artifact_path, "w", encoding="utf-8") as f:
-                        f.write(response)
-                    log(f"  Gate 5 [SFLO] ... {artifact_name} (from response)")
+            _recover_artifact(artifact_path, spawn_start, response, log)
 
             # Validate Gate 5
             auto_transition(state, sflo_dir)
@@ -1097,306 +1310,182 @@ async def run_pipeline(
             if result.get("pass"):
                 log("  Gate 5 ✓")
 
-        elif action == "run_stst_gate":
-            # Gate 2.5: STST static filter — runs stst CLI per test file,
-            # aggregates results, writes STST-REPORT.md. No LLM invocation.
-            gate_num = result.get("gate_num", 2.5)
+        elif action == "run_custom_gate":
+            gate_num = result.get("gate_num")
+            runner_path = result.get("runner")
             gate_key_str = str(gate_num)
-            log(f"  Gate {gate_num} [STST filter] ...")
+            artifact_name = result.get("artifact")
+            log(f"  Gate {gate_num} [custom runner: {runner_path}] ...")
 
-            stst_bin = shutil.which("stst")
-            tool_errors = []
-            if stst_bin is None:
-                tool_errors.append(
-                    "`stst` not found on PATH — gate degraded to PASS. Install STST per its project README."
-                )
-                log(
-                    f"  Gate {gate_num} [STST] WARNING: stst not on PATH — degrading to PASS"
-                )
-
-            # Discover test files in output_dir
-            test_files = []
-            if output_dir and os.path.isdir(output_dir) and stst_bin:
-                for pattern in ["**/test_*.py", "**/*_test.py"]:
-                    found = glob.glob(os.path.join(output_dir, pattern), recursive=True)
-                    test_files.extend(found)
-                test_files = sorted(set(test_files))
-
-            if not test_files and not tool_errors:
-                # No test files found — degrade to PASS with note
-                log(
-                    f"  Gate {gate_num} [STST] No test files discovered — skipping (PASS)"
-                )
-                tool_errors.append(
-                    "No test files found in output directory — STST gate skipped."
-                )
-
-            # Run stst gate per test file
-            WHOLE_GATE_TIMEOUT = 600
-            PER_TEST_TIMEOUT = 120
-            gate_start = _time.time()
-            all_results = []  # list of {file, verdict, rule_hits, findings}
-
-            for test_path in test_files:
-                if _time.time() - gate_start > WHOLE_GATE_TIMEOUT:
-                    tool_errors.append(
-                        f"Whole-gate timeout ({WHOLE_GATE_TIMEOUT}s) exceeded — remaining tests skipped."
+            runner_module, load_err = _load_custom_runner(runner_path)
+            if load_err:
+                log(f"  Gate {gate_num} runner load FAILED: {load_err}")
+                if artifact_name:
+                    err_artifact_path = os.path.join(sflo_dir, artifact_name)
+                    os.makedirs(
+                        os.path.dirname(err_artifact_path) or ".", exist_ok=True
                     )
-                    log(f"  Gate {gate_num} [STST] Whole-gate timeout reached")
-                    break
-
-                # Pair with SUT via naming convention: test_foo.py -> foo.py
-                sut_path = None
-                test_basename = os.path.basename(test_path)
-                stem = test_basename
-                if stem.startswith("test_"):
-                    stem = stem[5:]
-                elif stem.endswith("_test.py"):
-                    stem = stem[:-8] + ".py"
-                if stem and stem != test_basename:
-                    # Search for SUT in output_dir
-                    candidates = glob.glob(
-                        os.path.join(output_dir or ".", "**", stem), recursive=True
-                    )
-                    # Exclude test files from candidates
-                    candidates = [
-                        c
-                        for c in candidates
-                        if "test_" not in os.path.basename(c)
-                        and "_test" not in os.path.basename(c)
-                    ]
-                    if len(candidates) == 1:
-                        sut_path = candidates[0]
-
-                cmd = [stst_bin, "gate", test_path]
-                if sut_path:
-                    cmd += ["--sut", sut_path]
-
+                    with open(err_artifact_path, "w", encoding="utf-8") as f:
+                        f.write(f"# Runner Error\n\nVerdict: DEGRADED\n\n{load_err}\n")
+            else:
                 try:
-                    proc = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=PER_TEST_TIMEOUT,
+                    import inspect as _inspect_mod
+
+                    run_fn = (
+                        getattr(runner_module, "run_gate", None) or runner_module.run
                     )
-                    exit_code = proc.returncode
-                    stdout = proc.stdout.strip()
-                    stderr = proc.stderr.strip()
-
-                    if exit_code == 0:
-                        all_results.append(
-                            {
-                                "file": os.path.relpath(test_path, output_dir or "."),
-                                "verdict": "PASS",
-                                "rule_hits": "—",
-                                "findings": [],
-                            }
+                    result_or_coro = run_fn(GATES[gate_num], sflo_dir, output_dir)
+                    if _inspect_mod.iscoroutine(result_or_coro):
+                        await result_or_coro
+                except Exception as e:
+                    log(f"  Gate {gate_num} custom runner FAILED (DEGRADED): {e}")
+                    log(f"  {traceback.format_exc()}")
+                    if artifact_name:
+                        err_artifact_path = os.path.join(sflo_dir, artifact_name)
+                        os.makedirs(
+                            os.path.dirname(err_artifact_path) or ".", exist_ok=True
                         )
-                    elif exit_code == 1:
-                        # Real rejection — parse rule hits from stdout
-                        rule_hits = []
-                        findings_text = []
-                        for line in stdout.splitlines():
-                            if line.strip() and not line.startswith("#"):
-                                findings_text.append(line)
-                                # Try to extract rule IDs (e.g., B3, H1, F3)
-                                m = re.findall(r"\b([A-Z]\d+)\b", line)
-                                rule_hits.extend(m)
-                        rule_hits_str = (
-                            ", ".join(sorted(set(rule_hits)))
-                            if rule_hits
-                            else "see output"
-                        )
-                        all_results.append(
-                            {
-                                "file": os.path.relpath(test_path, output_dir or "."),
-                                "verdict": "REJECT",
-                                "rule_hits": rule_hits_str,
-                                "findings": findings_text,
-                            }
-                        )
-                    else:
-                        # exit code 2 or other = tool error → degrade-open (PASS)
-                        detail = stderr or stdout or f"exit code {exit_code}"
-                        tool_errors.append(
-                            f"`stst gate {os.path.basename(test_path)}` exited {exit_code}: {detail[:200]}"
-                        )
-                        all_results.append(
-                            {
-                                "file": os.path.relpath(test_path, output_dir or "."),
-                                "verdict": "PASS",
-                                "rule_hits": f"tool-error(exit {exit_code})",
-                                "findings": [],
-                            }
-                        )
-                except subprocess.TimeoutExpired:
-                    tool_errors.append(
-                        f"`stst gate {os.path.basename(test_path)}` timed out after {PER_TEST_TIMEOUT}s — degraded to PASS."
-                    )
-                    all_results.append(
-                        {
-                            "file": os.path.relpath(test_path, output_dir or "."),
-                            "verdict": "PASS",
-                            "rule_hits": "timeout",
-                            "findings": [],
-                        }
-                    )
-                except Exception as exc:
-                    tool_errors.append(
-                        f"`stst gate {os.path.basename(test_path)}` error: {exc}"
-                    )
-                    all_results.append(
-                        {
-                            "file": os.path.relpath(test_path, output_dir or "."),
-                            "verdict": "PASS",
-                            "rule_hits": f"error: {exc}",
-                            "findings": [],
-                        }
-                    )
+                        with open(err_artifact_path, "w", encoding="utf-8") as f:
+                            f.write(
+                                f"# Runner Error\n\nVerdict: DEGRADED\n\n{e}\n\n```\n{traceback.format_exc()}\n```\n"
+                            )
 
-            # Determine overall verdict
-            any_reject = any(r["verdict"] == "REJECT" for r in all_results)
-            if any_reject:
-                overall_verdict = "REJECT"
-            elif tool_errors:
-                overall_verdict = "DEGRADED"
-            else:
-                overall_verdict = "PASS"
-            n_files = len(all_results)
-            n_violations = sum(1 for r in all_results if r["verdict"] == "REJECT")
-
-            # Build STST-REPORT.md
-            summary_line = f"Verdict: {overall_verdict}"
-            if n_files == 0:
-                summary_detail = "No test files evaluated — STST gate skipped."
-            elif any_reject:
-                summary_detail = f"STST ran against {n_files} test file(s). {n_violations} violation(s) found."
-            else:
-                summary_detail = f"STST ran against {n_files} test file(s). 0 violations — all clean."
-
-            table_rows = []
-            for r in all_results:
-                table_rows.append(
-                    f"| {r['file']} | {r['verdict']} | {r['rule_hits']} |"
-                )
-
-            rejection_lines = []
-            for r in all_results:
-                if r["verdict"] == "REJECT":
-                    for finding in r["findings"]:
-                        rejection_lines.append(f"- **{r['file']}** — {finding}")
-
-            tool_error_lines = [f"- {e}" for e in tool_errors]
-
-            stst_report_content = f"""## Summary
-
-{summary_line}
-
-{summary_detail}
-
-## Tests Evaluated
-
-| File | Verdict | Rule Hits |
-|------|---------|-----------|
-{chr(10).join(table_rows) if table_rows else "| (none) | — | — |"}
-
-## Rejection Reasons
-
-{chr(10).join(rejection_lines) if rejection_lines else "(none — all tests passed STST static checks)"}
-
-## Tool Errors
-
-{chr(10).join(tool_error_lines) if tool_error_lines else "(none)"}
-
-## Action
-
-{"REJECT → address rejection reasons listed above, rebuild, re-submit BUILD-STATUS.md." if any_reject else "PASS → proceed to Gate 3 (QA)."}
-"""
-
-            stst_report_path = os.path.join(sflo_dir, "STST-REPORT.md")
-            os.makedirs(os.path.dirname(stst_report_path) or ".", exist_ok=True)
-            with open(stst_report_path, "w", encoding="utf-8") as f:
-                f.write(stst_report_content)
-            log(f"  STST-REPORT.md written ({overall_verdict})")
-
-            # Mutate state (required to satisfy non-progress guard)
+            # Mutate state for non-progress guard
             if "gate_retries" not in state:
                 state["gate_retries"] = {}
             if gate_key_str not in state["gates"]:
                 state["gates"][gate_key_str] = {
                     "status": "waiting",
-                    "artifact": "STST-REPORT.md",
+                    "artifact": artifact_name or f"gate-{gate_num}",
                 }
 
-            if any_reject:
-                # Increment STST retry counter (not outer_loops)
-                state["gate_retries"][gate_key_str] = (
-                    state["gate_retries"].get(gate_key_str, 0) + 1
-                )
-                stst_retry = state["gate_retries"][gate_key_str]
-                state["gates"][gate_key_str]["status"] = "rejected"
-
-                if stst_retry >= INNER_LOOP_MAX:
-                    state["current_state"] = S_ESCALATE
-                    state["escalate_reason"] = (
-                        f"STST rejected {stst_retry} DEV rebuilds — "
-                        f"likely prompt/SUT mismatch. Human decision needed."
-                    )
-                    state["escalate_options"] = [
-                        "override (ship-anyway)",
-                        "fix DEV test generation prompt",
-                        "kill",
-                    ]
-                    _locked_write_state(sflo_dir, state)
-                    log(f"  Gate {gate_num} [STST] ESCALATE after {stst_retry} rejects")
-                else:
-                    # Write STST-FEEDBACK.md for DEV context
-                    stst_feedback_path = os.path.join(sflo_dir, "STST-FEEDBACK.md")
-                    feedback_lines = [
-                        f"# STST Feedback (Retry {stst_retry}/{INNER_LOOP_MAX})\n",
-                        "STST static filter rejected your test output.\n",
-                        "Fix the issues below, then rebuild.\n\n",
-                    ]
-                    if rejection_lines:
-                        feedback_lines.append("## Rejection Reasons\n\n")
-                        feedback_lines.extend(l + "\n" for l in rejection_lines)
-                    with open(stst_feedback_path, "w", encoding="utf-8") as f:
-                        f.write("".join(feedback_lines))
-
-                    # Archive BUILD-STATUS.md and STST-REPORT.md
-                    build_status_path = os.path.join(sflo_dir, "BUILD-STATUS.md")
-                    to_archive = [
-                        p
-                        for p in [stst_report_path, build_status_path]
-                        if os.path.isfile(p)
-                    ]
-                    if to_archive:
-                        archive_to_logs(sflo_dir, to_archive)
-
-                    # Loop back to gate-2 (DEV)
-                    sorted_gs = sorted(GATES.keys())
-                    restart_gate = sorted_gs[1] if len(sorted_gs) >= 2 else 2
-                    state["current_state"] = f"gate-{restart_gate}"
-                    _locked_write_state(sflo_dir, state)
-                    log(
-                        f"  Gate {gate_num} [STST] REJECT ({stst_retry}/{INNER_LOOP_MAX}) — looping back to gate-{restart_gate}"
-                    )
-
-            else:
-                # All pass — advance to gate-3 (QA)
-                state["gates"][gate_key_str]["status"] = "done"
-                sorted_gs = sorted(GATES.keys())
-                stst_idx = sorted_gs.index(gate_num) if gate_num in sorted_gs else -1
-                next_gate = (
-                    sorted_gs[stst_idx + 1]
-                    if stst_idx >= 0 and stst_idx + 1 < len(sorted_gs)
-                    else 3
-                )
-                state["current_state"] = f"gate-{next_gate}"
-                _locked_write_state(sflo_dir, state)
-                log(f"  Gate {gate_num} [STST] PASS — advancing to gate-{next_gate}")
-
+            # Validate and transition
+            auto_transition(state, sflo_dir)
             state = read_state(sflo_dir)
+            result = compute_next(state, sflo_dir)
+            result = apply_transition(state, result, sflo_dir)
+            state = read_state(sflo_dir)
+
+            gate_check_num = result.get("gate")
+            passed = result.get("pass", False)
+            if passed and gate_check_num:
+                log(f"  Gate {gate_check_num} ✓")
+            elif not passed and gate_check_num:
+                loop_action = result.get("action", "")
+                if "loop" in loop_action:
+                    retry_count = result.get("gate_retry_count")
+                    retry_max = result.get("max")
+                    log(f"  Gate {gate_check_num} ✗ — retry {retry_count}/{retry_max}")
+                else:
+                    log(f"  Gate {gate_check_num} ✗")
+
+        elif action == "spawn_parallel":
+            agents_list = result.get("agents", [])
+            gate_num_par = None
+            if agents_list:
+                gate_num_par = agents_list[0].get("gate_num")
+            log(f"  Gate {gate_num_par} [parallel: {len(agents_list)} agents] ...")
+            # Log skill injection for each parallel agent
+            for _ag in agents_list:
+                _ag_skills = _ag.get("skills", [])
+                if _ag_skills:
+                    _skill_names = [
+                        os.path.basename(os.path.dirname(p)) for p in _ag_skills
+                    ]
+                    log(
+                        f"  Skills injected [{_ag.get('role', '?')}]: {', '.join(_skill_names)}"
+                    )
+                _ag_mcp = _ag.get("mcp")
+                if _ag_mcp is not None:
+                    log(f"  MCP filter [{_ag.get('role', '?')}]: {_ag_mcp or '(none)'}")
+
+            async def _spawn_one(ag_info):
+                ag_role = ag_info.get("role", "unknown")
+                if ag_info.get("runner"):
+                    runner_module, load_err = _load_custom_runner(ag_info["runner"])
+                    if load_err:
+                        raise RuntimeError(
+                            f"[{ag_role}] runner load failed: {load_err}"
+                        )
+                    import inspect as _inspect_par
+
+                    run_fn = (
+                        getattr(runner_module, "run_gate", None) or runner_module.run
+                    )
+                    gate_config = GATES.get(ag_info.get("gate_num"), {})
+                    result_or_coro = run_fn(
+                        gate_config if not isinstance(gate_config, list) else ag_info,
+                        sflo_dir,
+                        output_dir,
+                    )
+                    if _inspect_par.iscoroutine(result_or_coro):
+                        await result_or_coro
+                    return f"{ag_role}: custom runner done"
+                else:
+                    ag_model = ag_info.get("model")
+                    ag_system, ag_user = build_agent_prompt(
+                        ag_info,
+                        user_prompt,
+                        sflo_dir,
+                        runtime=runtime,
+                        output_dir=output_dir,
+                    )
+                    # Filter MCP servers per gate config
+                    ag_gate_mcp = _filter_mcp_for_gate(ag_info, adapter._mcp_servers)
+                    spawn_kwargs = dict(
+                        model=ag_model,
+                        system_prompt=ag_system,
+                        user_prompt=ag_user,
+                        role=ag_role,
+                        tools_mode=ag_info.get("tools_mode"),
+                        thinking=ag_info.get("thinking"),
+                        effort=ag_info.get("effort"),
+                        allow_task=ag_info.get("allow_task"),
+                    )
+                    if ag_gate_mcp is not None:
+                        spawn_kwargs["mcp_servers"] = ag_gate_mcp
+                    if ag_role in ("dev", "qa") and output_dir is not None:
+                        spawn_kwargs["cwd"] = output_dir
+                    if par_factory_env is not None:
+                        spawn_kwargs["env"] = par_factory_env
+                    ag_spawn_start = _time.time()
+                    resp = await call_adapter_with_evals(
+                        adapter,
+                        **spawn_kwargs,
+                        metadata={"session_id": sflo_dir, "output_dir": output_dir},
+                    )
+                    produces = ag_info.get("produces", "")
+                    _recover_artifact(produces, ag_spawn_start, resp, log)
+                    return f"{ag_role}: agent done"
+
+            par_factory_env = _get_factory_env(sflo_dir)
+            tasks = [_spawn_one(ag) for ag in agents_list]
+            gather_results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, gr in enumerate(gather_results):
+                ag_role = agents_list[i].get("role", "?")
+                if isinstance(gr, Exception):
+                    log(f"  Gate {gate_num_par} [{ag_role}] FAILED: {gr}")
+                    artifact = agents_list[i].get("artifact")
+                    if artifact:
+                        err_path = os.path.join(sflo_dir, artifact)
+                        os.makedirs(os.path.dirname(err_path) or ".", exist_ok=True)
+                        with open(err_path, "w", encoding="utf-8") as f:
+                            f.write(f"# Runner Error\n\nVerdict: DEGRADED\n\n{gr}\n")
+                else:
+                    log(f"  Gate {gate_num_par} [{ag_role}] OK")
+
+            auto_transition(state, sflo_dir)
+            state = read_state(sflo_dir)
+            result = compute_next(state, sflo_dir)
+            result = apply_transition(state, result, sflo_dir)
+            state = read_state(sflo_dir)
+
+            gate_check_num = result.get("gate")
+            passed = result.get("pass", False)
+            if passed and gate_check_num:
+                log(f"  Gate {gate_check_num} ✓")
+            elif not passed and gate_check_num:
+                log(f"  Gate {gate_check_num} ✗")
 
         elif action in ("validated", "check_failed"):
             # First iteration of gate loop: state auto-transitioned to check-N
@@ -1493,7 +1582,6 @@ def main():
         choices=["openclaw", "claude-code", "cursor", "ollama"],
         default=None,
     )
-    parser.add_argument("--bindings", default=None, help="Path to bindings YAML file")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
@@ -1521,7 +1609,6 @@ def main():
             sflo_dir=args.sflo_dir,
             runtime=args.runtime,
             verbose=not args.quiet,
-            bindings=args.bindings,
         )
     )
 

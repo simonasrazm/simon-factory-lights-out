@@ -135,8 +135,8 @@ class TestLoadPipelineConfig(unittest.TestCase):
         # Guardian removed — load_pipeline_config returns only {gates, grade_threshold}
         self.assertNotIn("guardian", config)
         self.assertIsInstance(config["grade_threshold"], (int, float))
-        # Default threshold B+ = 5
-        self.assertEqual(config["grade_threshold"], 5)
+        # Default threshold A = 6
+        self.assertEqual(config["grade_threshold"], 6)
 
     def test_float_gate_keys_sorted(self):
         yaml = """gates:
@@ -182,14 +182,21 @@ class TestLoadPipelineConfig(unittest.TestCase):
         # Unknown grade -> fallback to B+ (5)
         self.assertEqual(config["grade_threshold"], 5)
 
-    def test_no_pipeline_yaml_uses_defaults(self):
-        """When no pipeline.yaml exists, built-in defaults are used."""
+    def test_no_pipeline_yaml_returns_missing_sentinel(self):
+        """When no pipeline.yaml exists, returns _missing sentinel for preflight."""
         config = load_pipeline_config("/nonexistent/pipeline.yaml")
-        self.assertIn(1, config["gates"])
-        self.assertIn(5, config["gates"])
-        self.assertEqual(config["grade_threshold"], 5)
-        # Guardian removed — not in config
-        self.assertNotIn("guardian", config)
+        self.assertTrue(config.get("_missing"))
+        self.assertEqual(config["gates"], {})
+        self.assertEqual(config["grade_threshold"], 5)  # B+ default numeric
+
+    def test_parse_error_returns_error_sentinel(self):
+        """When pipeline.yaml exists but has parse errors, returns _error sentinel."""
+        path = self.write_yaml("\tindented_with_tab: bad\n")
+        config = load_pipeline_config(path)
+        self.assertIn("_error", config)
+        self.assertIn("tabs", config["_error"])
+        self.assertEqual(config["gates"], {})
+        self.assertEqual(config["grade_threshold"], 5)  # B+ default numeric
 
     def test_guardian_section_not_in_loaded_config(self):
         """Guardian section in YAML is ignored — load_pipeline_config returns only gates+threshold."""
@@ -199,6 +206,68 @@ class TestLoadPipelineConfig(unittest.TestCase):
         # Should still have the default gates and threshold
         self.assertIn("gates", config)
         self.assertIn("grade_threshold", config)
+
+    def test_per_gate_skills_parsed(self):
+        """Per-gate skills list parsed inside gate entry."""
+        yaml = """gates:
+  1:
+    artifact: SCOPE.md
+    role: pm
+    skills:
+      - spec-driven-development
+      - debugging-and-error-recovery
+    gate_doc: gates/discovery.md
+"""
+        path = self.write_yaml(yaml)
+        config = load_pipeline_config(path)
+        self.assertIn("skills", config["gates"][1])
+        self.assertEqual(len(config["gates"][1]["skills"]), 2)
+        self.assertEqual(config["gates"][1]["skills"][0], "spec-driven-development")
+
+    def test_per_gate_agents_parsed(self):
+        """Per-gate agents list parsed inside gate entry."""
+        yaml = """gates:
+  3:
+    - artifact: QA-REPORT.md
+      role: qa
+      agents:
+        - agents/qa-w-agent-skills
+        - vendor/agent-skills/agents/code-reviewer
+      gate_doc: gates/test.md
+"""
+        path = self.write_yaml(yaml)
+        config = load_pipeline_config(path)
+        qa_entry = config["gates"][3][0]
+        self.assertIn("agents", qa_entry)
+        self.assertEqual(len(qa_entry["agents"]), 2)
+        self.assertEqual(
+            qa_entry["agents"][1], "vendor/agent-skills/agents/code-reviewer"
+        )
+
+    def test_per_gate_threshold_parsed(self):
+        """Per-gate threshold field parsed as string."""
+        yaml = """gates:
+  3:
+    - artifact: QA-REPORT.md
+      role: qa
+      threshold: A
+      gate_doc: gates/test.md
+"""
+        path = self.write_yaml(yaml)
+        config = load_pipeline_config(path)
+        qa_entry = config["gates"][3][0]
+        self.assertEqual(qa_entry.get("threshold"), "A")
+
+    def test_scout_section_parsed(self):
+        """Scout top-level section parsed."""
+        yaml = """scout:
+  model: sonnet
+  tools: readonly
+"""
+        path = self.write_yaml(yaml)
+        config = load_pipeline_config(path)
+        self.assertEqual(config["scout"]["model"], "sonnet")
+        self.assertEqual(config["scout"]["tools"], "readonly")
 
     def test_cwd_override(self):
         """When pipeline.yaml in cwd, it takes priority."""

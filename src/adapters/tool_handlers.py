@@ -33,11 +33,24 @@ _TOOL_TRUNCATE_LIMIT = 200
 # command allowlist for paranoid environments. Empty / unset = no allowlist.
 # ---------------------------------------------------------------------------
 
-BASH_ALLOWED_COMMANDS = {
-    cmd.strip()
-    for cmd in os.environ.get("SFLO_BASH_ALLOWED_COMMANDS", "").split(",")
-    if cmd.strip()
-}  # empty set by default = no command-level filter (only injection check)
+
+def _load_bash_allowed_commands(override=None):
+    """Load allowed commands from env or override.
+
+    Args:
+        override: explicit set of allowed commands (for testing).
+                  None = read from SFLO_BASH_ALLOWED_COMMANDS env var.
+    Returns:
+        set of command names, or empty set (= no filter).
+    """
+    if override is not None:
+        return override
+    raw = os.environ.get("SFLO_BASH_ALLOWED_COMMANDS", "")
+    return {cmd.strip() for cmd in raw.split(",") if cmd.strip()}
+
+
+# Module-level cache for backward compat — callers that import directly.
+BASH_ALLOWED_COMMANDS = _load_bash_allowed_commands()
 
 # Patterns that indicate shell injection / command chaining / privilege
 # escalation. These are rejected regardless of the leading command.
@@ -56,8 +69,14 @@ _DANGEROUS_PATTERNS = re.compile(
 )
 
 
-def _check_bash_safety(command: str):
-    """Return (is_safe: bool, reason: str)."""
+def _check_bash_safety(command: str, allowed_commands=None):
+    """Return (is_safe: bool, reason: str).
+
+    Args:
+        command: shell command string.
+        allowed_commands: explicit set of allowed executables (for testing).
+                         None = use module-level BASH_ALLOWED_COMMANDS.
+    """
     if not command or not command.strip():
         return False, "empty command"
 
@@ -76,12 +95,15 @@ def _check_bash_safety(command: str):
 
     # Optional opt-in command allowlist (off by default). Operators who want
     # command-level filtering set SFLO_BASH_ALLOWED_COMMANDS in their env.
-    if BASH_ALLOWED_COMMANDS:
+    _allowed = (
+        allowed_commands if allowed_commands is not None else BASH_ALLOWED_COMMANDS
+    )
+    if _allowed:
         exe = os.path.basename(parts[0])
-        if exe not in BASH_ALLOWED_COMMANDS:
+        if exe not in _allowed:
             return False, (
                 f"command '{exe}' not in SFLO_BASH_ALLOWED_COMMANDS allowlist. "
-                f"Allowed: {', '.join(sorted(BASH_ALLOWED_COMMANDS))}"
+                f"Allowed: {', '.join(sorted(_allowed))}"
             )
 
     return True, ""
@@ -238,10 +260,16 @@ def handle_multiedit(fn_args):
         return f"[multiedit error: {e}]"
 
 
-def handle_glob(fn_args):
+def handle_glob(fn_args, root=None):
+    """Glob for files matching pattern.
+
+    Args:
+        fn_args: dict with "pattern" key.
+        root: base directory for globbing (default: os.getcwd()).
+    """
     pattern = fn_args.get("pattern", "")
     try:
-        cwd = pathlib.Path(os.getcwd())
+        cwd = pathlib.Path(root) if root is not None else pathlib.Path(os.getcwd())
         matches = sorted(str(p.resolve()) for p in cwd.glob(pattern))
         truncated = len(matches) > _TOOL_TRUNCATE_LIMIT
         matches = matches[:_TOOL_TRUNCATE_LIMIT]

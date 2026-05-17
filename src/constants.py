@@ -4,28 +4,53 @@ import os
 import shutil
 import sys
 
+from .config import load_pipeline_config, GRADE_MAP  # noqa: F401 — re-export
+
 # Root of the sflo repo.
-# SFLO_ROOT env var (set by SimonFactory app to vault path) takes precedence.
+# SFLO_ROOT env var (set by host app to vault path) takes precedence.
 # Falls back to __file__-derived path for CLI / dev use.
 SFLO_ROOT = os.environ.get("SFLO_ROOT") or os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
 
-# Load pipeline config (gates, threshold) from pipeline.yaml
-# Resolution: cwd/pipeline.yaml -> sflo/pipeline.yaml -> built-in defaults
-from .config import load_pipeline_config
-
 _config = load_pipeline_config()
 
 GATES = _config["gates"]
 GRADE_THRESHOLD = _config["grade_threshold"]
-
-GRADE_MAP = {"A": 6, "A-": 5.5, "B+": 5, "B": 4, "B-": 3.5, "C": 3, "D": 2, "F": 1}
+SCOUT_CONFIG = _config.get("scout", {})
+SFLO_CONFIG = _config.get("sflo", {})
 
 INNER_LOOP_MAX = 10
 OUTER_LOOP_MAX = 10
 
-KNOWN_ROLES = {"pm", "dev", "qa", "extra", "sflo-dir"}
+
+def inner_loop_gate_key():
+    """Return gate key for the inner-loop (QA/security) gate.
+
+    Position: third-from-last in sorted gate order.
+    Returns None if pipeline has fewer than 3 gates.
+    """
+    keys = sorted(GATES.keys())
+    return keys[-3] if len(keys) >= 3 else None
+
+
+def outer_loop_gate_key():
+    """Return gate key for the outer-loop (PM verify) gate.
+
+    Position: second-from-last in sorted gate order.
+    Returns None if pipeline has fewer than 2 gates.
+    """
+    keys = sorted(GATES.keys())
+    return keys[-2] if len(keys) >= 2 else None
+
+# Derived from GATES — auto-syncs with pipeline.yaml, no manual maintenance.
+# "extra" and "sflo-dir" are internal tokens used by scaffold assign CLI.
+KNOWN_ROLES = {
+    e.get("role")
+    for g in GATES.values()
+    for e in (g if isinstance(g, list) else [g])
+    if e.get("role")
+} | {"extra", "sflo-dir"}
 
 
 def _detect_python():

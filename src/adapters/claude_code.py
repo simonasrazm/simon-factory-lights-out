@@ -3,16 +3,17 @@
 import asyncio
 import os
 import shutil
-import sys
 import time as _time
 from pathlib import Path
 
 from .base import RuntimeAdapter
-from ..bindings import load_security_config
+from ..security import load_security_config
 from .._stderr import _safe_stderr
+from ..evals import EvalAbortError
+from ..evals.integration import run_tool_call_evals
 
 # ---------------------------------------------------------------------------
-# Tool policy — driven by `tools:` field in bindings.yaml per role.
+# Tool policy — driven by `tools:` field in pipeline.yaml per role.
 #
 # Philosophy: workhorse agents need almost-absolute access to do their job.
 # Restriction is a security exception, not a default. Sflo only enforces
@@ -58,7 +59,7 @@ def resolve_allowed_tools(tools_mode, caller_supplied=None):
     """Resolve allowed_tools list. Caller-supplied wins; else apply preset.
 
     Args:
-      tools_mode: string from bindings.yaml `tools:` field (e.g. "readonly").
+      tools_mode: string from pipeline.yaml `tools:` field (e.g. "readonly").
                   Unknown / None / "full" → None (all tools available).
       caller_supplied: list of tool names from runner kwarg (overrides mode).
 
@@ -70,6 +71,91 @@ def resolve_allowed_tools(tools_mode, caller_supplied=None):
         return TOOL_MODE_PRESETS[tools_mode]
     # Unknown mode (or None) → full access. Don't second-guess the operator.
     return None
+
+
+def build_sdk_options(
+    system_prompt,
+    model,
+    security_config,
+    tools_mode=None,
+    allowed_tools=None,
+    cwd=None,
+    mcp_servers=None,
+    mcp_defaults=None,
+    extra_cli_args=None,
+    stderr_callback=None,
+    thinking=None,
+    effort=None,
+):
+    """Build the kwargs dict for ClaudeAgentOptions.
+
+    Pure function — no side effects, no SDK import, fully testable.
+    Returns (opts_dict, sandbox_dir_or_None).
+    """
+    resolved_tools = resolve_allowed_tools(tools_mode, allowed_tools)
+    sec = security_config
+
+    opts = dict(
+        system_prompt=system_prompt,
+        model=model,
+        permission_mode=(
+            "default" if sec["require_permission"] else "bypassPermissions"
+        ),
+    )
+    if stderr_callback is not None:
+        opts["stderr"] = stderr_callback
+    if resolved_tools is not None:
+        opts["allowed_tools"] = resolved_tools
+    if cwd is not None:
+        opts["cwd"] = cwd
+
+    # Per-gate thinking and effort settings
+    _THINKING_MAP = {
+        "off": {"type": "disabled"},
+        "adaptive": {"type": "adaptive"},
+        "extended": {"type": "enabled", "budget_tokens": 32768},
+    }
+    if thinking and thinking in _THINKING_MAP:
+        opts["thinking"] = _THINKING_MAP[thinking]
+    if effort and effort in ("low", "medium", "high", "max"):
+        opts["effort"] = effort
+
+    # readonly mode opts out of MCP — scout-style recon stays Read/Glob/Grep only.
+    needs_mcp = tools_mode != "readonly"
+    if mcp_servers and needs_mcp:
+        opts["mcp_servers"] = mcp_servers
+        # Append tool usage notes from mcp-defaults
+        prompts = []
+        for name in mcp_servers:
+            note = (mcp_defaults or {}).get(name, {}).get("system_prompt_append")
+            if note:
+                prompts.append(note)
+        if prompts:
+            opts["system_prompt"] = (
+                (opts.get("system_prompt") or "") + "\n\n" + " ".join(prompts)
+            )
+    if extra_cli_args and needs_mcp:
+        opts["extra_args"] = extra_cli_args
+
+    if sec["no_session_persistence"]:
+        opts["extra_args"] = {
+            **(opts.get("extra_args") or {}),
+            "no-session-persistence": None,
+        }
+
+    # Settings isolation. all-mode wins over user-mode if both set.
+    if sec["isolate_all_settings"]:
+        opts["setting_sources"] = []
+    elif sec["isolate_user_settings"]:
+        opts["setting_sources"] = ["project", "local"]
+
+    sandbox_dir = None
+    if sec["sandbox_config_dir"]:
+        sandbox_dir = Path(cwd if cwd is not None else os.getcwd()) / ".claude_sandbox"
+        sandbox_dir.mkdir(exist_ok=True)
+        opts["env"] = {**(opts.get("env") or {}), "CLAUDE_CONFIG_DIR": str(sandbox_dir)}
+
+    return opts, sandbox_dir, needs_mcp
 
 
 class ClaudeCodeAdapter(RuntimeAdapter):
@@ -88,6 +174,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         role=None,
         allowed_tools=None,
         tools_mode=None,
+        thinking=None,
+        effort=None,
+        mcp_servers=None,
+        allow_task=None,
+        env=None,
     ):
         return await self._run_agent(
             model,
@@ -97,6 +188,11 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             allowed_tools=allowed_tools,
             tools_mode=tools_mode,
             role=role,
+            thinking=thinking,
+            effort=effort,
+            mcp_servers=mcp_servers,
+            allow_task=allow_task,
+            env=env,
         )
 
     # Max seconds to wait for MCP servers to connect.
@@ -111,9 +207,18 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         allowed_tools=None,
         tools_mode=None,
         role=None,
+        thinking=None,
+        effort=None,
+        allow_task=None,
+        mcp_servers=None,
+        env=None,
     ):
         try:
-            from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
+            from claude_agent_sdk import (
+                ClaudeSDKClient,
+                ClaudeAgentOptions,
+                HookMatcher,
+            )
         except ImportError:
             raise RuntimeError(
                 "claude_agent_sdk not available. "
@@ -127,7 +232,6 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             stderr_lines.append(line)
 
         sec = load_security_config()
-        resolved_tools = resolve_allowed_tools(tools_mode, allowed_tools)
 
         if sec["require_permission"]:
             _safe_stderr(
@@ -135,66 +239,79 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "will hang on tool calls without an allow-list / prompt tool."
             )
 
-        opts = dict(
+        # Per-gate MCP override: if gate declares mcp: list, use only those servers.
+        # If mcp_servers kwarg is None, fall back to class-level (all servers).
+        effective_mcp = mcp_servers if mcp_servers is not None else self._mcp_servers
+
+        opts, sandbox_dir, needs_mcp = build_sdk_options(
             system_prompt=system_prompt,
             model=model,
-            permission_mode=(
-                "default" if sec["require_permission"] else "bypassPermissions"
-            ),
-            stderr=capture_stderr,
+            security_config=sec,
+            tools_mode=tools_mode,
+            allowed_tools=allowed_tools,
+            cwd=cwd,
+            mcp_servers=effective_mcp,
+            mcp_defaults=self._load_mcp_defaults() if effective_mcp else None,
+            extra_cli_args=self._extra_cli_args,
+            stderr_callback=capture_stderr,
+            thinking=thinking,
+            effort=effort,
         )
-        if resolved_tools is not None:
-            opts["allowed_tools"] = resolved_tools
-        if cwd is not None:
-            opts["cwd"] = cwd
-        # readonly mode opts out of MCP — scout-style recon stays Read/Glob/Grep only.
-        needs_mcp = tools_mode != "readonly"
-        if self._mcp_servers and needs_mcp:
-            opts["mcp_servers"] = self._mcp_servers
-            # Append tool usage notes from mcp-defaults.json
-            defaults = self._load_mcp_defaults()
-            prompts = []
-            for name in self._mcp_servers:
-                note = defaults.get(name, {}).get("system_prompt_append")
-                if note:
-                    prompts.append(note)
-            if prompts:
-                opts["system_prompt"] = (
-                    (opts.get("system_prompt") or "") + "\n\n" + " ".join(prompts)
+
+        if env:
+            opts["env"] = {**(opts.get("env") or {}), **env}
+
+        # --- PRE_TOOL_CALL eval dispatch — claude-code runtime wiring ---
+        # run_tool_call_evals (eval framework) is runtime-agnostic; this hook is
+        # the claude-code glue. Claude Code fires PreToolUse before a tool runs;
+        # on EvalAbortError we return permissionDecision="deny" so the tool is
+        # blocked BEFORE execution (path_traversal_blocker, shell_metachar_guard).
+        # The eval registry is already loaded in-process — no reload, no subprocess.
+        async def _pretooluse_eval_hook(hook_input, _tool_use_id, _hook_ctx):
+            try:
+                await run_tool_call_evals(
+                    hook_input.get("tool_name", ""),
+                    hook_input.get("tool_input", {}) or {},
+                    role=role,
+                    metadata={"role": role or "unknown"},
                 )
-        if self._extra_cli_args and needs_mcp:
-            opts["extra_args"] = self._extra_cli_args
+            except EvalAbortError as _abort:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"sflo eval '{_abort.eval_name}' blocked this "
+                            f"tool call: {_abort.reason}"
+                        ),
+                    }
+                }
+            return {}
 
-        if sec["no_session_persistence"]:
-            opts["extra_args"] = {
-                **(opts.get("extra_args") or {}),
-                "no-session-persistence": None,
-            }
+        opts["hooks"] = {
+            "PreToolUse": [
+                HookMatcher(
+                    matcher="Read|Write|Edit|Glob|Bash",
+                    hooks=[_pretooluse_eval_hook],
+                )
+            ]
+        }
 
-        # Settings isolation. all-mode wins over user-mode if both set.
         if sec["isolate_all_settings"]:
-            opts["setting_sources"] = []
             _safe_stderr(
                 "  [security] isolate_all_settings=true — project settings "
                 "severed in spawned agents (interactive Stop hook only)."
             )
-        elif sec["isolate_user_settings"]:
-            opts["setting_sources"] = ["project", "local"]
-
-        sandbox_dir = None
-        if sec["sandbox_config_dir"]:
-            sandbox_dir = Path(cwd if cwd is not None else os.getcwd()) / ".claude_sandbox"
-            sandbox_dir.mkdir(exist_ok=True)
-            opts["env"] = {**(opts.get("env") or {}), "CLAUDE_CONFIG_DIR": str(sandbox_dir)}
 
         result_text = ""
         assistant_msgs = 0
         tool_calls = 0
+        total_tokens = 0
         start_time = _time.time()
         try:
             async with ClaudeSDKClient(ClaudeAgentOptions(**opts)) as client:
                 # Wait for MCP servers if configured and role needs them
-                if self._mcp_servers and needs_mcp:
+                if effective_mcp and needs_mcp:
                     deadline = _time.time() + self.MCP_READY_TIMEOUT
                     servers = []  # initialize before loop so else-clause can reference it
                     while _time.time() < deadline:
@@ -281,22 +398,80 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                         result_text = message.result
                     elif hasattr(message, "content") and message.content:
                         assistant_msgs += 1
+                        msg_text_len = 0
                         for block in message.content:
                             if hasattr(block, "text") and block.text:
                                 result_text += block.text
+                                msg_text_len += len(block.text)
                             block_type = type(block).__name__
                             if block_type == "ToolUseBlock" or (
                                 hasattr(block, "name") and hasattr(block, "input")
                             ):
                                 tool_calls += 1
+                                # Tool name for observability
+                                tool_name = getattr(block, "name", "?")
+                                # Extract tool input for security-sensitive tools
+                                tool_input = getattr(block, "input", None) or {}
+                                tool_detail = ""
+                                if tool_name == "Bash":
+                                    cmd = tool_input.get("command", "")
+                                    # Log first 200 chars of command for audit
+                                    cmd_short = cmd[:200] + (
+                                        "…" if len(cmd) > 200 else ""
+                                    )
+                                    tool_detail = f", cmd={cmd_short}"
+                                elif tool_name == "Task":
+                                    # Task = subagent spawn — MUST log for
+                                    # security parity with parent agents.
+                                    prompt = tool_input.get("prompt", "")
+                                    prompt_short = prompt[:200] + (
+                                        "…" if len(prompt) > 200 else ""
+                                    )
+                                    tool_detail = f", subagent_prompt={prompt_short}"
+                                    if allow_task is False:
+                                        _safe_stderr(
+                                            f"  [WARNING] role={role} used Task "
+                                            f"tool but allow_task=false for this gate"
+                                        )
+                                elif tool_name == "Write":
+                                    path = tool_input.get("file_path", "?")
+                                    tool_detail = f", path={path}"
+                                elif tool_name == "Edit":
+                                    path = tool_input.get("file_path", "?")
+                                    tool_detail = f", path={path}"
                                 # Emit live progress so the Mac UI can update
                                 # agent card tool counts mid-run (AC3).
                                 elapsed_now = _time.time() - start_time
                                 _safe_stderr(
                                     f"  [Agent metrics — role={role}, model={model}, "
                                     f"msgs={assistant_msgs}, tools={tool_calls}, "
-                                    f"elapsed={elapsed_now:.0f}s]"
+                                    f"elapsed={elapsed_now:.0f}s, "
+                                    f"tool={tool_name}{tool_detail}]"
                                 )
+                        # Log text generation length when substantial
+                        if msg_text_len > 500:
+                            _safe_stderr(
+                                f"  [Agent text — role={role}, "
+                                f"msg={assistant_msgs}, chars={msg_text_len}]"
+                            )
+
+                    # Extract token usage from various SDK message shapes
+                    if hasattr(message, "usage") and message.usage:
+                        usage = message.usage
+                        if isinstance(usage, dict):
+                            total_tokens = (
+                                usage.get(
+                                    "total_tokens",
+                                    usage.get("input_tokens", 0)
+                                    + usage.get("output_tokens", 0),
+                                )
+                                or total_tokens
+                            )
+                        elif hasattr(usage, "total_tokens"):
+                            total_tokens = usage.total_tokens or total_tokens
+                    # Fallback: some SDK versions expose cost/tokens at message level
+                    if not total_tokens and hasattr(message, "token_count"):
+                        total_tokens = message.token_count
         except Exception as e:
             # Enrich known crash types with actionable guidance so the
             # retry's crash_context helps the next attempt avoid the same
@@ -312,9 +487,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     "pass format='jpeg' and quality=50 to take_screenshot."
                 )
             elapsed = _time.time() - start_time
+            token_str = f", tokens={total_tokens}" if total_tokens else ", tokens=n/a"
             _safe_stderr(
                 f"  [Agent metrics at crash — role={role}, model={model}, "
-                f"msgs={assistant_msgs}, tools={tool_calls}, "
+                f"msgs={assistant_msgs}, tools={tool_calls}{token_str}, "
                 f"elapsed={elapsed:.0f}s]"
             )
             self._last_stderr = list(stderr_lines)
@@ -342,9 +518,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 shutil.rmtree(sandbox_dir, ignore_errors=True)
 
         elapsed = _time.time() - start_time
+        token_str = f", tokens={total_tokens}" if total_tokens else ", tokens=n/a"
         _safe_stderr(
             f"  [Agent metrics — role={role}, model={model}, "
-            f"msgs={assistant_msgs}, tools={tool_calls}, "
+            f"msgs={assistant_msgs}, tools={tool_calls}{token_str}, "
             f"elapsed={elapsed:.0f}s]"
         )
 
