@@ -18,6 +18,8 @@ from src.state import (
     read_state,
     acquire_lock,
     release_lock,
+    acquire_instance_lock,
+    release_instance_lock,
     make_initial_state,
 )
 
@@ -159,3 +161,69 @@ class TestLockedWriteState:
             f"runner.py calls bare write_state() outside _locked_write_state "
             f"({len(violations)} violation(s)):\n" + "\n".join(violations)
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit: acquire_instance_lock / release_instance_lock — one runner per dir
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceLock:
+    """Process-lifetime instance lock — at most one runner per state dir."""
+
+    def test_acquire_creates_pidfile(self, tmp_path):
+        sflo_dir = str(tmp_path)
+        fd = acquire_instance_lock(sflo_dir)
+        try:
+            pidfile = os.path.join(sflo_dir, "runner.pid")
+            assert os.path.exists(pidfile), "instance lock pidfile should exist"
+            with open(pidfile) as f:
+                assert f.read().strip() == str(os.getpid())
+        finally:
+            release_instance_lock(sflo_dir, fd)
+
+    def test_release_removes_pidfile(self, tmp_path):
+        sflo_dir = str(tmp_path)
+        fd = acquire_instance_lock(sflo_dir)
+        release_instance_lock(sflo_dir, fd)
+        assert not os.path.exists(os.path.join(sflo_dir, "runner.pid")), (
+            "instance lock pidfile should be gone after release"
+        )
+
+    def test_live_holder_blocks_second_runner(self, tmp_path):
+        """A second runner must fail fast while a live runner holds the lock."""
+        import subprocess
+
+        sflo_dir = str(tmp_path)
+        os.makedirs(sflo_dir, exist_ok=True)
+        # Simulate another live runner with a real, alive, non-self PID — a
+        # sleeper subprocess we own for the test (deterministic, unlike the
+        # pytest parent PID, which is not guaranteed to outlive the test).
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+        try:
+            with open(os.path.join(sflo_dir, "runner.pid"), "w") as f:
+                f.write(str(holder.pid))
+            with pytest.raises(RuntimeError, match="already running"):
+                acquire_instance_lock(sflo_dir)
+        finally:
+            holder.terminate()
+            holder.wait()
+
+    def test_stale_lock_reclaimed(self, tmp_path):
+        """A pidfile left by a dead runner is reclaimed, not treated as conflict."""
+        import subprocess
+
+        sflo_dir = str(tmp_path)
+        os.makedirs(sflo_dir, exist_ok=True)
+        dead = subprocess.Popen([sys.executable, "-c", ""])
+        dead.wait()  # PID is now dead
+        with open(os.path.join(sflo_dir, "runner.pid"), "w") as f:
+            f.write(str(dead.pid))
+        fd = acquire_instance_lock(sflo_dir)  # must reclaim, not raise
+        try:
+            with open(os.path.join(sflo_dir, "runner.pid")) as f:
+                assert f.read().strip() == str(os.getpid())
+        finally:
+            release_instance_lock(sflo_dir, fd)

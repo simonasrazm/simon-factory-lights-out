@@ -45,7 +45,9 @@ class TestHookDecisions(unittest.TestCase):
                 }.items()
             },
         }
-        with open(os.path.join(self.state_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.state_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
 
     def test_no_pipeline_allows_stop(self):
@@ -110,7 +112,9 @@ class TestHookPipelineTraversal(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def artifact(self, name, content):
-        with open(os.path.join(self.sflo_dir, name), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, name), "w", encoding="utf-8"
+        ) as f:
             f.write(content)
 
     def prompt(self):

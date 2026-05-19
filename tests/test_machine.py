@@ -28,7 +28,7 @@ def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
             content = PASSING_ARTIFACTS.get(
                 artifact, f"# {artifact}\n\nMinimal content.\n### Grade: A\n"
             )
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
 
 
@@ -274,7 +274,7 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
             os.path.isfile(feedback_path),
             "QA-FEEDBACK.md should be created with findings",
         )
-        with open(feedback_path) as f:
+        with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn(
             "Missing spacing scale",
@@ -327,7 +327,7 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         apply_transition(state, result, self.sflo_dir)
 
         feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
-        with open(feedback_path) as f:
+        with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn(
             "Bug A", content, "feedback should accumulate Bug A from first failure"
@@ -446,7 +446,9 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         state = self._gate1_failure_state()
         # Pre-set gate_retries to just below the limit
         state["gate_retries"] = {"1": INNER_LOOP_MAX - 1}
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
         state = self.read_state_file()
 
@@ -499,7 +501,9 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
 
         state = self._gate1_failure_state()
         state["gate_retries"] = {"1": INNER_LOOP_MAX - 1}
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
         state = self.read_state_file()
 
@@ -533,7 +537,9 @@ class TestNonLoopGateRetry(TempDirMixin, unittest.TestCase):
         state = self.read_state_file()
         for key in ("escalate_reason", "escalate_options", "escalate_failed_checks"):
             state.pop(key, None)
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
         state = self.read_state_file()
 
@@ -582,7 +588,13 @@ class TestResolveAgentPath(unittest.TestCase):
         """agent: (singular) takes highest priority."""
         entry = {"role": "qa", "agent": "agents/custom-qa"}
         result = self.resolve(entry, self.sflo_base, {}, {})
-        self.assertEqual(result, "/fake/sflo/agents/custom-qa")
+        # Build expected with normpath(join(...)) so the separator matches the
+        # platform — _resolve_agent_path normalizes the joined result, which
+        # yields backslashes on Windows.
+        self.assertEqual(
+            result,
+            os.path.normpath(os.path.join(self.sflo_base, "agents", "custom-qa")),
+        )
 
     def test_agents_plural_first_entry(self):
         """agents: list uses first entry as primary when no singular agent:."""
@@ -591,7 +603,10 @@ class TestResolveAgentPath(unittest.TestCase):
             "agents": ["agents/qa-combo", "vendor/x/agents/reviewer"],
         }
         result = self.resolve(entry, self.sflo_base, {}, {})
-        self.assertEqual(result, "/fake/sflo/agents/qa-combo")
+        self.assertEqual(
+            result,
+            os.path.normpath(os.path.join(self.sflo_base, "agents", "qa-combo")),
+        )
 
     def test_singular_takes_precedence_over_plural(self):
         """agent: (singular) wins even when agents: (plural) also present."""
@@ -601,7 +616,10 @@ class TestResolveAgentPath(unittest.TestCase):
             "agents": ["agents/from-list", "agents/other"],
         }
         result = self.resolve(entry, self.sflo_base, {}, {})
-        self.assertEqual(result, "/fake/sflo/agents/explicit")
+        self.assertEqual(
+            result,
+            os.path.normpath(os.path.join(self.sflo_base, "agents", "explicit")),
+        )
 
     def test_empty_agents_list_falls_through(self):
         """Empty agents: [] should fall through to role config / scout."""
@@ -621,13 +639,16 @@ class TestResolveAgentPath(unittest.TestCase):
         """No agent:, no agents:, no scout → convention: sflo_base/agents/<role>."""
         entry = {"role": "pm"}
         result = self.resolve(entry, self.sflo_base, {}, {})
-        self.assertEqual(result, "/fake/sflo/agents/pm")
+        self.assertEqual(
+            result, os.path.normpath(os.path.join(self.sflo_base, "agents", "pm"))
+        )
 
     def test_absolute_agents_path_preserved(self):
         """Absolute path in agents: list is not joined with sflo_base."""
         entry = {"role": "qa", "agents": ["/abs/path/to/agent"]}
         result = self.resolve(entry, self.sflo_base, {}, {})
-        self.assertEqual(result, "/abs/path/to/agent")
+        # a POSIX-absolute fixture is not absolute on Windows — normalize expected
+        self.assertEqual(result, os.path.normpath("/abs/path/to/agent"))
 
 
 class TestRolesWithExplicitAgents(unittest.TestCase):

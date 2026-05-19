@@ -119,7 +119,7 @@ def test_tc2_empty_evals_section(tmp_path):
 
     # No evals: key at all
     bindings = tmp_path / "bindings.yaml"
-    bindings.write_text("roles:\n  dev:\n    model: sonnet\n")
+    bindings.write_text("roles:\n  dev:\n    model: sonnet\n", encoding="utf-8")
     result = load_evals_from_bindings(bindings)
     assert result == [], f"no evals key should yield empty list, got {result}"
     assert len(_LOADED_EVALS) == 0, (
@@ -128,7 +128,7 @@ def test_tc2_empty_evals_section(tmp_path):
 
     # Explicit empty list
     clear_registry()
-    bindings.write_text("evals: []\n")
+    bindings.write_text("evals: []\n", encoding="utf-8")
     result = load_evals_from_bindings(bindings)
     assert result == [], f"explicit empty evals should yield empty list, got {result}"
 
@@ -145,7 +145,7 @@ def test_tc3_one_plugin_loaded(tmp_path):
     mod_name = f"tc3_myplugins_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "myplugin.py").write_text(
         textwrap.dedent(
             """
@@ -157,7 +157,7 @@ def test_tc3_one_plugin_loaded(tmp_path):
                 category = EvalCategory.QUALITY
                 priority = 10
             """
-        )
+        ), encoding="utf-8"
     )
 
     # Clear any previous cached imports
@@ -174,7 +174,7 @@ def test_tc3_one_plugin_loaded(tmp_path):
             f"    module: {mod_name}.myplugin\n"
             f"    class: MyEval\n"
             f"    enabled: true\n"
-            f"    priority: 10\n"
+            f"    priority: 10\n", encoding="utf-8"
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -211,7 +211,7 @@ def test_tc4_bad_module(tmp_path):
         "evals:\n"
         "  - name: nonexistent\n"
         "    module: totally.nonexistent.module.xyz\n"
-        "    class: SomeClass\n"
+        "    class: SomeClass\n", encoding="utf-8"
     )
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -236,8 +236,8 @@ def test_tc5_bad_class_name(tmp_path):
     mod_name = f"tc5_goodmod_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
-    (mod_dir / "mymod.py").write_text("class RealClass: pass\n")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
+    (mod_dir / "mymod.py").write_text("class RealClass: pass\n", encoding="utf-8")
 
     for key in list(sys.modules.keys()):
         if mod_name in key:
@@ -250,7 +250,7 @@ def test_tc5_bad_class_name(tmp_path):
             f"evals:\n"
             f"  - name: bad\n"
             f"    module: {mod_name}.mymod\n"
-            f"    class: NonExistentClass\n"
+            f"    class: NonExistentClass\n", encoding="utf-8"
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -281,7 +281,7 @@ def test_tc6_priority_sort(tmp_path):
     mod_name = f"tc6_primod_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "evals.py").write_text(
         textwrap.dedent(
             """
@@ -302,7 +302,7 @@ def test_tc6_priority_sort(tmp_path):
                 sites = [HookSite.POST_RESPONSE]
                 priority = 50
             """
-        )
+        ), encoding="utf-8"
     )
 
     for key in list(sys.modules.keys()):
@@ -326,7 +326,7 @@ def test_tc6_priority_sort(tmp_path):
             f"  - name: mid_pri\n"
             f"    module: {mod_name}.evals\n"
             f"    class: MidPriEval\n"
-            f"    priority: 50\n"
+            f"    priority: 50\n", encoding="utf-8"
         )
         result = load_evals_from_bindings(bindings)
         assert len(result) == 3, f"expected 3 evals loaded, got {len(result)}"
@@ -354,7 +354,7 @@ def test_tc7_match_roles_filter(tmp_path):
     mod_name = f"tc7_rolemod_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "evals.py").write_text(
         textwrap.dedent(
             """
@@ -364,7 +364,7 @@ def test_tc7_match_roles_filter(tmp_path):
                 name = "dev_only"
                 sites = [HookSite.POST_RESPONSE]
             """
-        )
+        ), encoding="utf-8"
     )
 
     for key in list(sys.modules.keys()):
@@ -380,7 +380,7 @@ def test_tc7_match_roles_filter(tmp_path):
             f"    module: {mod_name}.evals\n"
             f"    class: DevOnlyEval\n"
             f"    match:\n"
-            f"      roles: [dev, qa]\n"
+            f"      roles: [dev, qa]\n", encoding="utf-8"
         )
         load_evals_from_bindings(bindings)
 
@@ -421,7 +421,7 @@ def test_tc8_match_gates_filter(tmp_path):
     mod_name = f"tc8_gatemod_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "evals.py").write_text(
         textwrap.dedent(
             """
@@ -431,7 +431,7 @@ def test_tc8_match_gates_filter(tmp_path):
                 name = "gate2_only"
                 sites = [HookSite.POST_RESPONSE]
             """
-        )
+        ), encoding="utf-8"
     )
 
     for key in list(sys.modules.keys()):
@@ -447,7 +447,7 @@ def test_tc8_match_gates_filter(tmp_path):
             f"    module: {mod_name}.evals\n"
             f"    class: Gate2Eval\n"
             f"    match:\n"
-            f"      gates: [2, 3]\n"
+            f"      gates: [2, 3]\n", encoding="utf-8"
         )
         load_evals_from_bindings(bindings)
 
@@ -664,7 +664,7 @@ def test_tc13_disabled_entry(tmp_path):
     mod_name = f"tc13_dismod_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "evals.py").write_text(
         textwrap.dedent(
             """
@@ -674,7 +674,7 @@ def test_tc13_disabled_entry(tmp_path):
                 name = "disabled_eval"
                 sites = [HookSite.POST_RESPONSE]
             """
-        )
+        ), encoding="utf-8"
     )
 
     for key in list(sys.modules.keys()):
@@ -689,7 +689,7 @@ def test_tc13_disabled_entry(tmp_path):
             f"  - name: disabled_eval\n"
             f"    module: {mod_name}.evals\n"
             f"    class: MyEval\n"
-            f"    enabled: false\n"
+            f"    enabled: false\n", encoding="utf-8"
         )
         result = load_evals_from_bindings(bindings)
         assert result == [], f"disabled eval should not be loaded, got {result}"
@@ -713,9 +713,9 @@ def test_tc14_non_sfloeval_class(tmp_path):
     mod_name = f"tc14_noteval_{tmp_path.name}"
     mod_dir = tmp_path / mod_name
     mod_dir.mkdir()
-    (mod_dir / "__init__.py").write_text("")
+    (mod_dir / "__init__.py").write_text("", encoding="utf-8")
     (mod_dir / "evals.py").write_text(
-        "class NotAnEval:\n    name = 'not_an_eval'\n    sites = []\n"
+        "class NotAnEval:\n    name = 'not_an_eval'\n    sites = []\n", encoding="utf-8"
     )
 
     for key in list(sys.modules.keys()):
@@ -729,7 +729,7 @@ def test_tc14_non_sfloeval_class(tmp_path):
             f"evals:\n"
             f"  - name: not_an_eval\n"
             f"    module: {mod_name}.evals\n"
-            f"    class: NotAnEval\n"
+            f"    class: NotAnEval\n", encoding="utf-8"
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")

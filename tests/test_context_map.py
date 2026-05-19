@@ -7,7 +7,7 @@ class TestBuildContextMap:
     def test_fresh_mode_no_feedback(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
-        (sflo_dir / "SCOPE.md").write_text("scope content")
+        (sflo_dir / "SCOPE.md").write_text("scope content", encoding="utf-8")
 
         mode, text = build_context_map(2, str(sflo_dir))
 
@@ -18,8 +18,10 @@ class TestBuildContextMap:
     def test_rebuild_mode_qa_feedback_only(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
-        (sflo_dir / "SCOPE.md").write_text("scope")
-        (sflo_dir / "QA-FEEDBACK.md").write_text("fix BenchmarkPanel.jsx")
+        (sflo_dir / "SCOPE.md").write_text("scope", encoding="utf-8")
+        (sflo_dir / "QA-FEEDBACK.md").write_text(
+            "fix BenchmarkPanel.jsx", encoding="utf-8"
+        )
 
         mode, text = build_context_map(2, str(sflo_dir))
 
@@ -37,8 +39,8 @@ class TestBuildContextMap:
     def test_rebuild_mode_pm_feedback_only(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
-        (sflo_dir / "SCOPE.md").write_text("scope")
-        (sflo_dir / "PM-FEEDBACK.md").write_text("Model F missing")
+        (sflo_dir / "SCOPE.md").write_text("scope", encoding="utf-8")
+        (sflo_dir / "PM-FEEDBACK.md").write_text("Model F missing", encoding="utf-8")
 
         mode, text = build_context_map(2, str(sflo_dir))
 
@@ -50,9 +52,9 @@ class TestBuildContextMap:
     def test_rebuild_mode_both_feedbacks(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
-        (sflo_dir / "SCOPE.md").write_text("scope")
-        (sflo_dir / "QA-FEEDBACK.md").write_text("qa issues")
-        (sflo_dir / "PM-FEEDBACK.md").write_text("pm issues")
+        (sflo_dir / "SCOPE.md").write_text("scope", encoding="utf-8")
+        (sflo_dir / "QA-FEEDBACK.md").write_text("qa issues", encoding="utf-8")
+        (sflo_dir / "PM-FEEDBACK.md").write_text("pm issues", encoding="utf-8")
 
         mode, text = build_context_map(2, str(sflo_dir))
 
@@ -65,7 +67,7 @@ class TestBuildContextMap:
     def test_prior_artifacts_listed(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
-        (sflo_dir / "SCOPE.md").write_text("scope")
+        (sflo_dir / "SCOPE.md").write_text("scope", encoding="utf-8")
 
         mode, text = build_context_map(2, str(sflo_dir))
 

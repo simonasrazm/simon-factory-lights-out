@@ -1,8 +1,13 @@
 """SFLO Pre-flight — validate before pipeline runs.
 
-Two check types:
+Check types:
 1. Agent SOUL validation — required sections per role
 2. Browser check — Chrome extension connected (for web/UI projects)
+3. Claude subscription auth — CLAUDE_CODE_OAUTH_TOKEN env var OR
+   ~/.claude/.credentials.json must be present before the adapter
+   spawns a subprocess.
+4. Vendor check — the vendor/agent-skills git submodule must be
+   initialized so pipeline skill resolution can find SKILL.md files.
 
 All checks run before any tokens are burned.
 
@@ -14,6 +19,8 @@ Usage:
 
 import os
 import re
+
+from .constants import SFLO_ROOT
 
 
 # Required patterns per role. Each entry is (description, regex pattern).
@@ -84,6 +91,114 @@ def check_pipeline_yaml():
     return None
 
 
+def check_claude_subscription_auth():
+    """Verify Claude subscription auth is available before any subprocess spawns.
+
+    Detection order matches Claude Code CLI's own resolution:
+      1. CLAUDE_CODE_OAUTH_TOKEN env var (non-empty)
+      2. %USERPROFILE%\\.claude\\.credentials.json (Windows) or
+         $HOME/.claude/.credentials.json (POSIX) — exists and is non-empty
+
+    Returns:
+        issue string if neither source is present, else None.
+
+    Limitations: presence-only check — does not validate the token against
+    the Claude API. An invalid/expired token will surface at adapter runtime
+    via the SDK's error path. The point of preflight is to catch the common
+    'forgot to log in' case cheaply, not to verify validity.
+    """
+    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return None
+    creds_path = os.path.join(
+        os.environ.get("USERPROFILE") or os.environ.get("HOME") or "",
+        ".claude",
+        ".credentials.json",
+    )
+    if os.path.isfile(creds_path) and os.path.getsize(creds_path) > 0:
+        return None
+    return (
+        "Claude subscription auth not detected. Set CLAUDE_CODE_OAUTH_TOKEN "
+        "(recommended via a credential vault) or run `claude /login` in a "
+        "terminal as the same user."
+    )
+
+
+def check_vendor():
+    """Verify the vendor/agent-skills git submodule is initialized.
+
+    SFLO resolves pipeline skills from vendor/agent-skills/skills/<name>/
+    SKILL.md. A fresh clone leaves that directory empty until
+    `git submodule update --init --recursive` runs, and skill resolution
+    then fails mid-pipeline. This catches that cheaply at preflight time.
+
+    Read-only filesystem check: it does not mutate anything or touch the
+    network — applying the fix is the user's to do.
+
+    Returns an issue string if the submodule is not populated, else None.
+    """
+    skills_dir = os.path.join(SFLO_ROOT, "vendor", "agent-skills", "skills")
+    try:
+        # Populated == at least one entry. A missing or empty skills/ dir is
+        # equally unusable: skill resolution has nothing to resolve against.
+        with os.scandir(skills_dir) as entries:
+            populated = any(entries)
+    except OSError:
+        populated = False
+
+    if populated:
+        return None
+
+    return (
+        "vendor/agent-skills submodule is not initialized. SFLO resolves "
+        "pipeline skills from vendor/agent-skills/skills/ and cannot run "
+        "without it. Initialize it with `git submodule update --init "
+        "--recursive` (or run `bash setup.sh` on macOS/Linux, `.\\setup.ps1` "
+        "on Windows)."
+    )
+
+
+def _looks_like_path(value):
+    """Heuristic: is this assignments-dict value a filesystem path?
+
+    True for non-empty strings containing a path separator. This lets host
+    projects extend scout with metadata fields (ints, classifier hints, etc.)
+    without forcing preflight to maintain a hardcoded role allowlist.
+    """
+    return isinstance(value, str) and value and ("/" in value or "\\" in value)
+
+
+def _resolve_agent_path(agent_path):
+    """Best-effort resolution of an agent path to an existing directory.
+
+    Tries, in order:
+      1. The path as-given (absolute, or relative to cwd).
+      2. The path resolved against SFLO_ROOT — handles cases where the
+         caller (Scout LLM, pipeline.yaml `agent:` field) emitted a path
+         relative to the SFLO checkout rather than the runner's cwd.
+      3. Progressively shorter path prefixes — handles garbled output
+         like "agents/pm/users/..." → "agents/pm".
+
+    Returns the resolved absolute path if found, else None.
+    """
+    if not agent_path:
+        return None
+    clean_path = agent_path.rstrip("/").rstrip("\\")
+    if os.path.isdir(clean_path):
+        return os.path.abspath(clean_path)
+    sflo_candidate = os.path.join(SFLO_ROOT, clean_path)
+    if os.path.isdir(sflo_candidate):
+        return os.path.abspath(sflo_candidate)
+    parts = re.split(r"[\\/]+", clean_path)
+    for i in range(len(parts) - 1, 1, -1):
+        candidate = os.path.join(*parts[:i])
+        if os.path.isdir(candidate):
+            return os.path.abspath(candidate)
+        sflo_sub = os.path.join(SFLO_ROOT, candidate)
+        if os.path.isdir(sflo_sub):
+            return os.path.abspath(sflo_sub)
+    return None
+
+
 def preflight_check(assignments, sflo_dir=None):
     """Run pre-flight validation on all assigned agents.
 
@@ -102,43 +217,31 @@ def preflight_check(assignments, sflo_dir=None):
     if yaml_issue:
         all_issues.append(yaml_issue)
 
-    # Scout may return metadata keys alongside the agent-role assignments
-    # (e.g. host projects can extend scout to emit complexity scores or
-    # routing hints). Only agent-role keys point to filesystem agent paths —
-    # metadata keys hold ints/strings and must not be path-resolved.
-    _AGENT_ROLES = {"pm", "dev", "qa", "scout"}
+    # Check Claude subscription auth before any subprocess spawn.
+    # Cheap, deterministic, catches the most common "I forgot to log in"
+    # failure mode without burning Scout LLM tokens.
+    auth_issue = check_claude_subscription_auth()
+    if auth_issue:
+        all_issues.append(auth_issue)
 
+    # Check the vendor/agent-skills submodule is initialized (read-only).
+    vendor_issue = check_vendor()
+    if vendor_issue:
+        all_issues.append(vendor_issue)
+
+    # Validate every assignment value that looks like a filesystem path.
+    # Host projects can extend Scout to emit metadata fields (ints, hints)
+    # alongside role->path entries; those non-string or path-separator-less
+    # values are skipped automatically.
     for role, agent_path in (assignments or {}).items():
-        if role not in _AGENT_ROLES:
-            # Metadata field — skip path validation, leave value in place
-            # for downstream consumers (preflight only checks agent paths).
+        if not _looks_like_path(agent_path):
             continue
-        if not agent_path:
+        resolved = _resolve_agent_path(agent_path)
+        if resolved is None:
             all_issues.append(f"{role}: agent path not found: {agent_path}")
             continue
-        # Normalize: strip trailing slash, try progressively shorter prefixes.
-        # Handles garbled paths like "agents/pm/users/..." → "agents/pm"
-        clean_path = agent_path.rstrip("/")
-        if not os.path.isdir(clean_path):
-            found = False
-            # Try prepending / (missing leading slash)
-            if not clean_path.startswith("/") and os.path.isdir("/" + clean_path):
-                clean_path = "/" + clean_path
-                found = True
-            else:
-                # Try progressively shorter path prefixes
-                parts = clean_path.split("/")
-                for i in range(2, len(parts)):
-                    candidate = "/".join(parts[:i])
-                    if os.path.isdir(candidate):
-                        clean_path = candidate
-                        found = True
-                        break
-            if not found:
-                all_issues.append(f"{role}: agent path not found: {agent_path}")
-                continue
-        assignments[role] = clean_path
-        issues = check_agent_soul(role, clean_path)
+        assignments[role] = resolved
+        issues = check_agent_soul(role, resolved)
         all_issues.extend(issues)
 
     return all_issues

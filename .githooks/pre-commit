@@ -4,10 +4,14 @@
 
 echo "Running SFLO tests..."
 
-# Find python — prefer venv if available
-if [ -f ".sflo/.venv/bin/python3" ]; then
+# Find python — prefer a venv, but only if it can actually import pytest.
+# _get_factory_env() in src/runner.py creates a BARE .sflo/.venv (no
+# packages installed) for spawned agents. Without the import check below,
+# the hook would pick that bare venv and fail every commit with
+# "No module named pytest" even though the code is fine.
+if [ -f ".sflo/.venv/bin/python3" ] && .sflo/.venv/bin/python3 -c "import pytest" 2>/dev/null; then
     PY=".sflo/.venv/bin/python3"
-elif [ -f "../.sflo/.venv/bin/python3" ]; then
+elif [ -f "../.sflo/.venv/bin/python3" ] && ../.sflo/.venv/bin/python3 -c "import pytest" 2>/dev/null; then
     PY="../.sflo/.venv/bin/python3"
 else
     PY="python3"

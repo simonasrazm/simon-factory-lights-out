@@ -47,14 +47,27 @@ def test_m1_original_cwd_not_mutated(monkeypatch):
 
 
 def test_m2_check_agent_soul_uses_clean_path():
-    """preflight.py must pass clean_path (not raw agent_path) to check_agent_soul."""
+    """preflight.py must pass the *resolved* path (not raw agent_path) to check_agent_soul.
+
+    Originally this test pinned the literal variable name `clean_path`. The
+    underlying invariant is "resolve relative/garbled paths before validating
+    SOUL contents." After the runner.py-side path normalization refactor the
+    variable is named `resolved`, but the behavior is the same. Pin the
+    behavior (a resolved-not-raw value is passed) rather than the spelling.
+    """
     import inspect
     import src.preflight as mod
 
-    src = inspect.getsource(mod.preflight_check)
-    # The fix changes `check_agent_soul(role, agent_path)` to `check_agent_soul(role, clean_path)`
-    assert "check_agent_soul(role, clean_path)" in src, (
-        "preflight_check must pass clean_path (not raw agent_path) to check_agent_soul"
+    src_text = inspect.getsource(mod.preflight_check)
+    # The argument passed to check_agent_soul must be the resolved/cleaned
+    # variable, not the raw assignments-dict value.
+    assert "check_agent_soul(role, agent_path)" not in src_text, (
+        "preflight_check must not pass the raw agent_path — must resolve first"
+    )
+    assert ("check_agent_soul(role, clean_path)" in src_text
+            or "check_agent_soul(role, resolved)" in src_text), (
+        "preflight_check must pass a resolved path variable "
+        "(clean_path or resolved) to check_agent_soul"
     )
 
 
@@ -89,12 +102,33 @@ def test_m3_openclaw_session_id_unique():
 
 
 def test_m4_bindings_module_removed():
-    """bindings.py must be deleted — functionality migrated to config.py + security.py."""
-    import importlib
+    """bindings.py must be deleted — functionality migrated to config.py + security.py.
+
+    The check is scoped to THIS repo. Asserting `find_spec` is globally None is
+    fragile: a second SFLO checkout on sys.path would shadow `src.bindings` and
+    fail the test for an environment reason unrelated to this repo. We assert
+    instead that no bindings.py exists inside this repo's src/ directory, and
+    that if any `src.bindings` module is importable it does not originate here.
+    """
+    import os
     import importlib.util
 
+    repo_src = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
+    )
+    in_repo_bindings = os.path.join(repo_src, "bindings.py")
+    assert not os.path.isfile(in_repo_bindings), (
+        f"{in_repo_bindings} must not exist — bindings.py was migrated to "
+        "config.py + security.py"
+    )
+
     spec = importlib.util.find_spec("src.bindings")
-    assert spec is None, "src.bindings module should no longer exist"
+    if spec is not None and getattr(spec, "origin", None):
+        resolved = os.path.realpath(spec.origin)
+        assert os.path.realpath(repo_src) not in resolved, (
+            f"src.bindings resolved to {resolved} inside this repo — it should "
+            "no longer exist here"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +176,7 @@ def test_m7_stale_lock_recovery():
     with tempfile.TemporaryDirectory() as d:
         lock_path = os.path.join(d, "state.lock")
         # Write a stale lock: dead PID 999999, mtime 120s ago
-        with open(lock_path, "w") as f:
+        with open(lock_path, "w", encoding="utf-8") as f:
             f.write("999999")
         # Set mtime to 120 seconds ago
         old_time = time.time() - 120
@@ -165,7 +199,7 @@ def test_m7_live_lock_not_stolen():
         lock_path = _lock_path(d)
         os.makedirs(d, exist_ok=True)
         # Write current PID with a fresh mtime (not stale)
-        with open(lock_path, "w") as f:
+        with open(lock_path, "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
         # mtime is now (fresh) — lock should NOT be stolen
         # acquire_lock will retry 50 times × 0.1s = 5s, too slow for a test.

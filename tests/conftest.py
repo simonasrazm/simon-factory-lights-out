@@ -7,6 +7,14 @@ import subprocess
 import sys
 import tempfile
 
+# Repo root (the sflo/ directory containing src/, vendor/, gates/). Resolved
+# from this file's location so the suite is portable across machines — no test
+# may hardcode an absolute path. Inserted on sys.path so `import src.*` works
+# regardless of the current working directory or which machine runs pytest.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 # Exclude any tests/fixtures/**/*.py from pytest collection. Fixture files
 # are intentionally crafted (sometimes with import errors by design) and
 # should not be discovered as tests themselves.
@@ -164,13 +172,17 @@ class TempDirMixin:
 
     def write_state(self, current, inner=0, outer=0):
         state = make_state(current, inner, outer)
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
 
     def write_artifact(self, name, content):
-        with open(os.path.join(self.sflo_dir, name), "w") as f:
+        with open(os.path.join(self.sflo_dir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     def read_state_file(self):
-        with open(os.path.join(self.sflo_dir, "state.json")) as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), encoding="utf-8"
+        ) as f:
             return json.load(f)

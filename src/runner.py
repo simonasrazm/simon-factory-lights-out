@@ -30,7 +30,16 @@ import time as _time
 import traceback
 
 
-from ._stderr import _safe_stderr  # noqa: E402 — must be early, before any stderr use
+# Local fix: allow invocation as a script (`python src/runner.py`) in addition
+# to module mode (`python -m src.runner`). Without this, the relative imports
+# below fail with "attempted relative import with no known parent package".
+# Remove once upstream supports script invocation natively.
+if __package__ in (None, ""):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "src"
+
+
+from ._stderr import _safe_stderr, _scrub_secret  # noqa: E402 — must be early, before any stderr use
 
 
 # ---------------------------------------------------------------------------
@@ -103,12 +112,25 @@ def _install_signal_handler(sflo_dir=None):
         if sflo_dir:
             try:
                 log_path = os.path.join(sflo_dir, "pipeline.log")
-                with open(log_path, "a") as f:
+                with open(log_path, "a", encoding="utf-8") as f:
                     f.write(msg)
             except OSError:
                 pass
         # Forensic marker — survives even when pipeline.log path is unwritable.
         _write_death_marker(f"signal_{sig_name}", signum)
+        # Best-effort: drop this run's instance lock so a signal-killed run
+        # does not strand .sflo/runner.pid (os._exit below skips main()'s
+        # normal release). Only remove it when it still holds OUR pid — never
+        # delete a lock a different live runner owns.
+        if sflo_dir:
+            try:
+                _lock = os.path.join(sflo_dir, "runner.pid")
+                with open(_lock, encoding="utf-8") as _lf:
+                    _own = _lf.read().strip() == str(os.getpid())
+                if _own:
+                    os.remove(_lock)
+            except OSError:
+                pass
         # os._exit, NOT sys.exit: skip Python interpreter shutdown machinery
         # which can re-enter signal-handling and re-block on closed stdio.
         os._exit(128 + signum)
@@ -165,7 +187,11 @@ if __name__ == "__main__":
     from src.preflight import preflight_check, check_browser
     from src import evals as _evals
     from src.evals.integration import call_adapter_with_evals
-    from src.adapters.errors import NonRetryableError
+    from src.adapters.errors import (
+        ErrorDeduper,
+        GateAgentFailure,
+        NonRetryableError,
+    )
 else:
     from .state import (
         read_state,
@@ -190,7 +216,11 @@ else:
     from .preflight import preflight_check, check_browser
     from . import evals as _evals
     from .evals.integration import call_adapter_with_evals
-    from .adapters.errors import NonRetryableError
+    from .adapters.errors import (
+        ErrorDeduper,
+        GateAgentFailure,
+        NonRetryableError,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +431,17 @@ def _get_factory_env(sflo_dir):
     }
 
 
+def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime):
+    """Add runtime-specific kwargs to a gate-agent spawn call.
+
+    cursor-agent takes --workspace to discover project-level .cursor/ rules
+    and MCP config. ClaudeCodeAdapter has no such kwarg (and no **kwargs to
+    absorb extras), so workspace is passed only for the cursor runtime.
+    """
+    if runtime == "cursor":
+        spawn_kwargs["workspace"] = SFLO_ROOT
+
+
 async def default_agent_runner(
     agent, sflo_dir, output_dir, *, adapter, runtime, user_prompt, log
 ):
@@ -432,6 +473,8 @@ async def default_agent_runner(
 
     response = None
     crash_context = ""
+    deduper = ErrorDeduper()
+    last_exc = None
 
     for attempt in range(3):
         if attempt > 0:
@@ -459,6 +502,7 @@ async def default_agent_runner(
                 spawn_kwargs["cwd"] = output_dir
             if agent_env is not None:
                 spawn_kwargs["env"] = agent_env
+            _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
             response = await call_adapter_with_evals(
                 adapter,
                 **spawn_kwargs,
@@ -466,26 +510,37 @@ async def default_agent_runner(
             )
             break  # success
         except Exception as e:
-            log(f"  Gate [{role}] agent crashed: {e}")
-            log(f"  {traceback.format_exc()}")
-            if hasattr(adapter, "_last_stderr") and adapter._last_stderr:
-                log(f"  [CLI stderr ({len(adapter._last_stderr)} lines):]")
-                for sl in adapter._last_stderr[-20:]:
-                    log(f"    {sl.rstrip()}")
+            last_exc = e
+            # Suppress repeated identical tracebacks within this attempt loop.
+            # Without this, a permanent error (auth, missing CLI) produced 30+
+            # copies of the same traceback per failed gate (10 outer retries
+            # x 3 inner resume attempts), burying the actual root cause.
+            if deduper.should_emit(e):
+                log(f"  Gate [{role}] agent crashed: {e}")
+                log(f"  {traceback.format_exc()}")
+                if hasattr(adapter, "_last_stderr") and adapter._last_stderr:
+                    log(f"  [CLI stderr ({len(adapter._last_stderr)} lines):]")
+                    for sl in adapter._last_stderr[-20:]:
+                        log(f"    {sl.rstrip()}")
+            else:
+                log(f"  Gate [{role}] same error repeated (attempt {attempt + 1}/3)")
 
             # Typed exceptions: adapters classify their own errors.
-            # NonRetryableError = auth/config (abort immediately).
-            # TransientError = timeout/rate-limit/5xx (retry).
-            # Unknown exceptions = treat as transient (safe default).
+            # NonRetryableError = auth/config/permanent system error (abort).
+            # Anything else gets the 3-attempt retry budget.
             if isinstance(e, NonRetryableError):
                 log(f"  Non-retryable error — skipping retries: {e}")
-                response = f"[Agent error (non-retryable): {e}]"
-                break
+                raise GateAgentFailure(
+                    role=role, gate=agent.get("gate_num"),
+                    attempts=attempt + 1, cause=e,
+                ) from e
 
             if isinstance(e, (json.JSONDecodeError, KeyError, ValueError)):
                 log(f"  Prompt/parse error — skipping retries: {type(e).__name__}")
-                response = f"[Agent error (non-retryable): {e}]"
-                break
+                raise GateAgentFailure(
+                    role=role, gate=agent.get("gate_num"),
+                    attempts=attempt + 1, cause=e,
+                ) from e
 
             if attempt < 2:
                 crash_context = (
@@ -500,8 +555,20 @@ async def default_agent_runner(
                 )
                 log("  Resuming with crash context...")
             else:
-                log("  All resume attempts exhausted — gate will fail validation")
-                response = f"[Agent error after 3 attempts: {e}]"
+                # All 3 attempts exhausted. Raise instead of stuffing the
+                # error text into `response` (the "credulity bug" — that
+                # error text used to flow into `_recover_artifact` and end
+                # up written into the gate's output file as if it were
+                # agent output, polluting the gate validation cycle).
+                suppressed = deduper.suppressed_count
+                log(
+                    f"  All resume attempts exhausted — escalating gate "
+                    f"({suppressed} duplicate traceback(s) suppressed)"
+                )
+                raise GateAgentFailure(
+                    role=role, gate=agent.get("gate_num"),
+                    attempts=3, cause=last_exc,
+                ) from last_exc
 
     # Verify agent wrote the artifact
     produces = agent.get("produces", "")
@@ -511,38 +578,36 @@ async def default_agent_runner(
 def make_logger(sflo_dir, verbose=True):
     """Create a logger that writes to stderr and .sflo/pipeline.log.
 
-    The returned callable has a ``close()`` method to flush and close the
-    underlying file handle.  Callers should invoke ``log.close()`` (or use
-    ``atexit``) to ensure all buffered lines reach disk before the process
-    exits.
+    Each ``log()`` call opens the file in append mode, writes one line, and
+    closes the handle before returning. No file handle is held open across
+    calls — this guarantees the OS handle is released deterministically and
+    pipeline.log can be deleted between runs (a lingering append-mode handle
+    blocks deletion on Windows). Logging volume is low, so per-call open/close
+    cost is negligible.
+
+    The returned callable exposes a no-op ``close()`` for callers that still
+    invoke it; there is no persistent handle to close.
     """
 
     os.makedirs(sflo_dir, exist_ok=True)
     log_path = os.path.join(sflo_dir, "pipeline.log")
-    log_file = open(log_path, "a", encoding="utf-8")
-
-    # Register atexit shutdown so the file is flushed even on unclean exits.
-    import atexit as _atexit
-
-    def _close_log():
-        try:
-            if not log_file.closed:
-                log_file.flush()
-                log_file.close()
-        except OSError:
-            pass
-
-    _atexit.register(_close_log)
 
     def log(msg):
         ts = _datetime.datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}] {msg}"
-        log_file.write(line + "\n")
-        log_file.flush()
+        try:
+            with open(log_path, "a", encoding="utf-8") as log_file:
+                log_file.write(line + "\n")
+        except OSError:
+            pass
         if verbose:
             _safe_stderr(msg)
 
-    log._file = log_file  # keep reference to close later
+    def _close_log():
+        # No persistent handle is held; nothing to close. Kept for callers
+        # that still invoke log.close() at shutdown.
+        pass
+
     log.close = _close_log
     return log
 
@@ -592,7 +657,8 @@ def _resolve_skill_references(skill_path, skill_content):
         if match in seen or ".." in match:
             continue
         seen.add(match)
-        abs_path = os.path.join(vendor_root, match)
+        # split on "/" so os.path.join builds a native path on Windows too
+        abs_path = os.path.normpath(os.path.join(vendor_root, *match.split("/")))
         if os.path.isfile(abs_path):
             refs.append((match, abs_path))
     return refs
@@ -1141,6 +1207,20 @@ async def run_pipeline(
                 for role in discoverable_roles
             }
 
+        # Normalize agent paths against SFLO_ROOT. Scout is LLM-driven and
+        # non-deterministically emits absolute or relative paths between runs;
+        # downstream preflight/gate code must see a stable absolute-path
+        # contract. Skip non-string values (host projects may extend scout
+        # with metadata fields like complexity scores).
+        for role, value in list(assignments.items()):
+            if not isinstance(value, str) or not value:
+                continue
+            if os.path.isabs(value):
+                continue
+            candidate = os.path.join(SFLO_ROOT, value)
+            if os.path.isdir(candidate):
+                assignments[role] = os.path.abspath(candidate)
+
     state["assignments"] = assignments
     if resumed_state is None:
         first_gate = min(GATES.keys()) if GATES else 1
@@ -1175,6 +1255,7 @@ async def run_pipeline(
 
     while iteration < max_iterations:
         iteration += 1
+        log(f"--- Round {iteration} ---")
 
         # Snapshot state BEFORE this iteration so we can detect non-progress
         # after the dispatch. State changes via auto_transition, apply_transition,
@@ -1206,15 +1287,59 @@ async def run_pipeline(
         if action == "spawn_agent":
             agent = result["agent"]
 
-            await default_agent_runner(
-                agent,
-                sflo_dir,
-                output_dir,
-                adapter=adapter,
-                runtime=runtime,
-                user_prompt=user_prompt,
-                log=log,
-            )
+            try:
+                await default_agent_runner(
+                    agent,
+                    sflo_dir,
+                    output_dir,
+                    adapter=adapter,
+                    runtime=runtime,
+                    user_prompt=user_prompt,
+                    log=log,
+                )
+            except GateAgentFailure as gaf:
+                # Adapter / SDK / environment failure that retries cannot fix.
+                # Escalate the pipeline cleanly — do NOT write the error text
+                # into the gate artifact (the credulity bug). The artifact
+                # simply doesn't exist, which is itself a meaningful signal.
+                log(f"  ESCALATE: {gaf}")
+                log("    option: fix the underlying environment issue and retry")
+                log("    option: delete .sflo/ and retry from scratch")
+
+                # Persist escalate state to disk so a subsequent invocation
+                # doesn't silently resume the same broken gate from
+                # in_progress. Without this, state.json says
+                # current_state="gate-N" status="in_progress" and the
+                # resume path retries the same failing config.
+                state = read_state(sflo_dir) or state
+                state["current_state"] = S_ESCALATE
+                gate_key = str(gaf.gate) if gaf.gate is not None else None
+                if gate_key and gate_key in state.get("gates", {}):
+                    state["gates"][gate_key]["status"] = "failed"
+                state["escalation"] = {
+                    "role": gaf.role,
+                    "gate": gaf.gate,
+                    "attempts": gaf.attempts,
+                    # Scrub before persisting to state.json — an SDK error
+                    # string can carry a token / Bearer header / credentialed
+                    # URL, and this value lands verbatim on disk.
+                    "cause": _scrub_secret(
+                        f"{type(gaf.cause).__name__}: {gaf.cause}"
+                    ),
+                }
+                _locked_write_state(sflo_dir, state)
+
+                return {
+                    "ok": False,
+                    "state": "escalate",
+                    "error": str(gaf),
+                    "role": gaf.role,
+                    "gate": gaf.gate,
+                    "attempts": gaf.attempts,
+                    "gates": state.get("gates", {}),
+                    "inner_loops": state.get("inner_loops", 0),
+                    "outer_loops": state.get("outer_loops", 0),
+                }
 
             # Validate
             auto_transition(state, sflo_dir)
@@ -1448,6 +1573,7 @@ async def run_pipeline(
                         spawn_kwargs["cwd"] = output_dir
                     if par_factory_env is not None:
                         spawn_kwargs["env"] = par_factory_env
+                    _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
                     ag_spawn_start = _time.time()
                     resp = await call_adapter_with_evals(
                         adapter,
@@ -1461,18 +1587,56 @@ async def run_pipeline(
             par_factory_env = _get_factory_env(sflo_dir)
             tasks = [_spawn_one(ag) for ag in agents_list]
             gather_results = await asyncio.gather(*tasks, return_exceptions=True)
+            par_failures = []
             for i, gr in enumerate(gather_results):
                 ag_role = agents_list[i].get("role", "?")
                 if isinstance(gr, Exception):
                     log(f"  Gate {gate_num_par} [{ag_role}] FAILED: {gr}")
-                    artifact = agents_list[i].get("artifact")
-                    if artifact:
-                        err_path = os.path.join(sflo_dir, artifact)
-                        os.makedirs(os.path.dirname(err_path) or ".", exist_ok=True)
-                        with open(err_path, "w", encoding="utf-8") as f:
-                            f.write(f"# Runner Error\n\nVerdict: DEGRADED\n\n{gr}\n")
+                    par_failures.append((agents_list[i], gr))
                 else:
                     log(f"  Gate {gate_num_par} [{ag_role}] OK")
+
+            if par_failures:
+                # A parallel agent hit an unrecoverable error. Escalate the
+                # pipeline cleanly — do NOT write the error text into the
+                # gate artifact (the "credulity bug": error text masquerading
+                # as agent output poisons validation and spins the retry
+                # loop). Mirrors the serial spawn_agent escalation path.
+                first_info, first_exc = par_failures[0]
+                log(
+                    f"  ESCALATE: parallel gate {gate_num_par} — "
+                    f"{len(par_failures)}/{len(agents_list)} agent(s) failed"
+                )
+                log("    option: fix the underlying environment issue and retry")
+                log("    option: delete .sflo/ and retry from scratch")
+                state = read_state(sflo_dir) or state
+                state["current_state"] = S_ESCALATE
+                gate_key = str(gate_num_par) if gate_num_par is not None else None
+                if gate_key and gate_key in state.get("gates", {}):
+                    state["gates"][gate_key]["status"] = "failed"
+                state["escalation"] = {
+                    "role": first_info.get("role"),
+                    "gate": gate_num_par,
+                    # Scrub before persisting — same credential-leak guard as
+                    # the serial escalation path above.
+                    "cause": _scrub_secret(
+                        f"{type(first_exc).__name__}: {first_exc}"
+                    ),
+                }
+                _locked_write_state(sflo_dir, state)
+                return {
+                    "ok": False,
+                    "state": "escalate",
+                    "error": _scrub_secret(
+                        f"parallel gate {gate_num_par}: "
+                        f"{type(first_exc).__name__}: {first_exc}"
+                    ),
+                    "role": first_info.get("role"),
+                    "gate": gate_num_par,
+                    "gates": state.get("gates", {}),
+                    "inner_loops": state.get("inner_loops", 0),
+                    "outer_loops": state.get("outer_loops", 0),
+                }
 
             auto_transition(state, sflo_dir)
             state = read_state(sflo_dir)
@@ -1585,6 +1749,13 @@ def main():
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
+    # Force UTF-8 stdout so non-ASCII JSON output (e.g. checkmarks) does not
+    # raise UnicodeEncodeError on a Windows console.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
+
     _install_signal_handler(args.sflo_dir)
 
     # Forward user MCP servers + enable Chrome extension for agents
@@ -1603,16 +1774,29 @@ def main():
     if not prompt:
         parser.error("No prompt provided. Pass as argument or via stdin.")
 
-    result = asyncio.run(
-        run_pipeline(
-            user_prompt=prompt,
-            sflo_dir=args.sflo_dir,
-            runtime=args.runtime,
-            verbose=not args.quiet,
-        )
-    )
+    # One runner per state directory — two concurrent runners interleave
+    # read-modify-write on state.json and corrupt it. Fail fast instead.
+    from .state import acquire_instance_lock, release_instance_lock
 
-    print(json.dumps(result, indent=2))
+    try:
+        instance_lock = acquire_instance_lock(args.sflo_dir)
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
+        sys.exit(1)
+
+    try:
+        result = asyncio.run(
+            run_pipeline(
+                user_prompt=prompt,
+                sflo_dir=args.sflo_dir,
+                runtime=args.runtime,
+                verbose=not args.quiet,
+            )
+        )
+    finally:
+        release_instance_lock(args.sflo_dir, instance_lock)
+
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":

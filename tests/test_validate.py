@@ -36,7 +36,7 @@ def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
             content = PASSING_ARTIFACTS.get(
                 artifact, f"# {artifact}\n\nMinimal content.\n### Grade: A\n"
             )
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
 
 
@@ -68,7 +68,7 @@ class TestValidateGate(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     # Must have at least one AC line and ≥50 words to satisfy the current
@@ -292,7 +292,7 @@ class TestSecurityValidator(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     def _full_security(self, grade="A"):
@@ -350,7 +350,7 @@ class TestQAFeedback(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     def test_extract_feedback_with_issues(self):
@@ -396,7 +396,7 @@ class TestQAFeedback(unittest.TestCase):
         save_qa_feedback(self.tmpdir)
 
         feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
-        with open(feedback_path) as f:
+        with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn(
             "QA Round 1", content, "expected QA Round 1 in accumulated feedback"
@@ -416,7 +416,7 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     def test_security_findings_in_feedback(self):
@@ -437,7 +437,7 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
         save_qa_feedback(self.tmpdir)
         feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
         self.assertTrue(os.path.isfile(feedback_path))
-        with open(feedback_path) as f:
+        with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn("XSS in form input", content, "Security findings must reach dev")
         self.assertIn("Security Grade: C", content, "Security grade must be included")
@@ -460,7 +460,7 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
         )
         save_qa_feedback(self.tmpdir)
         feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
-        with open(feedback_path) as f:
+        with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         # Both agents' findings present
         self.assertIn("CSRF missing", content)
@@ -558,7 +558,7 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
                 "# SCOPE\n\n## ACs\n- [ ] AC1: every data point has a [source] link\n\n"
                 + "word " * 60
             )
-            with open(os.path.join(tmpdir, "SCOPE.md"), "w") as f:
+            with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
                 f.write(scope)
             _, checks = validate_gate(1, tmpdir)
             placeholder = next(c for c in checks if c["name"] == "no_placeholders")
@@ -578,7 +578,7 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
                 "# SCOPE\n\n## ACs\n- [ ] AC1: do things\n\nOwner: [TBD]\n\n"
                 + "word " * 60
             )
-            with open(os.path.join(tmpdir, "SCOPE.md"), "w") as f:
+            with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
                 f.write(scope)
             _, checks = validate_gate(1, tmpdir)
             placeholder = next(c for c in checks if c["name"] == "no_placeholders")

@@ -69,7 +69,7 @@ def _build(sec=None, **kwargs):
     """
     if sec is None:
         sec = _security_config()
-    opts, sandbox_dir, _needs_mcp = build_sdk_options(
+    opts, sandbox_dir, _needs_mcp, _temp_files = build_sdk_options(
         system_prompt=kwargs.pop("system_prompt", "test"),
         model=kwargs.pop("model", "sonnet"),
         security_config=sec,

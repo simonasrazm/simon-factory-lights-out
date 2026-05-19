@@ -21,7 +21,7 @@ class TestParsePipelineYaml(unittest.TestCase):
 
     def write_yaml(self, content, name="pipeline.yaml"):
         path = os.path.join(self.tmpdir, name)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return path
 
@@ -119,7 +119,7 @@ class TestLoadPipelineConfig(unittest.TestCase):
 
     def write_yaml(self, content, name="pipeline.yaml"):
         path = os.path.join(self.tmpdir, name)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         return path
 

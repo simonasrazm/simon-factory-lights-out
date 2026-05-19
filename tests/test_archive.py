@@ -8,7 +8,7 @@ class TestArchiveToLogs:
         sflo_dir = tmp_path / ".sflo"
         sflo_dir.mkdir()
         f = sflo_dir / "BUILD-STATUS.md"
-        f.write_text("test content")
+        f.write_text("test content", encoding="utf-8")
 
         archived = archive_to_logs(str(sflo_dir), [str(f)])
 
@@ -16,7 +16,9 @@ class TestArchiveToLogs:
             f"expected ['BUILD-STATUS.md'], got {archived}"
         )
         assert not f.exists(), "original file should be removed after archiving"
-        assert (sflo_dir / "logs" / "BUILD-STATUS.md").read_text() == "test content", (
+        assert (
+            sflo_dir / "logs" / "BUILD-STATUS.md"
+        ).read_text(encoding="utf-8") == "test content", (
             "archived file content should match original"
         )
 
@@ -25,7 +27,7 @@ class TestArchiveToLogs:
         sflo_dir.mkdir()
         d = sflo_dir / "subdir"
         d.mkdir()
-        (d / "round-01.md").write_text("round 1")
+        (d / "round-01.md").write_text("round 1", encoding="utf-8")
 
         archived = archive_to_logs(str(sflo_dir), [str(d)])
 
@@ -33,7 +35,9 @@ class TestArchiveToLogs:
         assert not d.exists(), "original directory should be removed after archiving"
         assert (
             sflo_dir / "logs" / "subdir" / "round-01.md"
-        ).read_text() == "round 1", "archived directory content should match original"
+        ).read_text(encoding="utf-8") == "round 1", (
+            "archived directory content should match original"
+        )
 
     def test_skips_missing_paths(self, tmp_path):
         sflo_dir = tmp_path / ".sflo"
@@ -46,13 +50,13 @@ class TestArchiveToLogs:
         sflo_dir.mkdir()
         logs = sflo_dir / "logs"
         logs.mkdir()
-        (logs / "old.md").write_text("old")
+        (logs / "old.md").write_text("old", encoding="utf-8")
 
         f = sflo_dir / "old.md"
-        f.write_text("new")
+        f.write_text("new", encoding="utf-8")
 
         archive_to_logs(str(sflo_dir), [str(f)])
-        assert (logs / "old.md").read_text() == "new", (
+        assert (logs / "old.md").read_text(encoding="utf-8") == "new", (
             "archive should overwrite existing file in logs"
         )
 

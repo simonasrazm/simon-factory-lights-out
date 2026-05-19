@@ -42,9 +42,9 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
         self.fake_sflo_dir = os.path.join(self.tmpdir, "sflo_state")
         os.makedirs(self.fake_sflo_dir, exist_ok=True)
 
-        with open(self.fake_gate, "w") as f:
+        with open(self.fake_gate, "w", encoding="utf-8") as f:
             f.write("# Gate 2: Build\n\nImplement the feature.\n")
-        with open(self.fake_soul, "w") as f:
+        with open(self.fake_soul, "w", encoding="utf-8") as f:
             f.write("# Dev Agent\n\nYou are a developer agent.\n")
 
     def tearDown(self):
@@ -129,7 +129,7 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
         skill_dir = os.path.join(self.tmpdir, "vendor", "test-vendor", "skills", "no-refs-skill")
         os.makedirs(skill_dir, exist_ok=True)
         skill_path = os.path.join(skill_dir, "SKILL.md")
-        with open(skill_path, "w") as f:
+        with open(skill_path, "w", encoding="utf-8") as f:
             f.write("---\nname: no-refs-skill\ndescription: A skill with no refs.\n---\n\n")
             f.write("# No Refs Skill\n\nThis skill has no reference files mentioned.\n")
 
@@ -199,7 +199,7 @@ class TestResolveSkillReferences(unittest.TestCase):
         skill_path = os.path.join(
             VENDOR_SKILLS_DIR, "test-driven-development", "SKILL.md"
         )
-        with open(skill_path) as f:
+        with open(skill_path, encoding="utf-8") as f:
             content = f.read()
 
         refs = _resolve_skill_references(skill_path, content)

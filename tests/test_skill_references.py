@@ -12,13 +12,12 @@ Verifies:
 """
 
 import os
-import sys
 import tempfile
 import shutil
 import unittest
 
-sys.path.insert(0, "/Users/simonas/envs/docker/media/projects/sflo-dev/sflo")
-
+# Repo root added to sys.path by tests/conftest.py — no hardcoded absolute
+# path here so the suite stays portable across machines.
 from src.runner import _resolve_skill_references
 
 
@@ -52,7 +51,7 @@ class TestSkillReferencesVendorRoot(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         ref_file = os.path.join(ref_dir, "guide.md")
-        with open(ref_file, "w") as f:
+        with open(ref_file, "w", encoding="utf-8") as f:
             f.write("# Guide")
 
         content = "See `references/guide.md` for details."
@@ -81,7 +80,7 @@ class TestSkillReferencesSingleRef(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         self.ref_file = os.path.join(ref_dir, "testing-patterns.md")
-        with open(self.ref_file, "w") as f:
+        with open(self.ref_file, "w", encoding="utf-8") as f:
             f.write("# Testing Patterns\nContent here.")
 
     def tearDown(self):
@@ -128,9 +127,9 @@ class TestSkillReferencesMultipleRefs(unittest.TestCase):
         os.makedirs(ref_dir, exist_ok=True)
         self.ref1 = os.path.join(ref_dir, "review-checklist.md")
         self.ref2 = os.path.join(ref_dir, "quality-standards.md")
-        with open(self.ref1, "w") as f:
+        with open(self.ref1, "w", encoding="utf-8") as f:
             f.write("# Review Checklist")
-        with open(self.ref2, "w") as f:
+        with open(self.ref2, "w", encoding="utf-8") as f:
             f.write("# Quality Standards")
 
     def tearDown(self):
@@ -205,7 +204,7 @@ class TestSkillReferencesTraversal(unittest.TestCase):
 
         # Create a file that traversal would reach
         secret_file = os.path.join(self.tmpdir, "secret.md")
-        with open(secret_file, "w") as f:
+        with open(secret_file, "w", encoding="utf-8") as f:
             f.write("SECRET DATA")
 
     def tearDown(self):
@@ -232,7 +231,7 @@ class TestSkillReferencesTraversal(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         valid_file = os.path.join(ref_dir, "legit.md")
-        with open(valid_file, "w") as f:
+        with open(valid_file, "w", encoding="utf-8") as f:
             f.write("Legit content")
 
         content = (
@@ -268,7 +267,7 @@ class TestSkillReferencesNonExistent(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         existing = os.path.join(ref_dir, "exists.md")
-        with open(existing, "w") as f:
+        with open(existing, "w", encoding="utf-8") as f:
             f.write("I exist")
 
         content = (
@@ -306,7 +305,7 @@ class TestSkillReferencesDeduplicate(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         self.ref_file = os.path.join(ref_dir, "patterns.md")
-        with open(self.ref_file, "w") as f:
+        with open(self.ref_file, "w", encoding="utf-8") as f:
             f.write("# Patterns")
 
     def tearDown(self):
@@ -327,7 +326,7 @@ class TestSkillReferencesDeduplicate(unittest.TestCase):
         """First occurrence wins when deduplicating."""
         ref_dir = os.path.join(self.vendor_root, "references")
         second_ref = os.path.join(ref_dir, "other.md")
-        with open(second_ref, "w") as f:
+        with open(second_ref, "w", encoding="utf-8") as f:
             f.write("# Other")
 
         content = (
@@ -387,7 +386,7 @@ class TestSkillReferencesEdgeCases(unittest.TestCase):
         nested_dir = os.path.join(self.vendor_root, "references", "deep", "nested")
         os.makedirs(nested_dir, exist_ok=True)
         nested_file = os.path.join(nested_dir, "doc.md")
-        with open(nested_file, "w") as f:
+        with open(nested_file, "w", encoding="utf-8") as f:
             f.write("# Deep Doc")
 
         content = "See `references/deep/nested/doc.md` for details."
@@ -402,7 +401,7 @@ class TestSkillReferencesEdgeCases(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         txt_file = os.path.join(ref_dir, "data.txt")
-        with open(txt_file, "w") as f:
+        with open(txt_file, "w", encoding="utf-8") as f:
             f.write("data")
 
         content = "See `references/data.txt` and `references/script.py`."
@@ -414,7 +413,7 @@ class TestSkillReferencesEdgeCases(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "docs")
         os.makedirs(ref_dir, exist_ok=True)
         for name in ["a.md", "b.md", "c.md"]:
-            with open(os.path.join(ref_dir, name), "w") as f:
+            with open(os.path.join(ref_dir, name), "w", encoding="utf-8") as f:
                 f.write(f"# {name}")
 
         content = (
@@ -438,7 +437,7 @@ class TestSkillReferencesEdgeCases(unittest.TestCase):
         ref_dir = os.path.join(self.vendor_root, "references")
         os.makedirs(ref_dir, exist_ok=True)
         ref_file = os.path.join(ref_dir, "api.md")
-        with open(ref_file, "w") as f:
+        with open(ref_file, "w", encoding="utf-8") as f:
             f.write("# API")
 
         content = (

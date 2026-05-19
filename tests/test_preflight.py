@@ -1,19 +1,27 @@
-"""Tests for src.preflight — SOUL validation and browser checks."""
+"""Tests for src.preflight — SOUL validation, auth, vendor, and browser checks."""
 
-from src.preflight import check_agent_soul, preflight_check
+import pytest
+
+import src.preflight as preflight_mod
+from src.preflight import (
+    check_agent_soul,
+    check_claude_subscription_auth,
+    check_vendor,
+    preflight_check,
+)
 
 
 class TestCheckAgentSoul:
     def test_dev_with_rebuild_section_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# Dev\n## rebuild mode\nFix feedback.\n")
+        soul.write_text("# Dev\n## rebuild mode\nFix feedback.\n", encoding="utf-8")
         assert check_agent_soul("dev", str(tmp_path)) == [], (
             "dev with rebuild section should pass with no issues"
         )
 
     def test_dev_without_rebuild_fails(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# Dev\nBuild stuff.\n")
+        soul.write_text("# Dev\nBuild stuff.\n", encoding="utf-8")
         issues = check_agent_soul("dev", str(tmp_path))
         assert len(issues) == 1, (
             f"expected 1 issue for dev without rebuild, got {len(issues)}: {issues}"
@@ -24,14 +32,14 @@ class TestCheckAgentSoul:
 
     def test_qa_with_grading_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# QA\n### Grade: A\nGrading scale here.\n")
+        soul.write_text("# QA\n### Grade: A\nGrading scale here.\n", encoding="utf-8")
         assert check_agent_soul("qa", str(tmp_path)) == [], (
             "qa with grading section should pass with no issues"
         )
 
     def test_qa_without_grading_fails(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# QA\nTest stuff.\n")
+        soul.write_text("# QA\nTest stuff.\n", encoding="utf-8")
         issues = check_agent_soul("qa", str(tmp_path))
         assert len(issues) == 1, (
             f"expected 1 issue for qa without grading, got {len(issues)}: {issues}"
@@ -39,14 +47,14 @@ class TestCheckAgentSoul:
 
     def test_pm_with_ac_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# PM\nDefine acceptance criteria.\n")
+        soul.write_text("# PM\nDefine acceptance criteria.\n", encoding="utf-8")
         assert check_agent_soul("pm", str(tmp_path)) == [], (
             "pm with acceptance criteria should pass with no issues"
         )
 
     def test_unknown_role_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# Unknown\nAnything.\n")
+        soul.write_text("# Unknown\nAnything.\n", encoding="utf-8")
         assert check_agent_soul("unknown", str(tmp_path)) == [], (
             "unknown role should pass with no issues"
         )
@@ -62,6 +70,13 @@ class TestCheckAgentSoul:
 
 
 class TestPreflightCheck:
+    @pytest.fixture(autouse=True)
+    def _claude_auth_present(self, monkeypatch):
+        # preflight_check now also runs the Claude subscription-auth check.
+        # These tests exercise agent-path validation, not auth — pin a token
+        # so the auth check passes and does not add an unrelated issue.
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
+
     def test_all_agents_pass(self, tmp_path):
         for role, content in [
             ("dev", "## rebuild mode\nFix."),
@@ -70,7 +85,7 @@ class TestPreflightCheck:
         ]:
             d = tmp_path / role
             d.mkdir()
-            (d / "SOUL.md").write_text(content)
+            (d / "SOUL.md").write_text(content, encoding="utf-8")
         assignments = {r: str(tmp_path / r) for r in ("dev", "qa", "pm")}
         result = preflight_check(assignments)
         assert result == [], (
@@ -102,3 +117,93 @@ class TestCheckBrowser:
         assert isinstance(msg, str), (
             f"check_browser msg should be str, got {type(msg).__name__}"
         )
+
+
+class TestCheckClaudeSubscriptionAuth:
+    """Preflight auth check — CLAUDE_CODE_OAUTH_TOKEN or creds-file presence."""
+
+    def test_token_env_var_passes(self, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "a-token")
+        assert check_claude_subscription_auth() is None, (
+            "a non-empty token env var should satisfy the auth check"
+        )
+
+    def test_no_token_no_creds_returns_issue(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        issue = check_claude_subscription_auth()
+        assert issue is not None, "missing auth should produce an issue"
+        assert "auth" in issue.lower(), (
+            f"issue should mention auth, got: {issue!r}"
+        )
+
+
+class TestCheckVendor:
+    """Preflight vendor check — the vendor/agent-skills submodule must be
+    initialized so SFLO's skill resolution can find SKILL.md files.
+
+    check_vendor() is READ-ONLY: a filesystem check for a populated
+    vendor/agent-skills/skills/ directory. SFLO_ROOT is monkeypatched to a
+    temp dir so tests are hermetic and never depend on the real checkout's
+    submodule state.
+    """
+
+    def _populate(self, root):
+        """Create a populated vendor/agent-skills/skills/ tree under root."""
+        skill_dir = root / "vendor" / "agent-skills" / "skills" / "tdd"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# TDD skill\n", encoding="utf-8")
+
+    def test_populated_vendor_returns_none(self, monkeypatch, tmp_path):
+        self._populate(tmp_path)
+        monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
+        assert check_vendor() is None, (
+            "a populated vendor/agent-skills/skills/ should pass with no issue"
+        )
+
+    def test_missing_vendor_returns_issue(self, monkeypatch, tmp_path):
+        # tmp_path has no vendor/ directory at all.
+        monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
+        issue = check_vendor()
+        assert issue is not None, "missing vendor should produce an issue"
+        assert "agent-skills" in issue, (
+            f"issue should name the agent-skills submodule, got: {issue!r}"
+        )
+        assert "git submodule update" in issue, (
+            f"issue should give the init command, got: {issue!r}"
+        )
+
+    def test_empty_submodule_dir_returns_issue(self, monkeypatch, tmp_path):
+        # The submodule directory exists but is empty — the exact state of a
+        # fresh clone before `git submodule update --init`.
+        (tmp_path / "vendor" / "agent-skills").mkdir(parents=True)
+        monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
+        issue = check_vendor()
+        assert issue is not None, (
+            "an empty (uninitialized) submodule dir should produce an issue"
+        )
+        assert "agent-skills" in issue and "git submodule update" in issue, (
+            f"issue should name the submodule and init command, got: {issue!r}"
+        )
+
+    def test_skills_dir_present_but_empty_returns_issue(self, monkeypatch, tmp_path):
+        # skills/ exists but has no skill subdirectories — still unusable.
+        (tmp_path / "vendor" / "agent-skills" / "skills").mkdir(parents=True)
+        monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
+        issue = check_vendor()
+        assert issue is not None, (
+            "an empty skills/ directory should produce an issue"
+        )
+
+    def test_issue_is_actionable_string(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
+        issue = check_vendor()
+        assert isinstance(issue, str), (
+            f"check_vendor failure should return a str, got {type(issue).__name__}"
+        )
+        # Mentions a recovery path the user can act on.
+        assert any(
+            hint in issue
+            for hint in ("setup.sh", "setup.ps1", "git submodule update")
+        ), f"issue should suggest a recovery command, got: {issue!r}"

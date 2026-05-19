@@ -51,14 +51,14 @@ class TestWrite:
         path = str(tmp_path / "test.txt")
         result = handle_write({"file_path": path, "content": "hello"})
         assert "Written" in result, f"expected 'Written' in result but got: {result}"
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "hello", "file content should be 'hello' after write"
 
     def test_creates_parent_dirs(self, tmp_path):
         path = str(tmp_path / "a" / "b" / "test.txt")
         result = handle_write({"file_path": path, "content": "deep"})
         assert "Written" in result, f"expected 'Written' in result but got: {result}"
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "deep", (
                 "file content should be 'deep' after write to nested path"
             )
@@ -67,7 +67,7 @@ class TestWrite:
 class TestRead:
     def test_reads_file(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("line1\nline2\nline3")
         result = handle_read({"path": path})
         assert "line1" in result, f"expected 'line1' in read result but got: {result}"
@@ -75,7 +75,7 @@ class TestRead:
 
     def test_offset_limit(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("a\nb\nc\nd\ne")
         result = handle_read({"path": path, "offset": 2, "limit": 2})
         assert "b" in result, f"expected 'b' in offset/limit result but got: {result}"
@@ -97,11 +97,11 @@ class TestRead:
 class TestAppend:
     def test_appends_to_existing(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("first")
         result = handle_append({"file_path": path, "content": " second"})
         assert "Appended" in result, f"expected 'Appended' in result but got: {result}"
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "first second", (
                 "file should contain 'first second' after append"
             )
@@ -110,7 +110,7 @@ class TestAppend:
         path = str(tmp_path / "new.txt")
         result = handle_append({"file_path": path, "content": "fresh"})
         assert "Appended" in result, f"expected 'Appended' in result but got: {result}"
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "fresh", (
                 "file should contain 'fresh' after append to new file"
             )
@@ -119,20 +119,20 @@ class TestAppend:
 class TestEdit:
     def test_replaces_string(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("hello world")
         result = handle_edit(
             {"file_path": path, "old_string": "world", "new_string": "earth"}
         )
         assert "Replaced" in result, f"expected 'Replaced' in result but got: {result}"
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "hello earth", (
                 "file should contain 'hello earth' after edit"
             )
 
     def test_not_found(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("hello")
         result = handle_edit(
             {"file_path": path, "old_string": "xyz", "new_string": "abc"}
@@ -143,7 +143,7 @@ class TestEdit:
 
     def test_ambiguous_without_replace_all(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("aa bb aa")
         result = handle_edit(
             {"file_path": path, "old_string": "aa", "new_string": "cc"}
@@ -156,7 +156,7 @@ class TestEdit:
 class TestMultiedit:
     def test_applies_multiple(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("aaa bbb ccc")
         result = handle_multiedit(
             {
@@ -170,14 +170,14 @@ class TestMultiedit:
         assert "Applied 2" in result, (
             f"expected 'Applied 2' in result but got: {result}"
         )
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "111 bbb 333", (
                 "file should contain '111 bbb 333' after multiedit"
             )
 
     def test_rollback_on_failure(self, tmp_path):
         path = str(tmp_path / "test.txt")
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("aaa bbb")
         result = handle_multiedit(
             {
@@ -191,7 +191,7 @@ class TestMultiedit:
         assert "rolled back" in result, (
             f"expected 'rolled back' in result but got: {result}"
         )
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             assert f.read() == "aaa bbb", (
                 "file should be restored to original after rollback"
             )
@@ -204,9 +204,9 @@ class TestMultiedit:
 
 class TestGlob:
     def test_finds_files(self, tmp_path):
-        (tmp_path / "a.py").write_text("x")
-        (tmp_path / "b.py").write_text("y")
-        (tmp_path / "c.txt").write_text("z")
+        (tmp_path / "a.py").write_text("x", encoding="utf-8")
+        (tmp_path / "b.py").write_text("y", encoding="utf-8")
+        (tmp_path / "c.txt").write_text("z", encoding="utf-8")
         result = handle_glob({"pattern": "*.py"}, root=str(tmp_path))
         assert "a.py" in result, f"expected 'a.py' in glob result but got: {result}"
         assert "b.py" in result, f"expected 'b.py' in glob result but got: {result}"
@@ -223,12 +223,14 @@ class TestGlob:
 
 class TestGrep:
     def test_finds_pattern(self, tmp_path):
-        (tmp_path / "test.py").write_text("def hello():\n    return 42\n")
+        (tmp_path / "test.py").write_text(
+            "def hello():\n    return 42\n", encoding="utf-8"
+        )
         result = handle_grep({"pattern": "hello", "path": str(tmp_path / "test.py")})
         assert "hello" in result, f"expected 'hello' in grep result but got: {result}"
 
     def test_no_match(self, tmp_path):
-        (tmp_path / "test.py").write_text("nothing here")
+        (tmp_path / "test.py").write_text("nothing here", encoding="utf-8")
         result = handle_grep({"pattern": "xyz", "path": str(tmp_path / "test.py")})
         assert "no matches" in result, (
             f"expected 'no matches' for absent pattern but got: {result}"
@@ -237,7 +239,7 @@ class TestGrep:
     def test_recursive(self, tmp_path):
         sub = tmp_path / "sub"
         sub.mkdir()
-        (sub / "a.py").write_text("target_string")
+        (sub / "a.py").write_text("target_string", encoding="utf-8")
         result = handle_grep({"pattern": "target_string", "path": str(tmp_path)})
         assert "target_string" in result, (
             f"expected 'target_string' in recursive grep result but got: {result}"
@@ -308,7 +310,7 @@ class TestBashGuardrails:
         from src.adapters.tool_handlers import _check_bash_safety
 
         target = tmp_path / "to_remove.txt"
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
         # Empty set = no allowlist filter
         is_safe, reason = _check_bash_safety(f"rm {target}", allowed_commands=set())
         assert is_safe, (
@@ -336,7 +338,14 @@ class TestBashGuardrails:
         assert "safe" in result, f"expected 'safe' in echo output but got: {result}"
 
     def test_allows_python3(self):
-        result = handle_bash({"command": "python3 -c \"print('ok')\""})
+        # Use sys.executable rather than the literal "python3": the bare name
+        # "python3" is not on PATH on Windows (only "python"), so hardcoding it
+        # made this test fail there. sys.executable is the running interpreter
+        # and is valid on every platform.
+        import sys
+
+        cmd = f'"{sys.executable}" -c "print(\'ok\')"'
+        result = handle_bash({"command": cmd})
         assert "ok" in result, f"expected 'ok' in python3 output but got: {result}"
 
     def test_no_shell_true_in_subprocess(self):

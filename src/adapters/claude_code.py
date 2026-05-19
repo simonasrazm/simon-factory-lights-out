@@ -3,14 +3,89 @@
 import asyncio
 import os
 import shutil
+import tempfile
 import time as _time
 from pathlib import Path
 
 from .base import RuntimeAdapter
+from .errors import NonRetryableError
 from ..security import load_security_config
-from .._stderr import _safe_stderr
+from .._stderr import _safe_stderr, _scrub_secret
 from ..evals import EvalAbortError
 from ..evals.integration import run_tool_call_evals
+
+
+# Max bytes the system_prompt may occupy when passed inline as a CLI arg.
+# Windows' CreateProcess accepts <= 32,767 chars total for the entire
+# command line; we keep half that as the prompt budget so model name,
+# tool list, MCP config, and other args fit comfortably.
+PROMPT_INLINE_LIMIT_BYTES = 16 * 1024
+
+
+def _classify_sdk_error(exc):
+    """Wrap permanent SDK failures as NonRetryableError so the runner skips
+    its 3-attempt retry loop. Unknown errors pass through unchanged.
+
+    Permanent failures:
+      - CLINotFoundError: claude.exe missing or unreachable
+      - CLIConnectionError: see deliberate fail-fast note below
+      - FileNotFoundError WinError 206: command-line too long (the Windows
+        kernel reports a missing-file error in this case). Retrying won't
+        shorten the args; this is a config / size problem, not transient.
+
+    CLIConnectionError — DELIBERATE non-retryable classification:
+    The SDK raises this when it cannot establish the control connection to
+    the `claude` CLI subprocess at all (the process failed to start, the
+    handshake never completed, or the pipe was closed before any message).
+    That is a structural/environment fault — a missing binary, a broken
+    install, an incompatible SDK/CLI version, a sandbox blocking the spawn —
+    not a transient network blip on a request already in flight. Retrying
+    such a spawn 3x just burns time on the same broken environment. The
+    runner already has its own per-message gap timeout + outer gate-retry
+    loop for genuinely transient mid-stream stalls; this classifier is for
+    "the agent could never start". Fail fast and escalate to a human who
+    can fix the install. If a future SDK version starts raising
+    CLIConnectionError for recoverable mid-session drops, reconsider and
+    move it to TransientError.
+    """
+    # Try real isinstance against the SDK error classes first. String-name
+    # matching alone is brittle: a vendor patch / subclass would silently
+    # defeat the classifier.
+    _sdk_cli_errors = ()
+    try:
+        from claude_agent_sdk._errors import (
+            CLINotFoundError as _CLINotFoundError,
+            CLIConnectionError as _CLIConnectionError,
+        )
+        _sdk_cli_errors = (_CLINotFoundError, _CLIConnectionError)
+    except ImportError:
+        try:
+            from claude_agent_sdk._errors import (
+                CLINotFoundError as _CLINotFoundError,
+            )
+            _sdk_cli_errors = (_CLINotFoundError,)
+        except ImportError:
+            pass
+
+    if _sdk_cli_errors and isinstance(exc, _sdk_cli_errors):
+        return NonRetryableError(f"Claude Code CLI not reachable: {exc}")
+
+    # Fallback for SDK installs whose _errors module is private/restructured.
+    if type(exc).__name__ in ("CLINotFoundError", "CLIConnectionError"):
+        return NonRetryableError(f"Claude Code CLI not reachable: {exc}")
+
+    if isinstance(exc, FileNotFoundError):
+        winerr = getattr(exc, "winerror", None)
+        msg = str(exc).lower()
+        if winerr == 206 or "filename or extension is too long" in msg:
+            return NonRetryableError(
+                "Windows CreateProcess failed with ERROR_FILENAME_EXCED_RANGE "
+                "(206) — the command line passed to claude.exe exceeds the "
+                "32,767-char limit. Most common cause: a system prompt + skills "
+                "bundle larger than ~30 KB inlined as a CLI arg. Consider "
+                "reducing the skill set for this gate, or use --system-prompt-file."
+            )
+    return exc
 
 # ---------------------------------------------------------------------------
 # Tool policy — driven by `tools:` field in pipeline.yaml per role.
@@ -155,7 +230,33 @@ def build_sdk_options(
         sandbox_dir.mkdir(exist_ok=True)
         opts["env"] = {**(opts.get("env") or {}), "CLAUDE_CONFIG_DIR": str(sandbox_dir)}
 
-    return opts, sandbox_dir, needs_mcp
+    # If the final system_prompt exceeds the inline budget, write it to a
+    # temp file and reference it via the SDK's --system-prompt-file primitive.
+    # Without this, Windows CreateProcess raises ERROR_FILENAME_EXCED_RANGE
+    # (WinError 206) when the inline arg pushes the command line past 32 KB.
+    # Caller is responsible for cleaning up paths returned in `temp_files`
+    # after the SDK call completes.
+    temp_files = []
+    sp = opts.get("system_prompt")
+    if isinstance(sp, str) and len(sp.encode("utf-8")) > PROMPT_INLINE_LIMIT_BYTES:
+        tmpdir = os.environ.get("SFLO_PROMPT_TMPDIR") or tempfile.gettempdir()
+        os.makedirs(tmpdir, exist_ok=True)
+        fd, path = tempfile.mkstemp(
+            prefix="sflo-prompt-", suffix=".txt", dir=tmpdir, text=True
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(sp)
+        except Exception:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        opts["system_prompt"] = {"type": "file", "path": path}
+        temp_files.append(path)
+
+    return opts, sandbox_dir, needs_mcp, temp_files
 
 
 class ClaudeCodeAdapter(RuntimeAdapter):
@@ -243,72 +344,83 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         # If mcp_servers kwarg is None, fall back to class-level (all servers).
         effective_mcp = mcp_servers if mcp_servers is not None else self._mcp_servers
 
-        opts, sandbox_dir, needs_mcp = build_sdk_options(
-            system_prompt=system_prompt,
-            model=model,
-            security_config=sec,
-            tools_mode=tools_mode,
-            allowed_tools=allowed_tools,
-            cwd=cwd,
-            mcp_servers=effective_mcp,
-            mcp_defaults=self._load_mcp_defaults() if effective_mcp else None,
-            extra_cli_args=self._extra_cli_args,
-            stderr_callback=capture_stderr,
-            thinking=thinking,
-            effort=effort,
-        )
-
-        if env:
-            opts["env"] = {**(opts.get("env") or {}), **env}
-
-        # --- PRE_TOOL_CALL eval dispatch — claude-code runtime wiring ---
-        # run_tool_call_evals (eval framework) is runtime-agnostic; this hook is
-        # the claude-code glue. Claude Code fires PreToolUse before a tool runs;
-        # on EvalAbortError we return permissionDecision="deny" so the tool is
-        # blocked BEFORE execution (path_traversal_blocker, shell_metachar_guard).
-        # The eval registry is already loaded in-process — no reload, no subprocess.
-        async def _pretooluse_eval_hook(hook_input, _tool_use_id, _hook_ctx):
-            try:
-                await run_tool_call_evals(
-                    hook_input.get("tool_name", ""),
-                    hook_input.get("tool_input", {}) or {},
-                    role=role,
-                    metadata={"role": role or "unknown"},
-                )
-            except EvalAbortError as _abort:
-                return {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            f"sflo eval '{_abort.eval_name}' blocked this "
-                            f"tool call: {_abort.reason}"
-                        ),
-                    }
-                }
-            return {}
-
-        opts["hooks"] = {
-            "PreToolUse": [
-                HookMatcher(
-                    matcher="Read|Write|Edit|Glob|Bash",
-                    hooks=[_pretooluse_eval_hook],
-                )
-            ]
-        }
-
-        if sec["isolate_all_settings"]:
-            _safe_stderr(
-                "  [security] isolate_all_settings=true — project settings "
-                "severed in spawned agents (interactive Stop hook only)."
-            )
-
+        # Pre-bind cleanup-relevant locals so the `finally` below can run
+        # even if build_sdk_options() itself raises. build_sdk_options writes
+        # the >16 KB system prompt to a tempfile and returns its path in
+        # temp_files; that creation must live INSIDE the try whose finally
+        # unlinks temp_files, otherwise an exception between the temp-file
+        # write and the ClaudeAgentOptions construction orphans the file
+        # (security LOW-2). sandbox_dir is likewise referenced in finally.
+        sandbox_dir = None
+        needs_mcp = True
+        temp_files = []
         result_text = ""
         assistant_msgs = 0
         tool_calls = 0
         total_tokens = 0
         start_time = _time.time()
         try:
+            opts, sandbox_dir, needs_mcp, temp_files = build_sdk_options(
+                system_prompt=system_prompt,
+                model=model,
+                security_config=sec,
+                tools_mode=tools_mode,
+                allowed_tools=allowed_tools,
+                cwd=cwd,
+                mcp_servers=effective_mcp,
+                mcp_defaults=self._load_mcp_defaults() if effective_mcp else None,
+                extra_cli_args=self._extra_cli_args,
+                stderr_callback=capture_stderr,
+                thinking=thinking,
+                effort=effort,
+            )
+
+            if env:
+                opts["env"] = {**(opts.get("env") or {}), **env}
+
+            # --- PRE_TOOL_CALL eval dispatch — claude-code runtime wiring ---
+            # run_tool_call_evals (eval framework) is runtime-agnostic; this hook
+            # is the claude-code glue. Claude Code fires PreToolUse before a tool
+            # runs; on EvalAbortError we return permissionDecision="deny" so the
+            # tool is blocked BEFORE execution (path_traversal_blocker,
+            # shell_metachar_guard). The eval registry is already loaded
+            # in-process — no reload, no subprocess.
+            async def _pretooluse_eval_hook(hook_input, _tool_use_id, _hook_ctx):
+                try:
+                    await run_tool_call_evals(
+                        hook_input.get("tool_name", ""),
+                        hook_input.get("tool_input", {}) or {},
+                        role=role,
+                        metadata={"role": role or "unknown"},
+                    )
+                except EvalAbortError as _abort:
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": (
+                                f"sflo eval '{_abort.eval_name}' blocked this "
+                                f"tool call: {_abort.reason}"
+                            ),
+                        }
+                    }
+                return {}
+
+            opts["hooks"] = {
+                "PreToolUse": [
+                    HookMatcher(
+                        matcher="Read|Write|Edit|Glob|Bash",
+                        hooks=[_pretooluse_eval_hook],
+                    )
+                ]
+            }
+
+            if sec["isolate_all_settings"]:
+                _safe_stderr(
+                    "  [security] isolate_all_settings=true — project settings "
+                    "severed in spawned agents (interactive Stop hook only)."
+                )
+
             async with ClaudeSDKClient(ClaudeAgentOptions(**opts)) as client:
                 # Wait for MCP servers if configured and role needs them
                 if effective_mcp and needs_mcp:
@@ -473,6 +585,14 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     if not total_tokens and hasattr(message, "token_count"):
                         total_tokens = message.token_count
         except Exception as e:
+            # Classify permanent SDK errors (CLINotFoundError, WinError 206)
+            # as NonRetryableError so the runner skips retries — there's no
+            # point burning 30 attempts on a missing binary or a too-long
+            # command line.
+            classified = _classify_sdk_error(e)
+            if classified is not e:
+                e = classified
+
             # Enrich known crash types with actionable guidance so the
             # retry's crash_context helps the next attempt avoid the same
             # failure. The original exception propagates unchanged for
@@ -499,14 +619,30 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     f"  [Agent stderr on crash — {len(stderr_lines)} lines, "
                     f"role={role}, model={model}]"
                 )
+                # Scrub each captured stderr line before it reaches the
+                # pipeline log: SDK / CLI stderr can echo a Bearer header,
+                # an sk- token, or a credentialed URL.
                 for line in stderr_lines[-30:]:
-                    _safe_stderr(f"    {line.rstrip()}")
+                    _safe_stderr(f"    {_scrub_secret(line.rstrip())}")
                 tail = "\n".join(line.rstrip() for line in stderr_lines[-20:])
-                raise RuntimeError(
+                # Scrub the enriched message too — it becomes the exception
+                # text, which the runner persists into state.json
+                # (escalation.cause). Scrubbing here keeps the secret out of
+                # the exception object itself, not only the JSON copy.
+                enriched = _scrub_secret(
                     f"{type(e).__name__}: {e}\n"
                     f"--- captured stderr (last 20 of {len(stderr_lines)} lines) ---\n"
                     f"{tail}"
-                ) from e
+                )
+                # Preserve a NonRetryableError classification (set by
+                # _classify_sdk_error above). Re-raising as a bare
+                # RuntimeError here would discard it, and the runner would
+                # then burn its full 3-attempt retry budget on a permanent
+                # failure — the exact retry-skip _classify_sdk_error exists
+                # to enable.
+                if isinstance(e, NonRetryableError):
+                    raise NonRetryableError(enriched) from e
+                raise RuntimeError(enriched) from e
             else:
                 _safe_stderr(
                     f"  [Agent crash with EMPTY stderr — role={role}, "
@@ -516,6 +652,14 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         finally:
             if sec["wipe_sandbox"] and sandbox_dir is not None:
                 shutil.rmtree(sandbox_dir, ignore_errors=True)
+            # Clean up temp prompt files written by build_sdk_options when the
+            # system prompt exceeded the inline CLI budget. SDK has consumed
+            # them by the time we reach here; remove silently on failure.
+            for path in temp_files:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
         elapsed = _time.time() - start_time
         token_str = f", tokens={total_tokens}" if total_tokens else ", tokens=n/a"

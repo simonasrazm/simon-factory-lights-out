@@ -5,15 +5,41 @@ from hardcoded 'agent-skills' vendor to dynamic multi-vendor scanner.
 """
 
 import os
-import sys
 import tempfile
 import shutil
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, "/Users/simonas/envs/docker/media/projects/sflo-dev/sflo")
-
+# Repo root added to sys.path by tests/conftest.py — no hardcoded absolute
+# path here so the suite stays portable across machines.
 from src.machine import _discover_vendor_dirs, resolve_skill_paths, SkillResolutionError
+
+# The sflo/ repo root, derived from this test file's location.
+SFLO_REPO_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _symlinks_supported():
+    """Return True if os.symlink() works here.
+
+    Standard Windows accounts lack the SeCreateSymbolicLinkPrivilege, so
+    os.symlink() raises OSError. Tests that depend on symlinks are skipped
+    rather than failed on such machines.
+    """
+    probe = tempfile.mkdtemp()
+    try:
+        target = os.path.join(probe, "target")
+        link = os.path.join(probe, "link")
+        os.mkdir(target)
+        try:
+            os.symlink(target, link)
+            return True
+        except (OSError, NotImplementedError):
+            return False
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+SYMLINKS_SUPPORTED = _symlinks_supported()
 
 
 class TestDiscoverVendorDirs(unittest.TestCase):
@@ -45,6 +71,9 @@ class TestDiscoverVendorDirs(unittest.TestCase):
         # Should still be 2, not 4
         self.assertEqual(len(dirs), 2)
 
+    @unittest.skipUnless(
+        SYMLINKS_SUPPORTED, "symlink creation not available (e.g. unprivileged Windows)"
+    )
     def test_deduplicates_via_realpath(self):
         """Symlinked sflo_base pointing to same dir is deduplicated."""
         symlink = os.path.join(self.tmpdir, "symlinked_base")
@@ -82,7 +111,9 @@ class TestDiscoverVendorDirs(unittest.TestCase):
     def test_files_in_vendor_dir_ignored(self):
         """Regular files (non-dirs) in vendor/ are not returned."""
         # Create a file alongside the vendor subdirs
-        with open(os.path.join(self.vendor_root, "README.md"), "w") as f:
+        with open(
+            os.path.join(self.vendor_root, "README.md"), "w", encoding="utf-8"
+        ) as f:
             f.write("ignore me")
         with patch("src.machine.SFLO_ROOT", self.tmpdir):
             dirs = _discover_vendor_dirs(self.tmpdir)
@@ -116,19 +147,19 @@ class TestResolveSkillPaths(unittest.TestCase):
         self.tdd_dir = os.path.join(self.vendor_root, "agent-skills", "skills", "tdd")
         os.makedirs(self.tdd_dir)
         self.tdd_skill = os.path.join(self.tdd_dir, "SKILL.md")
-        with open(self.tdd_skill, "w") as f:
+        with open(self.tdd_skill, "w", encoding="utf-8") as f:
             f.write("# TDD Skill\n")
         # Vendor "agent-skills" with skill "lint"
         self.lint_dir = os.path.join(self.vendor_root, "agent-skills", "skills", "lint")
         os.makedirs(self.lint_dir)
         self.lint_skill = os.path.join(self.lint_dir, "SKILL.md")
-        with open(self.lint_skill, "w") as f:
+        with open(self.lint_skill, "w", encoding="utf-8") as f:
             f.write("# Lint Skill\n")
         # Second vendor "custom-vendor" with skill "fmt"
         self.fmt_dir = os.path.join(self.vendor_root, "custom-vendor", "skills", "fmt")
         os.makedirs(self.fmt_dir)
         self.fmt_skill = os.path.join(self.fmt_dir, "SKILL.md")
-        with open(self.fmt_skill, "w") as f:
+        with open(self.fmt_skill, "w", encoding="utf-8") as f:
             f.write("# Fmt Skill\n")
         # Second vendor "custom-vendor" also has "tdd" (for priority test)
         self.custom_tdd_dir = os.path.join(
@@ -136,7 +167,7 @@ class TestResolveSkillPaths(unittest.TestCase):
         )
         os.makedirs(self.custom_tdd_dir)
         self.custom_tdd_skill = os.path.join(self.custom_tdd_dir, "SKILL.md")
-        with open(self.custom_tdd_skill, "w") as f:
+        with open(self.custom_tdd_skill, "w", encoding="utf-8") as f:
             f.write("# Custom TDD\n")
 
     def tearDown(self):
@@ -248,7 +279,9 @@ class TestResolveSkillPaths(unittest.TestCase):
 class TestResolveSkillPathsWithRealVendor(unittest.TestCase):
     """Integration test against the real vendor/ directory structure."""
 
-    SFLO_BASE = "/Users/simonas/envs/docker/media/projects/sflo-dev/sflo"
+    # Derived from the test file location so this is portable — the old
+    # hardcoded maintainer Mac path did not exist on any other machine.
+    SFLO_BASE = SFLO_REPO_ROOT
 
     def test_real_vendor_discovered(self):
         """_discover_vendor_dirs finds real agent-skills vendor."""

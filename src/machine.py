@@ -362,8 +362,12 @@ def _resolve_agent_path(entry, sflo_base, roles, assignments):
     # 1. Singular explicit agent
     pipeline_agent = entry.get("agent")
     if pipeline_agent:
+        # YAML-derived paths use forward slashes; normpath converts the
+        # joined result to OS-native separators (avoids mixed separators
+        # like C:\x\agents/pm on Windows). Absolute paths pass through
+        # unchanged in behaviour.
         return (
-            os.path.join(sflo_base, pipeline_agent)
+            os.path.normpath(os.path.join(sflo_base, pipeline_agent))
             if not os.path.isabs(pipeline_agent)
             else pipeline_agent
         )
@@ -373,13 +377,18 @@ def _resolve_agent_path(entry, sflo_base, roles, assignments):
     if agents_list:
         primary = agents_list[0]
         return (
-            os.path.join(sflo_base, primary) if not os.path.isabs(primary) else primary
+            os.path.normpath(os.path.join(sflo_base, primary))
+            if not os.path.isabs(primary)
+            else primary
         )
 
     # 3-5. Role config > scout assignment > convention default
     return role_cfg.get(
         "agent",
-        assignments.get(entry_role, os.path.join(sflo_base, "agents", entry_role)),
+        assignments.get(
+            entry_role,
+            os.path.normpath(os.path.join(sflo_base, "agents", entry_role)),
+        ),
     )
 
 

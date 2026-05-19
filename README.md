@@ -28,6 +28,36 @@ Tell your AI agent:
 
 The agent will clone the repo, run `setup.sh`, install the pipeline hook, and configure bindings. After a gateway restart (OpenClaw) or new session (Claude Code), SFLO is ready.
 
+### Windows (PowerShell, Claude subscription auth)
+
+On Windows, Claude Code stores its OAuth token as plaintext JSON in
+`%USERPROFILE%\.claude\.credentials.json`. `setup.ps1` provides a more secure
+alternative: it installs `Microsoft.PowerShell.SecretManagement` +
+`Microsoft.PowerShell.SecretStore`, registers an encrypted `SfloVault`, and
+adds an `Invoke-SFLO` command to your PowerShell profile that pulls the token
+from the vault instead of a file. Works in both PowerShell 7 and Windows
+PowerShell 5.1.
+
+From the SFLO repo root, in PowerShell:
+
+```powershell
+.\setup.ps1
+```
+
+`setup.ps1` sets up an **empty** vault — it never handles your token. Storing
+the Claude OAuth token is a deliberate manual step you run yourself:
+
+```powershell
+claude setup-token                              # generates a long-lived OAuth token
+Set-Secret -Name SFLO_CLAUDE -Vault SfloVault   # paste the token — input is hidden
+. $PROFILE                                       # reload your profile
+Invoke-SFLO build a click counter                # run the factory
+```
+
+If you already use the Windows SecretStore for other secrets, `setup.ps1`
+will **abort rather than wipe it** and tell you how to proceed — it only
+configures a store that is genuinely fresh.
+
 ## Usage
 
 Say **"SFLO: [describe what to build]"** to start the pipeline. Examples:

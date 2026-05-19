@@ -36,7 +36,7 @@ def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
             continue
         path = os.path.join(tmpdir, artifact)
         if not os.path.isfile(path):
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(
                     f"# {artifact}\n\n### Summary\n- Critical: 0\n\n"
                     f"### Findings\nNone.\n\n### Grade: A\n"
@@ -57,7 +57,7 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     # -- Gate 1: PM Discovery --
@@ -207,7 +207,7 @@ class TestContentDepthPassPath(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def write(self, name, content):
-        with open(os.path.join(self.tmpdir, name), "w") as f:
+        with open(os.path.join(self.tmpdir, name), "w", encoding="utf-8") as f:
             f.write(content)
 
     # -- Gate 1: minimum passing artifact --

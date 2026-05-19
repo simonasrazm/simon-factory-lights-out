@@ -2,7 +2,7 @@
 # SFLO Setup — One-command installation for OpenClaw and Claude Code
 #
 # Usage:
-#   bash setup.sh [--workspace PATH] [--source PATH_OR_URL] [--branch BRANCH]
+#   bash setup.sh --runtime <openclaw|cursor|claude-code> [--workspace PATH] [--source PATH_OR_URL] [--branch BRANCH]
 #
 # What this does:
 #   1. Copies/clones SFLO into the workspace (or configures in-place)
@@ -17,6 +17,7 @@ DEFAULT_REPO="https://github.com/simonasrazm/simon-factory-lights-out.git"
 BRANCH="main"
 WORKSPACE=""
 SOURCE=""
+RUNTIME=""
 SFLO_DIR_NAME="sflo"
 
 # --- Cross-platform Python detection ---
@@ -45,6 +46,7 @@ while [[ $# -gt 0 ]]; do
     --source) SOURCE="$2"; shift 2 ;;
     --sflo-path) SFLO_PATH_OVERRIDE="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
+    --runtime) RUNTIME="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
@@ -54,22 +56,24 @@ echo "║  SFLO — Simon Factory Lights Out Setup   ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-# --- Detect runtime ---
-
-RUNTIME="unknown"
-# Cursor is checked before claude-code so the native cursor-agent CLI wins
-# when both are installed. The user can force a different runtime by
-# pre-setting the RUNTIME env var before invoking setup.sh.
-if [[ -n "${RUNTIME_OVERRIDE:-}" ]]; then
-  RUNTIME="$RUNTIME_OVERRIDE"
-elif command -v openclaw &>/dev/null; then
-  RUNTIME="openclaw"
-elif command -v cursor-agent &>/dev/null || [[ -d ".cursor" ]]; then
-  RUNTIME="cursor"
-elif command -v claude &>/dev/null || [[ -f ".claude/settings.json" ]]; then
-  RUNTIME="claude-code"
+# --- Runtime (explicit, required) ---
+#
+# The runtime is the agent system that runs the SFLO pipeline. It is a
+# deliberate choice, not something to guess: auto-detection silently picked
+# the wrong runtime on machines with more than one installed. Pass --runtime.
+if [[ -z "$RUNTIME" ]]; then
+  echo "ERROR: --runtime is required. Pass one of: openclaw, cursor, claude-code"
+  echo "  e.g.  bash setup.sh --runtime cursor"
+  exit 1
 fi
-echo "Runtime detected: $RUNTIME"
+case "$RUNTIME" in
+  openclaw|cursor|claude-code) ;;
+  *)
+    echo "ERROR: unknown --runtime '$RUNTIME'. Valid: openclaw, cursor, claude-code"
+    exit 1
+    ;;
+esac
+echo "Runtime: $RUNTIME"
 
 # --- Detect if running from inside SFLO repo ---
 
@@ -84,18 +88,34 @@ else
   echo "Source: $SOURCE"
 fi
 
+# --- Initialize git submodules (vendor/agent-skills) ---
+# SFLO resolves pipeline skills from vendor/agent-skills/; a fresh clone
+# leaves it empty until initialized. rev-parse skips cleanly (rather than
+# aborting setup) when SFLO was extracted from an archive, not git-cloned.
+echo ""
+echo "Initializing git submodules (vendor/agent-skills)..."
+if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
+  if git -C "$SCRIPT_DIR" submodule update --init --recursive; then
+    echo "  ✓ Submodules initialized"
+  else
+    echo "  ⚠ git submodule update failed — vendor/agent-skills may be incomplete."
+  fi
+else
+  echo "  ⚠ Not a git work tree — skipping. Populate vendor/agent-skills manually."
+fi
+
 # --- Resolve workspace ---
 
 if [[ -z "$WORKSPACE" ]]; then
   if [[ "$RUNTIME" == "openclaw" ]]; then
     local_config="$HOME/.openclaw/openclaw.json"
     if [[ -f "$local_config" ]]; then
-      WORKSPACE=$("$PYTHON_CMD" -c "
-import json
-with open('$local_config') as f:
+      WORKSPACE=$("$PYTHON_CMD" -c '
+import json, sys
+with open(sys.argv[1]) as f:
     c = json.load(f)
-print(c.get('agents',{}).get('defaults',{}).get('workspace',''))
-" 2>/dev/null || true)
+print(c.get("agents", {}).get("defaults", {}).get("workspace", ""))
+' "$local_config" 2>/dev/null || true)
     fi
     if [[ -z "$WORKSPACE" ]]; then
       WORKSPACE="$HOME/clawd"
@@ -192,10 +212,10 @@ echo "Installing hooks..."
 relative_hook_path() {
   local from="$1"
   local to="$2"
-  "$PYTHON_CMD" -c "
-import os
-print(os.path.relpath('$to', '$from'))
-" 2>/dev/null
+  "$PYTHON_CMD" -c '
+import os, sys
+print(os.path.relpath(sys.argv[1], sys.argv[2]))
+' "$to" "$from" 2>/dev/null
 }
 
 if [[ "$RUNTIME" == "openclaw" ]]; then
@@ -215,19 +235,19 @@ if [[ "$RUNTIME" == "openclaw" ]]; then
   # Enable in config
   CONFIG="$HOME/.openclaw/openclaw.json"
   if [[ -f "$CONFIG" ]]; then
-    "$PYTHON_CMD" -c "
-import json
-with open('$CONFIG') as f:
+    "$PYTHON_CMD" -c '
+import json, sys
+with open(sys.argv[1]) as f:
     config = json.load(f)
-hooks = config.setdefault('hooks', {}).setdefault('internal', {}).setdefault('entries', {})
-if 'sflo-pipeline' not in hooks:
-    hooks['sflo-pipeline'] = {'enabled': True}
-    with open('$CONFIG', 'w') as f:
+hooks = config.setdefault("hooks", {}).setdefault("internal", {}).setdefault("entries", {})
+if "sflo-pipeline" not in hooks:
+    hooks["sflo-pipeline"] = {"enabled": True}
+    with open(sys.argv[1], "w") as f:
         json.dump(config, f, indent=2)
-    print('  ✓ Hook enabled in OpenClaw config')
+    print("  ✓ Hook enabled in OpenClaw config")
 else:
-    print('  ✓ Hook already in config')
-" 2>/dev/null || echo "  ⚠ Could not update config — enable sflo-pipeline hook manually"
+    print("  ✓ Hook already in config")
+' "$CONFIG" 2>/dev/null || echo "  ⚠ Could not update config — enable sflo-pipeline hook manually"
   fi
 
 elif [[ "$RUNTIME" == "cursor" ]]; then
@@ -249,11 +269,9 @@ elif [[ "$RUNTIME" == "cursor" ]]; then
   # Cursor hooks.json: merge if exists, create if not. We replace any
   # existing 'stop' entries that point to our stop_hook.py so reruns are
   # idempotent. Other hooks (preToolUse etc.) the user added are preserved.
-  "$PYTHON_CMD" - <<PYEOF || echo "  ⚠ Could not write Cursor hooks.json"
+  "$PYTHON_CMD" - "$HOOKS_FILE" "$HOOK_CMD" <<'PYEOF' || echo "  ⚠ Could not write Cursor hooks.json"
 import json, os, sys
-path = r"$HOOKS_FILE"
-hook_cmd = r"$HOOK_CMD"
-hook_path = r"$STOP_HOOK_ABS"
+path, hook_cmd = sys.argv[1], sys.argv[2]
 data = {"version": 1, "hooks": {}}
 if os.path.isfile(path):
     try:
@@ -263,9 +281,8 @@ if os.path.isfile(path):
         pass
 data.setdefault("version", 1)
 hooks = data.setdefault("hooks", {})
-stop_list = hooks.get("stop", [])
-# Drop any prior SFLO stop entries (match by stop_hook.py substring)
-stop_list = [h for h in stop_list if "sflo" not in (h.get("command", "") + "").lower() or "stop_hook" not in h.get("command", "")]
+# Drop any prior SFLO stop entry (matched by the stop_hook.py command).
+stop_list = [h for h in hooks.get("stop", []) if "stop_hook" not in h.get("command", "")]
 stop_list.insert(0, {"command": hook_cmd, "loop_limit": None})
 hooks["stop"] = stop_list
 with open(path, "w") as f:
@@ -303,26 +320,28 @@ elif [[ "$RUNTIME" == "claude-code" ]]; then
   HOOK_CMD="$PYTHON_CMD $STOP_HOOK_REL"
 
   if [[ -f "$SETTINGS_FILE" ]]; then
-    "$PYTHON_CMD" -c "
-import json
-with open('$SETTINGS_FILE') as f:
+    "$PYTHON_CMD" -c '
+import json, sys
+settings_file, hook_cmd = sys.argv[1], sys.argv[2]
+with open(settings_file) as f:
     s = json.load(f)
-hooks = s.setdefault('hooks', {})
-hooks['Stop'] = [{'type': 'command', 'command': '$HOOK_CMD'}]
+hooks = s.setdefault("hooks", {})
+hooks["Stop"] = [{"type": "command", "command": hook_cmd}]
 # Remove legacy v1 key if present
-hooks.pop('stop', None)
-with open('$SETTINGS_FILE', 'w') as f:
+hooks.pop("stop", None)
+with open(settings_file, "w") as f:
     json.dump(s, f, indent=2)
-print('  ✓ Stop hook configured in .claude/settings.json')
-" 2>/dev/null || echo "  ⚠ Could not update settings — configure stop hook manually"
+print("  ✓ Stop hook configured in .claude/settings.json")
+' "$SETTINGS_FILE" "$HOOK_CMD" 2>/dev/null || echo "  ⚠ Could not update settings — configure stop hook manually"
   else
-    "$PYTHON_CMD" -c "
-import json
-settings = {'hooks': {'Stop': [{'type': 'command', 'command': '$HOOK_CMD'}]}}
-with open('$SETTINGS_FILE', 'w') as f:
+    "$PYTHON_CMD" -c '
+import json, sys
+settings_file, hook_cmd = sys.argv[1], sys.argv[2]
+settings = {"hooks": {"Stop": [{"type": "command", "command": hook_cmd}]}}
+with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2)
-print('  ✓ Created .claude/settings.json with Stop hook')
-" 2>/dev/null || echo "  ⚠ Could not create settings.json"
+print("  ✓ Created .claude/settings.json with Stop hook")
+' "$SETTINGS_FILE" "$HOOK_CMD" 2>/dev/null || echo "  ⚠ Could not create settings.json"
   fi
 fi
 
@@ -379,15 +398,15 @@ if [[ "$RUNTIME" == "openclaw" ]]; then
     cp -r "$SKILL_SRC"/* "$SKILL_DST/"
     # Resolve path placeholders in SKILL.md (cross-platform — no sed -i variance)
     if [[ -f "$SKILL_DST/SKILL.md" ]]; then
-      "$PYTHON_CMD" -c "
+      "$PYTHON_CMD" -c '
 import sys
-p = '$SKILL_DST/SKILL.md'
+p, sflo_path = sys.argv[1], sys.argv[2]
 with open(p) as f:
     content = f.read()
-content = content.replace('{{SFLO_PATH}}', '$SFLO_PATH')
-with open(p, 'w') as f:
+content = content.replace("{{SFLO_PATH}}", sflo_path)
+with open(p, "w") as f:
     f.write(content)
-"
+' "$SKILL_DST/SKILL.md" "$SFLO_PATH"
     fi
     echo "  ✓ Skill installed at $SKILL_DST (paths resolved)"
   fi

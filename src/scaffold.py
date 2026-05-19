@@ -376,7 +376,7 @@ def cmd_prompt(args):
 
 
 def output(data):
-    print(json.dumps(data, indent=2))
+    print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
 COMMANDS = {
@@ -390,6 +390,12 @@ COMMANDS = {
 
 
 def main():
+    # Force UTF-8 stdout so non-ASCII JSON output (e.g. checkmarks) does not
+    # raise UnicodeEncodeError on a Windows console.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError, OSError):
+        pass
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         output(
             {

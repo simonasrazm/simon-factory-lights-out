@@ -25,7 +25,9 @@ class TestInitCommand(unittest.TestCase):
     def test_init_creates_state(self):
         result = run_scaffold("init", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         self.assertTrue(result["ok"])
-        with open(os.path.join(self.sflo_dir, "state.json")) as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), encoding="utf-8"
+        ) as f:
             state = json.load(f)
         self.assertEqual(state["current_state"], "scout")
 
@@ -129,7 +131,9 @@ class TestNextCommand(unittest.TestCase):
         shutil.rmtree(self.tmpdir)
 
     def artifact(self, name, content):
-        with open(os.path.join(self.sflo_dir, name), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, name), "w", encoding="utf-8"
+        ) as f:
             f.write(content)
 
     def test_full_pipeline_traversal(self):
@@ -160,7 +164,9 @@ class TestNextCommand(unittest.TestCase):
             )
 
         # Final state should be done
-        with open(os.path.join(self.sflo_dir, "state.json")) as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), encoding="utf-8"
+        ) as f:
             state = json.load(f)
         self.assertEqual(state["current_state"], "done")
 
@@ -192,7 +198,9 @@ class TestStatusCommand(unittest.TestCase):
                 }.items()
             },
         }
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
 
         for name, content in {
@@ -200,7 +208,9 @@ class TestStatusCommand(unittest.TestCase):
             "PM-VERIFY.md": "### Verdict: APPROVED\n",
             "SHIP-DECISION.md": "### Decision: SHIP\n",
         }.items():
-            with open(os.path.join(self.sflo_dir, name), "w") as f:
+            with open(
+                os.path.join(self.sflo_dir, name), "w", encoding="utf-8"
+            ) as f:
                 f.write(content)
 
         result = run_scaffold("status", "--sflo-dir", self.sflo_dir)
@@ -238,10 +248,14 @@ class TestPromptCommand(unittest.TestCase):
         self.assertIn("PM", result["prompt"])
 
     def test_prompt_at_done(self):
-        with open(os.path.join(self.sflo_dir, "state.json")) as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), encoding="utf-8"
+        ) as f:
             state = json.load(f)
         state["current_state"] = "done"
-        with open(os.path.join(self.sflo_dir, "state.json"), "w") as f:
+        with open(
+            os.path.join(self.sflo_dir, "state.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(state, f)
         result = run_scaffold("prompt", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         self.assertFalse(result["ok"])
@@ -275,12 +289,16 @@ class TestCleanCommand(unittest.TestCase):
             "QA-FEEDBACK.md",
             "PM-FEEDBACK.md",
         ):
-            with open(os.path.join(self.sflo_dir, f), "w") as fp:
+            with open(os.path.join(self.sflo_dir, f), "w", encoding="utf-8") as fp:
                 fp.write("test content " + f)
         os.makedirs(os.path.join(self.sflo_dir, ".venv"), exist_ok=True)
-        with open(os.path.join(self.sflo_dir, ".venv", "marker"), "w") as fp:
+        with open(
+            os.path.join(self.sflo_dir, ".venv", "marker"), "w", encoding="utf-8"
+        ) as fp:
             fp.write("dont touch")
-        with open(os.path.join(self.sflo_dir, "user-notes.md"), "w") as fp:
+        with open(
+            os.path.join(self.sflo_dir, "user-notes.md"), "w", encoding="utf-8"
+        ) as fp:
             fp.write("user-owned, dont touch")
 
     def tearDown(self):
@@ -337,7 +355,7 @@ class TestCleanCommand(unittest.TestCase):
         run_scaffold("clean", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         scope_in_logs = os.path.join(self.sflo_dir, "logs", "SCOPE.md")
         self.assertTrue(os.path.isfile(scope_in_logs))
-        with open(scope_in_logs) as f:
+        with open(scope_in_logs, encoding="utf-8") as f:
             self.assertEqual(f.read(), "test content SCOPE.md")
 
     def test_clean_preserves_venv(self):
@@ -368,10 +386,14 @@ class TestCleanCommand(unittest.TestCase):
         """Last-write wins: second clean overwrites logs/ with new content."""
         run_scaffold("clean", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
         # Write a fresh SCOPE.md with different content
-        with open(os.path.join(self.sflo_dir, "SCOPE.md"), "w") as fp:
+        with open(
+            os.path.join(self.sflo_dir, "SCOPE.md"), "w", encoding="utf-8"
+        ) as fp:
             fp.write("second-run content")
         run_scaffold("clean", "--sflo-dir", self.sflo_dir, cwd=self.tmpdir)
-        with open(os.path.join(self.sflo_dir, "logs", "SCOPE.md")) as fp:
+        with open(
+            os.path.join(self.sflo_dir, "logs", "SCOPE.md"), encoding="utf-8"
+        ) as fp:
             self.assertEqual(fp.read(), "second-run content")
 
     def test_clean_missing_dir_returns_error(self):
