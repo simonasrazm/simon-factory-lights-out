@@ -1,6 +1,7 @@
 """Runner CLI runtime selection behavior."""
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -46,3 +47,17 @@ def test_runner_cli_list_does_not_require_runtime(tmp_path, monkeypatch, capsys)
 
     out = capsys.readouterr().out
     assert "No factories registered." in out
+
+
+def test_generic_runner_docs_do_not_default_to_codex():
+    """Generic runner instructions require caller-selected runtime."""
+    root = Path(__file__).resolve().parents[1]
+
+    for rel in ("README.md", "sflo.md", "src/runner.py"):
+        text = (root / rel).read_text(encoding="utf-8")
+        assert "--runtime codex" not in text, rel
+
+    assert "--runtime <runtime>" in (root / "sflo.md").read_text(encoding="utf-8")
+    assert "Use `codex`" in (
+        root / "src/hooks/codex/AGENTS.md"
+    ).read_text(encoding="utf-8")

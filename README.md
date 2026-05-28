@@ -47,7 +47,7 @@ Each CLI run gets its own factory directory under `.sflo/`, named from the promp
 Useful commands from the SFLO checkout:
 
 - `python3 src/runner.py --list`
-- `printf '%s\n' 'continue the original task' | python3 src/runner.py --runtime codex --resume fancy-click-counter`
+- `printf '%s\n' 'continue the original task' | python3 src/runner.py --runtime <runtime> --resume fancy-click-counter`
 - `python3 src/runner.py --kill fancy-click-counter`
 - `python3 src/runner.py --clean-stale`
 

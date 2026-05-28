@@ -14,7 +14,7 @@ Usage (called by runtime hook/skill, not directly):
     )
 
 CLI (for testing):
-    python3 src/runner.py "Build a click counter" --runtime codex [--sflo-dir .sflo] [--quiet]
+    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--quiet]
 
     --runtime NAME    Required for pipeline starts. Runtime adapter to use.
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
