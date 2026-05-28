@@ -55,7 +55,7 @@ from src.evals import (  # noqa: E402
     SfloEval,
     clear_registry,
     eval as sflo_eval,
-    load_evals_from_bindings,
+    load_evals_from_config,
     matches_filter,
     registered_evals_for_site,
 )
@@ -118,9 +118,9 @@ def test_tc2_empty_evals_section(tmp_path):
     clear_registry()
 
     # No evals: key at all
-    bindings = tmp_path / "bindings.yaml"
-    bindings.write_text("roles:\n  dev:\n    model: sonnet\n", encoding="utf-8")
-    result = load_evals_from_bindings(bindings)
+    evals_file = tmp_path / "evals.yaml"
+    evals_file.write_text("roles:\n  dev:\n    model: sonnet\n", encoding="utf-8")
+    result = load_evals_from_config(evals_file)
     assert result == [], f"no evals key should yield empty list, got {result}"
     assert len(_LOADED_EVALS) == 0, (
         f"registry should be empty, got {len(_LOADED_EVALS)} entries"
@@ -128,8 +128,8 @@ def test_tc2_empty_evals_section(tmp_path):
 
     # Explicit empty list
     clear_registry()
-    bindings.write_text("evals: []\n", encoding="utf-8")
-    result = load_evals_from_bindings(bindings)
+    evals_file.write_text("evals: []\n", encoding="utf-8")
+    result = load_evals_from_config(evals_file)
     assert result == [], f"explicit empty evals should yield empty list, got {result}"
 
 
@@ -167,8 +167,8 @@ def test_tc3_one_plugin_loaded(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: my_eval\n"
             f"    module: {mod_name}.myplugin\n"
@@ -178,7 +178,7 @@ def test_tc3_one_plugin_loaded(tmp_path):
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = load_evals_from_bindings(bindings)
+            result = load_evals_from_config(evals_file)
         if w:
             print(f"TC3 warnings: {[str(x.message) for x in w]}")
         assert len(result) == 1, (
@@ -206,8 +206,8 @@ def test_tc3_one_plugin_loaded(tmp_path):
 
 def test_tc4_bad_module(tmp_path):
     clear_registry()
-    bindings = tmp_path / "bindings.yaml"
-    bindings.write_text(
+    evals_file = tmp_path / "evals.yaml"
+    evals_file.write_text(
         "evals:\n"
         "  - name: nonexistent\n"
         "    module: totally.nonexistent.module.xyz\n"
@@ -215,7 +215,7 @@ def test_tc4_bad_module(tmp_path):
     )
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
-        result = load_evals_from_bindings(bindings)
+        result = load_evals_from_config(evals_file)
     assert result == [], f"bad module should yield empty result, got {result}"
     assert any(
         "cannot import" in str(warning.message).lower()
@@ -245,8 +245,8 @@ def test_tc5_bad_class_name(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: bad\n"
             f"    module: {mod_name}.mymod\n"
@@ -254,7 +254,7 @@ def test_tc5_bad_class_name(tmp_path):
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = load_evals_from_bindings(bindings)
+            result = load_evals_from_config(evals_file)
         assert result == [], f"bad class should yield empty result, got {result}"
         assert any(
             "not found" in str(warning.message).lower()
@@ -311,9 +311,9 @@ def test_tc6_priority_sort(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
+        evals_file = tmp_path / "evals.yaml"
         # Register in REVERSE priority order to verify sort
-        bindings.write_text(
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: low_pri\n"
             f"    module: {mod_name}.evals\n"
@@ -328,7 +328,7 @@ def test_tc6_priority_sort(tmp_path):
             f"    class: MidPriEval\n"
             f"    priority: 50\n", encoding="utf-8"
         )
-        result = load_evals_from_bindings(bindings)
+        result = load_evals_from_config(evals_file)
         assert len(result) == 3, f"expected 3 evals loaded, got {len(result)}"
         names = [e.name for e in result]  # type: ignore[attr-defined]
         assert names == ["high_pri", "mid_pri", "low_pri"], (
@@ -373,8 +373,8 @@ def test_tc7_match_roles_filter(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: dev_only\n"
             f"    module: {mod_name}.evals\n"
@@ -382,7 +382,7 @@ def test_tc7_match_roles_filter(tmp_path):
             f"    match:\n"
             f"      roles: [dev, qa]\n", encoding="utf-8"
         )
-        load_evals_from_bindings(bindings)
+        load_evals_from_config(evals_file)
 
         # dev role — should see eval
         dev_evals = registered_evals_for_site(HookSite.POST_RESPONSE, role="dev")
@@ -440,8 +440,8 @@ def test_tc8_match_gates_filter(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: gate2_only\n"
             f"    module: {mod_name}.evals\n"
@@ -449,7 +449,7 @@ def test_tc8_match_gates_filter(tmp_path):
             f"    match:\n"
             f"      gates: [2, 3]\n", encoding="utf-8"
         )
-        load_evals_from_bindings(bindings)
+        load_evals_from_config(evals_file)
 
         # Gate 2 — should match
         g2_evals = registered_evals_for_site(HookSite.POST_RESPONSE, gate=2)
@@ -683,15 +683,15 @@ def test_tc13_disabled_entry(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: disabled_eval\n"
             f"    module: {mod_name}.evals\n"
             f"    class: MyEval\n"
             f"    enabled: false\n", encoding="utf-8"
         )
-        result = load_evals_from_bindings(bindings)
+        result = load_evals_from_config(evals_file)
         assert result == [], f"disabled eval should not be loaded, got {result}"
     finally:
         if str(tmp_path) in sys.path:
@@ -724,8 +724,8 @@ def test_tc14_non_sfloeval_class(tmp_path):
 
     sys.path.insert(0, str(tmp_path))
     try:
-        bindings = tmp_path / "bindings.yaml"
-        bindings.write_text(
+        evals_file = tmp_path / "evals.yaml"
+        evals_file.write_text(
             f"evals:\n"
             f"  - name: not_an_eval\n"
             f"    module: {mod_name}.evals\n"
@@ -733,7 +733,7 @@ def test_tc14_non_sfloeval_class(tmp_path):
         )
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = load_evals_from_bindings(bindings)
+            result = load_evals_from_config(evals_file)
         assert result == [], f"non-SfloEval class should not be loaded, got {result}"
         assert any(
             "not a sfloeval" in str(warning.message).lower()
@@ -850,7 +850,7 @@ def test_tc17_call_adapter_with_evals_post_response_modify():
 
     inst = RedactEval()
     inst._match = {}
-    inst._bindings_priority = 10
+    inst._config_priority = 10
     _LOADED_EVALS.clear()
     _LOADED_EVALS.append(inst)
 
@@ -896,7 +896,7 @@ def test_tc18_call_adapter_with_evals_pre_prompt_modify():
 
     inst = PromptRewriter()
     inst._match = {}
-    inst._bindings_priority = 5
+    inst._config_priority = 5
     _LOADED_EVALS.clear()
     _LOADED_EVALS.append(inst)
 
@@ -939,7 +939,7 @@ def test_tc19_call_adapter_with_evals_abort_raises():
 
     inst = BlockEval()
     inst._match = {}
-    inst._bindings_priority = 10
+    inst._config_priority = 10
     _LOADED_EVALS.clear()
     _LOADED_EVALS.append(inst)
 
@@ -980,7 +980,7 @@ def test_tc20_call_adapter_with_evals_crash_logs_and_continues():
 
     inst = CrashyEval()
     inst._match = {}
-    inst._bindings_priority = 10
+    inst._config_priority = 10
     _LOADED_EVALS.clear()
     _LOADED_EVALS.append(inst)
 

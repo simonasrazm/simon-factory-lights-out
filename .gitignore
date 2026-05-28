@@ -1,4 +1,5 @@
 .sflo*/
+AGENTS.md
 __pycache__/
 *.pyc
 *.lock

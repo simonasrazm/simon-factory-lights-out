@@ -11,7 +11,12 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 from conftest import TempDirMixin, PASSING_ARTIFACTS
-from src.machine import compute_next, apply_transition, auto_transition
+from src.machine import (
+    compute_next,
+    apply_transition,
+    auto_transition,
+    build_context_map,
+)
 from src.constants import GATES
 
 
@@ -79,6 +84,17 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
             "pipeline_complete",
             "done state should produce pipeline_complete action",
         )
+
+    def test_build_feedback_file_enters_rebuild_context(self):
+        path = os.path.join(self.sflo_dir, "BUILD-STATUS-FEEDBACK.md")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("Fix AC coverage.\n")
+
+        mode, context = build_context_map(2, self.sflo_dir)
+
+        self.assertEqual(mode, "rebuild")
+        self.assertIn("BUILD-STATUS-FEEDBACK.md", context)
+        self.assertIn("gate 2 found issues", context)
 
     def test_check_passed(self):
         self.write_state("check-3")

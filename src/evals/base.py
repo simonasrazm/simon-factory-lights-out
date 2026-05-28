@@ -6,7 +6,7 @@ Borrowed from three battle-tested patterns:
   Anthropic Claude Code Hooks: match selector pattern for fire-only-when-relevant
 
 No security-specific logic lives here. Security plugins are provided by
-host projects (declared in bindings.yaml `evals:` section).
+host projects (declared in the pipeline.yaml `evals:` section).
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ class EvalContext:
     site: HookSite  # which lifecycle moment fired
     payload: dict  # site-specific (response_text, tool_args, etc)
     metadata: dict  # session_id, run_id, output_dir, gate_num, cwd, etc
-    config: dict  # plugin's own config from bindings.yaml
+    config: dict  # plugin's own config from pipeline.yaml
 
 
 @dataclass

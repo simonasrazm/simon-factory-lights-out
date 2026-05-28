@@ -49,7 +49,7 @@ class OpenClawAdapter(RuntimeAdapter):
         except FileNotFoundError:
             raise RuntimeError(
                 "openclaw CLI not found. "
-                "Install OpenClaw or run inside an OpenClaw workspace."
+                "Install OpenClaw and ensure it is on PATH."
             )
 
         if result.returncode != 0:

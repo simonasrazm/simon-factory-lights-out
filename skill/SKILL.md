@@ -9,7 +9,7 @@ metadata:
 
 ## Check if installed
 
-Look for `sflo/src/runner.py` in the workspace. If it exists, SFLO is installed.
+Choose the checkout directory as `SFLO_DIR` (default: `sflo`). Look for `$SFLO_DIR/src/runner.py` in the install directory. If it exists, SFLO is installed.
 
 ## Installation
 
@@ -17,17 +17,18 @@ When user asks to install or download SFLO:
 
 1. Clone from GitHub:
    ```bash
-   git clone https://github.com/simonasrazm/simon-factory-lights-out sflo
+   SFLO_DIR="${SFLO_DIR:-sflo}"
+   git clone https://github.com/simonasrazm/simon-factory-lights-out "$SFLO_DIR"
    ```
 
 2. Run setup:
    ```bash
-   bash sflo/setup.sh
+   bash "$SFLO_DIR/setup.sh" --runtime openclaw --install-dir .
    ```
 
 3. Verify:
    ```bash
-   python3 sflo/src/runner.py --help
+   python3 "$SFLO_DIR/src/runner.py" --help
    ```
 
 ## Running the Pipeline
@@ -35,7 +36,8 @@ When user asks to install or download SFLO:
 When user says "SFLO: [description]":
 
 ```bash
-python3 sflo/src/runner.py "[description]"
+SFLO_DIR="${SFLO_DIR:-sflo}"
+printf '%s\n' "[description]" | python3 "$SFLO_DIR/src/runner.py" --runtime openclaw
 ```
 
 The runner handles everything automatically:
@@ -54,7 +56,7 @@ SFLO loads `pipeline.yaml` from the project root (cwd), falling back to `sflo/pi
 Override by placing your own `pipeline.yaml` in the project root:
 
 ```yaml
-threshold: A          # Grade threshold (default: B+)
+threshold: A          # Grade threshold
 
 guardian:
   enabled: true       # Safety layer (default: true)
@@ -90,9 +92,10 @@ gates:
 The scaffold CLI is available for debugging and manual control:
 
 ```bash
-python3 sflo/src/scaffold.py status    # Show pipeline state
-python3 sflo/src/scaffold.py next      # Get next action (validates + transitions)
-python3 sflo/src/scaffold.py prompt    # Get reinjectable instruction for hooks
+SFLO_DIR="${SFLO_DIR:-sflo}"
+python3 "$SFLO_DIR/src/scaffold.py" status    # Show pipeline state
+python3 "$SFLO_DIR/src/scaffold.py" next      # Get next action (validates + transitions)
+python3 "$SFLO_DIR/src/scaffold.py" prompt    # Get reinjectable instruction for hooks
 ```
 
 Most users never need these — the runner and hooks handle everything.

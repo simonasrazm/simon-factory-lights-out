@@ -40,6 +40,18 @@ def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
                 f.write(content)
 
 
+def _gate_role_threshold(gate_num, role):
+    """Return effective threshold for a gate role, including per-entry override."""
+    info = GATES.get(gate_num)
+    entries = info if isinstance(info, list) else [info]
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") != role:
+            continue
+        threshold = entry.get("threshold")
+        return GRADE_MAP.get(threshold, GRADE_THRESHOLD) if threshold else GRADE_THRESHOLD
+    return GRADE_THRESHOLD
+
+
 class TestExtractField(unittest.TestCase):
     def test_basic_extraction(self):
         self.assertEqual(
@@ -185,8 +197,9 @@ class TestValidateGate(unittest.TestCase):
         self.assertTrue(passed)
 
     def test_gate3_grade_b_plus(self):
+        threshold = _gate_role_threshold(3, "qa")
         threshold_letter = next(
-            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+            (k for k, v in GRADE_MAP.items() if v == threshold), "A"
         )
         content = self.FULL_QA.replace(
             "### Grade: A\n", f"### Grade: {threshold_letter}\n"
@@ -200,8 +213,9 @@ class TestValidateGate(unittest.TestCase):
         )
 
     def test_gate3_grade_below_threshold_fails(self):
+        threshold = _gate_role_threshold(3, "qa")
         below_val = max(
-            (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
+            (v for v in GRADE_MAP.values() if v < threshold), default=None
         )
         below_letter = next((k for k, v in GRADE_MAP.items() if v == below_val), None)
         if below_letter is None:
@@ -212,7 +226,7 @@ class TestValidateGate(unittest.TestCase):
         passed, _ = validate_gate(3, self.tmpdir)
         self.assertFalse(
             passed,
-            f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}",
+            f"Grade {below_letter} should fail at threshold {threshold}",
         )
 
     def test_gate3_unrecognized_grade(self):

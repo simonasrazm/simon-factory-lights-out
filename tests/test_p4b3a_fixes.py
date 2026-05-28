@@ -490,12 +490,12 @@ def test_m3_minor_prior_state_path_uses_function():
 
 
 def test_m4_minor_error_mentions_all_runtimes():
-    """get_adapter() RuntimeError must mention all 4 supported runtimes."""
+    """get_adapter() RuntimeError must mention every supported runtime."""
     import inspect
     import src.adapters as mod
 
     src = inspect.getsource(mod.get_adapter)
-    for runtime in ("claude-code", "cursor", "openclaw", "ollama"):
+    for runtime in ("claude-code", "codex", "cursor", "openclaw", "ollama"):
         assert runtime in src, f"'{runtime}' not mentioned in get_adapter error"
 
 

@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """SFLO Runner — enforced pipeline execution.
 
-Uses the runtime's own agent-spawning mechanism (Claude Agent SDK or
-OpenClaw sessions_spawn) to run the pipeline. The runner controls what
-goes in, what comes out, and where artifacts are written. Spawned agents
-cannot bypass the pipeline.
+Uses the selected runtime adapter to spawn agents and run the pipeline.
+The runner controls what goes in, what comes out, and where artifacts are
+written. Spawned agents cannot bypass the pipeline.
 
 Usage (called by runtime hook/skill, not directly):
     from src.runner import run_pipeline
-    result = await run_pipeline("Build a click counter", sflo_dir=".sflo")
+    result = await run_pipeline(
+        "Build a click counter",
+        sflo_dir=".sflo",
+        runtime="<openclaw|claude-code|codex|cursor|ollama>",
+    )
 
 CLI (for testing):
-    python3 sflo/src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet]
+    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--quiet]
 
+    --runtime NAME    Required for pipeline starts. Runtime adapter to use.
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
     --quiet           Suppress verbose logging to stderr.
 """
@@ -55,8 +59,8 @@ def install_signal_handler(sflo_dir=None):
     return _install_signal_handler(sflo_dir)
 
 
-def _install_signal_handler(sflo_dir=None):
-    """Install signal handlers + atexit + DEATH-MARKER writer.
+def _install_signal_handler(sflo_dir=None, on_signal_exit=None):
+    """Install signal handlers and record signal exits in pipeline.log.
 
     Hardened against the H6′ silent-death class: when the controlling pty
     is closed (e.g. Claude Desktop's `beforeQuitForUpdate` running
@@ -67,39 +71,14 @@ def _install_signal_handler(sflo_dir=None):
 
       • Wraps stderr writes in try/except so a broken pty doesn't kill
         the handler before it logs.
-      • Always writes to pipeline.log (regular file, robust) and
-        DEATH-MARKER.json (forensic trail for external monitors).
+      • Always writes to pipeline.log (regular file, robust).
+      • Optionally reports structured signal facts to the caller before exit.
       • Exits via os._exit() — bypasses Python's signal-handling state
         machine so we never end up returning into interrupted bytecode.
       • Catches SIGQUIT in addition to SIGHUP/SIGTERM/SIGINT.
       • Per CR2-6: SIGPIPE is NOT trapped — Python's default-ignore for
         SIGPIPE is load-bearing for normal BrokenPipeError flow.
-      • atexit hook fires on clean exits + any uncaught exception path
-        (caveat: not on os._exit / SIGKILL).
     """
-
-    def _write_death_marker(reason, sig_num=None):
-        if not sflo_dir:
-            return
-        try:
-            payload = {
-                "pid": os.getpid(),
-                "reason": reason,
-                "wall_time": _datetime.datetime.now(_datetime.timezone.utc).isoformat(),
-            }
-            if sig_num is not None:
-                sig_name = (
-                    signal.Signals(sig_num).name
-                    if hasattr(signal, "Signals")
-                    else str(sig_num)
-                )
-                payload["signal"] = sig_num
-                payload["signal_name"] = sig_name
-            marker_path = os.path.join(sflo_dir, "DEATH-MARKER.json")
-            with open(marker_path, "w") as f:
-                json.dump(payload, f, indent=2)
-        except OSError:
-            pass
 
     def _handler(signum, frame):
         sig_name = (
@@ -116,8 +95,11 @@ def _install_signal_handler(sflo_dir=None):
                     f.write(msg)
             except OSError:
                 pass
-        # Forensic marker — survives even when pipeline.log path is unwritable.
-        _write_death_marker(f"signal_{sig_name}", signum)
+        if on_signal_exit:
+            try:
+                on_signal_exit(signum, sig_name)
+            except Exception:
+                pass
         # Best-effort: drop this run's instance lock so a signal-killed run
         # does not strand .sflo/runner.pid (os._exit below skips main()'s
         # normal release). Only remove it when it still holds OUR pid — never
@@ -153,13 +135,6 @@ def _install_signal_handler(sflo_dir=None):
         except (OSError, ValueError):
             pass  # some signals can't be caught in certain contexts
 
-    # Clean-exit + uncaught-exception path. NOT triggered by os._exit or
-    # SIGKILL, but covers the normal `sys.exit` / `raise SystemExit` cases
-    # where pipeline.log may already say what happened — DEATH-MARKER then
-    # corroborates with a structured "atexit_clean" reason.
-    if sflo_dir:
-        atexit.register(_write_death_marker, "atexit_clean")
-
 
 # Allow running as script or module
 if __name__ == "__main__":
@@ -192,6 +167,14 @@ if __name__ == "__main__":
         GateAgentFailure,
         NonRetryableError,
     )
+    from src.factory_registry import (
+        FactoryError,
+        FactoryRegistry,
+        final_status_from_pipeline_state,
+        format_registry_table,
+        slug_from_prompt,
+        validate_factory_name,
+    )
 else:
     from .state import (
         read_state,
@@ -220,6 +203,14 @@ else:
         ErrorDeduper,
         GateAgentFailure,
         NonRetryableError,
+    )
+    from .factory_registry import (
+        FactoryError,
+        FactoryRegistry,
+        final_status_from_pipeline_state,
+        format_registry_table,
+        slug_from_prompt,
+        validate_factory_name,
     )
 
 
@@ -407,7 +398,7 @@ def _filter_mcp_for_gate(agent_info, all_mcp_servers):
 
 
 # ---------------------------------------------------------------------------
-# Factory venv — pass .sflo/.venv (created by setup.sh) to spawned agents
+# Factory venv — pass <factory-dir>/.venv to spawned agents
 # ---------------------------------------------------------------------------
 
 
@@ -424,7 +415,11 @@ def _get_factory_env(sflo_dir):
                     check=True, capture_output=True)
         except _sp.CalledProcessError:
             return None
-    venv_bin = os.path.join(venv_path, "bin")
+    venv_bin = (
+        os.path.join(venv_path, "Scripts")
+        if os.name == "nt"
+        else os.path.join(venv_path, "bin")
+    )
     return {
         "VIRTUAL_ENV": venv_path,
         "PATH": f"{venv_bin}{os.pathsep}{os.environ.get('PATH', '')}",
@@ -633,6 +628,25 @@ def format_validation_feedback(checks):
     return "\n".join(lines)
 
 
+def write_validation_feedback(sflo_dir, gate_num, checks):
+    """Write artifact-specific feedback for the next gate retry."""
+    feedback = format_validation_feedback(checks)
+    if not feedback or not gate_num:
+        return None
+    gate_info = GATES.get(gate_num)
+    if isinstance(gate_info, list):
+        gate_info = gate_info[0] if gate_info else {}
+    artifact = (gate_info or {}).get("artifact")
+    if not artifact:
+        return None
+    feedback_name = artifact.replace(".md", "-FEEDBACK.md")
+    path = os.path.join(sflo_dir, feedback_name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(feedback)
+        f.write("\n")
+    return path
+
+
 def _resolve_skill_references(skill_path, skill_content):
     """Extract relative .md references from skill content and resolve to absolute paths.
 
@@ -664,9 +678,7 @@ def _resolve_skill_references(skill_path, skill_content):
     return refs
 
 
-def build_agent_prompt(
-    agent_info, user_prompt, sflo_dir, runtime=None, output_dir=None
-):
+def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_dir=None):
     """Build system prompt and user prompt for a gate agent.
 
     Agents get: SOUL + gate doc as system prompt, user request + context
@@ -865,7 +877,7 @@ async def run_pipeline(
         user_prompt: What to build.
         sflo_dir: Where to store pipeline state and artifacts.
         output_dir: User deliverables directory (agent cwd). If None, uses inherited cwd.
-        runtime: "openclaw", "claude-code", or None (auto-detect).
+        runtime: Required. "openclaw", "claude-code", "codex", "cursor", or "ollama".
         verbose: Print progress to stderr.
         assignments: Optional dict with pre-computed agent assignments
             (keys: pm, dev, qa). When provided, core's scout LLM call is
@@ -885,9 +897,9 @@ async def run_pipeline(
     # --- Init: role config from pipeline.yaml ---
     roles = derive_roles_from_pipeline()
 
-    # --- Eval framework: load plugins from evals.yaml (if present) ---
+    # --- Eval framework: load plugins from pipeline.yaml (if present) ---
     # Fail-safe: any load error logs a warning; pipeline always continues.
-    # Eval status is ALWAYS announced to stderr — a missing evals.yaml must
+    # Eval status is ALWAYS announced to stderr — a missing evals section must
     # never silently disable the security guards (path-traversal, shell-metachar,
     # etc.). A silent no-op here once hid that 0 evals were active.
     try:
@@ -895,16 +907,21 @@ async def run_pipeline(
         from .config import resolve_pipeline_path as _resolve_pp
 
         _pp = _resolve_pp()
-        _evals_candidate = (
-            os.path.join(os.path.dirname(_pp), "evals.yaml") if _pp else None
-        )
-        if _evals_candidate and os.path.isfile(_evals_candidate):
-            _loaded = _evals.load_evals_from_bindings(_Path(_evals_candidate))
-            _safe_stderr(f"  [evals] loaded {len(_loaded)} eval(s) from evals.yaml")
+        if _pp and os.path.isfile(_pp):
+            _loaded = _evals.load_evals_from_config(_Path(_pp))
+            if _loaded:
+                _safe_stderr(
+                    f"  [evals] loaded {len(_loaded)} eval(s) from pipeline.yaml"
+                )
+            else:
+                _safe_stderr(
+                    "  [evals] WARNING: no evals section in pipeline.yaml — "
+                    "0 eval plugins active"
+                )
         else:
             _safe_stderr(
-                "  [evals] WARNING: no evals.yaml beside pipeline.yaml — "
-                "0 evals active (security + quality guards disabled)"
+                "  [evals] WARNING: pipeline.yaml not found — "
+                "0 eval plugins active"
             )
     except Exception as _eval_load_err:
         # Non-fatal: warn but never block pipeline startup
@@ -1151,6 +1168,7 @@ async def run_pipeline(
             f'"{role}": "<agent_path>"' for role in sorted(discoverable_roles)
         )
         try:
+            scout_env = _get_factory_env(sflo_dir)
             scout_response = await call_adapter_with_evals(
                 adapter,
                 model=scout_model,
@@ -1169,6 +1187,7 @@ async def run_pipeline(
                 tools_mode=scout_config.get("tools", "readonly"),
                 thinking=scout_config.get("thinking"),
                 effort=scout_config.get("effort"),
+                env=scout_env,
                 metadata={"session_id": sflo_dir, "output_dir": output_dir},
             )
         except Exception as e:
@@ -1356,6 +1375,12 @@ async def run_pipeline(
                 checks = result.get("checks", [])
                 loop_action = result.get("action", "")
                 if "loop" in loop_action:
+                    result_state = result.get("state", "")
+                    feedback_path = (
+                        write_validation_feedback(sflo_dir, gate_num, checks)
+                        if result_state.startswith(("gate-retry-", "loop-gate-"))
+                        else None
+                    )
                     retry_count = result.get("gate_retry_count")
                     retry_max = result.get("max")
                     failed_names = result.get("failed_checks", [])
@@ -1363,8 +1388,12 @@ async def run_pipeline(
                         log(
                             f"  Gate {gate_num} ✗ — retry {retry_count}/{retry_max} ({', '.join(failed_names) or 'validation failed'})"
                         )
+                        if feedback_path:
+                            log(f"  Feedback: {feedback_path}")
                     else:
                         log(f"  Gate {gate_num} ✗ — looping back")
+                        if feedback_path:
+                            log(f"  Feedback: {feedback_path}")
                 else:
                     # Log why it failed
                     failed = [c for c in checks if not c.get("pass")]
@@ -1712,7 +1741,7 @@ async def run_pipeline(
                 f"action={action}, state={state.get('current_state')}. "
                 f"Inspect {sflo_dir}/pipeline.log and the corresponding "
                 f"compute_next/apply_transition code path. "
-                f"See sflo/src/runner.py non-progress guard."
+                f"See runner non-progress guard."
             )
 
     # --- Final state ---
@@ -1740,11 +1769,44 @@ def main():
     parser.add_argument(
         "prompt", nargs="?", default=None, help="What to build (or pass via stdin)"
     )
-    parser.add_argument("--sflo-dir", default=".sflo", help="Pipeline state directory")
+    parser.add_argument(
+        "--sflo-dir",
+        default=".sflo",
+        help="Parent directory for factory state dirs. Default: .sflo.",
+    )
+    parser.add_argument(
+        "--factory",
+        default=None,
+        metavar="NAME",
+        help="Factory name. Defaults to an auto-slug from the prompt.",
+    )
+    parser.add_argument(
+        "--resume",
+        default=None,
+        metavar="NAME",
+        help="Resume an existing factory by name.",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List factories under --sflo-dir and exit.",
+    )
+    parser.add_argument(
+        "--kill",
+        default=None,
+        metavar="NAME",
+        help="Mark a factory aborted and clear its runner lock.",
+    )
+    parser.add_argument(
+        "--clean-stale",
+        action="store_true",
+        help="Remove stale and aborted factories from the registry.",
+    )
     parser.add_argument(
         "--runtime",
-        choices=["openclaw", "claude-code", "cursor", "ollama"],
+        choices=["openclaw", "claude-code", "codex", "cursor", "ollama"],
         default=None,
+        help="Runtime adapter for pipeline starts.",
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
@@ -1756,8 +1818,6 @@ def main():
     except (AttributeError, ValueError, OSError):
         pass
 
-    _install_signal_handler(args.sflo_dir)
-
     # Forward user MCP servers + enable Chrome extension for agents
     # Disable with SFLO_CHROME=0
     chrome_args = {"chrome": None}
@@ -1768,33 +1828,144 @@ def main():
         extra_cli_args=chrome_args if chrome_args else None,
     )
 
+    sflo_parent = os.path.abspath(args.sflo_dir)
+    registry = FactoryRegistry(sflo_parent)
+
+    if args.list:
+        registry.migrate_legacy()
+        print(format_registry_table(registry.list_all()))
+        return
+
+    if args.kill:
+        if registry.kill(args.kill):
+            print(f"Factory {args.kill!r} marked aborted.")
+            return
+        print(f"Factory {args.kill!r} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.clean_stale:
+        removed = registry.clean_stale()
+        if removed:
+            print(f"Removed stale/aborted factories: {', '.join(removed)}")
+        else:
+            print("No stale or aborted factories to clean.")
+        return
+
+    if not args.runtime:
+        parser.error(
+            "--runtime is required for pipeline starts. "
+            "Pass one of: claude-code, codex, cursor, openclaw, ollama."
+        )
+
     prompt = args.prompt
     if not prompt or prompt == "-":
         prompt = sys.stdin.read().strip()
     if not prompt:
         parser.error("No prompt provided. Pass as argument or via stdin.")
 
+    registry.migrate_legacy()
+    if args.resume:
+        proposed = args.resume
+        is_explicit = True
+        is_resume = True
+    elif args.factory:
+        proposed = args.factory
+        is_explicit = True
+        is_resume = False
+        if not validate_factory_name(proposed):
+            parser.error(
+                "--factory must be 2-40 lowercase letters, numbers, and hyphens"
+            )
+    else:
+        proposed = slug_from_prompt(prompt) or (
+            "run-" + _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        )
+        is_explicit = False
+        is_resume = False
+    try:
+        factory_name = registry.resolve_name(
+            proposed, is_explicit=is_explicit, is_resume=is_resume
+        )
+    except FactoryError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        sys.exit(3)
+    sflo_dir = os.path.join(sflo_parent, factory_name)
+
+    def _record_signal_exit(signum, sig_name):
+        registry.register_end(
+            factory_name,
+            FactoryRegistry.STATUS_ABORTED,
+            exit_kind="signal",
+            exit_details={
+                "signal": signum,
+                "signal_name": sig_name,
+                "pid": os.getpid(),
+            },
+        )
+
+    _install_signal_handler(sflo_dir, on_signal_exit=_record_signal_exit)
+
     # One runner per state directory — two concurrent runners interleave
     # read-modify-write on state.json and corrupt it. Fail fast instead.
     from .state import acquire_instance_lock, release_instance_lock
 
     try:
-        instance_lock = acquire_instance_lock(args.sflo_dir)
+        instance_lock = acquire_instance_lock(sflo_dir)
     except RuntimeError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
         sys.exit(1)
+
+    if factory_name:
+        registry.register_start(factory_name, sflo_dir, prompt, os.getpid())
+
+        def _registry_atexit():
+            entry = registry.get(factory_name)
+            if not entry or entry.get("status") != FactoryRegistry.STATUS_ACTIVE:
+                return
+            current_state = ""
+            try:
+                with open(state_path(sflo_dir), encoding="utf-8") as f:
+                    current_state = json.load(f).get("current_state", "") or ""
+            except (OSError, json.JSONDecodeError):
+                pass
+            registry.register_end(
+                factory_name,
+                final_status_from_pipeline_state(current_state),
+                exit_kind="process_exit",
+                exit_details={"state": current_state, "pid": os.getpid()},
+            )
+
+        atexit.register(_registry_atexit)
 
     try:
         result = asyncio.run(
             run_pipeline(
                 user_prompt=prompt,
-                sflo_dir=args.sflo_dir,
+                sflo_dir=sflo_dir,
                 runtime=args.runtime,
                 verbose=not args.quiet,
             )
         )
+        if factory_name:
+            result["factory"] = factory_name
+            result["sflo_dir"] = sflo_dir
+            registry.register_end(
+                factory_name,
+                final_status_from_pipeline_state(result.get("state", "")),
+                exit_kind="completed",
+                exit_details={"state": result.get("state", ""), "pid": os.getpid()},
+            )
+    except BaseException as exc:
+        if factory_name:
+            registry.register_end(
+                factory_name,
+                FactoryRegistry.STATUS_ABORTED,
+                exit_kind="exception",
+                exit_details={"exception_type": type(exc).__name__, "pid": os.getpid()},
+            )
+        raise
     finally:
-        release_instance_lock(args.sflo_dir, instance_lock)
+        release_instance_lock(sflo_dir, instance_lock)
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

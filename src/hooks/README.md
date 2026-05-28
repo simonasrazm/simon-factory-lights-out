@@ -1,6 +1,12 @@
 # SFLO Hooks
 
-Hooks keep the SFLO pipeline running automatically. Without hooks, the pipeline stops after each gate and you must manually trigger the next step. With hooks, the pipeline drives itself until completion or escalation.
+Hooks keep the SFLO pipeline running automatically in host UIs that emit one
+assistant turn at a time. Without a host continuation hook, Claude Code, Cursor,
+and OpenClaw can finish the current assistant message while an active factory
+state file still points at the next gate. The hook reads the active state
+directory, usually `.sflo/<factory>/state.json`, and injects the next prompt.
+This is not a long-running-process watchdog; the only hook timeout is a short
+guard around `scaffold.py prompt`.
 
 ## Supported Runtimes
 
@@ -9,20 +15,22 @@ Hooks keep the SFLO pipeline running automatically. Without hooks, the pipeline 
 | **OpenClaw** | `openclaw/sflo-pipeline/` | Fires on `message:sent` events. Checks pipeline state, reinjects next instruction. |
 | **Claude Code** | `claude-code/stop_hook.py` | Intercepts exit. Checks pipeline state, blocks exit with next instruction. |
 | **Cursor** | `cursor/stop_hook.py` | Returns `followup_message` from the `stop` hook so Cursor auto-submits the next gate. See `cursor/README.md`. |
+| **Codex** | none | Runner-driven through `codex exec`; no host continuation hook is installed. |
+| **Ollama** | none | Adapter/API-driven; no host continuation hook is installed. The hook installer does not manage Ollama. |
 
 ## Quick Install
 
 ```bash
-bash sflo/src/hooks/install.sh
+bash sflo/src/hooks/install.sh --runtime cursor
 ```
 
-The installer auto-detects your runtime (OpenClaw or Claude Code) and configures the hook.
+Pass the runtime explicitly to the hook installer. Normal installs should use `setup.sh`; this helper exists for hook-only repair or manual integration.
 
 ### Manual Install: OpenClaw
 
-1. Symlink the hook into your workspace:
+1. Copy the hook into your install directory:
    ```bash
-   cp -r /path/to/sflo/src/hooks/openclaw/sflo-pipeline ~/clawd/hooks/sflo-pipeline
+   cp -r /path/to/sflo/src/hooks/openclaw/sflo-pipeline /path/to/install-dir/hooks/sflo-pipeline
    ```
 
 2. Enable in `~/.openclaw/openclaw.json`:
@@ -64,22 +72,22 @@ Add to `.claude/settings.json` in your project root:
 
 ## How It Works
 
-Both hooks follow the same logic:
+The Claude Code and Cursor hooks follow the same logic:
 
-1. Check if `.sflo/state.json` exists — no file means no active pipeline, skip
+1. Find active state: `.sflo/<factory>/state.json` via `registry.json`, or legacy `.sflo/state.json`
 2. Check if pipeline is in a terminal state (`done` or `escalate`) — let the agent stop
 3. Run `scaffold.py prompt` to get the next instruction
 4. Reinject the instruction so the agent continues
 
 ### Loop Protection
 
-Both hooks track the last pipeline state they acted on (`.sflo/.last_hook_state`). If the state hasn't changed between fires, the hook stops — preventing infinite reinjection loops.
+The Claude Code and Cursor hooks track the last pipeline state they acted on inside the active state directory (`.sflo/<factory>/.last_hook_state`). If the state hasn't changed between fires, the hook stops — preventing infinite reinjection loops.
 
 **Claude Code specifics:** The hook receives `stop_hook_active` in its input — this is `true` when the hook has already blocked at least once in the current turn. When `true`, the hook checks `.last_hook_state` for progress. When `false` (first fire), loop protection is skipped to allow the initial block.
 
 ### Cross-Platform
 
-Both hooks work on macOS, Linux, and Windows — anywhere Claude Code runs:
+The Python hooks work on macOS, Linux, and Windows where their host runtime runs:
 - `stop_hook.py` uses `sys.executable` to call scaffold.py (no hardcoded `python3`)
 - `os.path.join` handles path separators
 - File locking uses `msvcrt` on Windows, `fcntl` on Unix (in scaffold modules)
@@ -90,7 +98,7 @@ The OpenClaw hook (`handler.ts`) uses `python3` in its exec call — on Windows,
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `SFLO_WORKSPACE` | Override workspace path for the OpenClaw hook | Auto-detected from HOME |
+| `SFLO_WORKSPACE` | Explicit run workspace for the OpenClaw hook when the event has no workspace path | unset |
 
 ## Troubleshooting
 
@@ -100,9 +108,9 @@ The OpenClaw hook (`handler.ts`) uses `python3` in its exec call — on Windows,
 - Full restart required after first install (`openclaw gateway stop && openclaw gateway start`)
 
 **Pipeline stops mid-way:**
-- Check `.sflo/.last_hook_state` — loop protection may have triggered
-- Delete `.sflo/.last_hook_state` and send any message to re-trigger
+- Check `.sflo/<factory>/.last_hook_state` — loop protection may have triggered
+- Delete `.sflo/<factory>/.last_hook_state` and send any message to re-trigger
 
 **Hook fires but pipeline doesn't advance:**
 - Check `python3 sflo/src/scaffold.py status` — what state is the pipeline in?
-- Check if the expected artifact exists in `.sflo/`
+- Check if the expected artifact exists in `.sflo/<factory>/`

@@ -3,13 +3,10 @@
 Check types:
 1. Agent SOUL validation — required sections per role
 2. Browser check — Chrome extension connected (for web/UI projects)
-3. Claude subscription auth — CLAUDE_CODE_OAUTH_TOKEN env var OR
-   ~/.claude/.credentials.json must be present before the adapter
-   spawns a subprocess.
-4. Vendor check — the vendor/agent-skills git submodule must be
+3. Vendor check — the vendor/agent-skills git submodule must be
    initialized so pipeline skill resolution can find SKILL.md files.
 
-All checks run before any tokens are burned.
+All checks run before any model calls are made.
 
 Usage:
     from src.preflight import preflight_check, check_browser
@@ -89,38 +86,6 @@ def check_pipeline_yaml():
             "Copy sflo/pipeline.yaml to your project root to get started."
         )
     return None
-
-
-def check_claude_subscription_auth():
-    """Verify Claude subscription auth is available before any subprocess spawns.
-
-    Detection order matches Claude Code CLI's own resolution:
-      1. CLAUDE_CODE_OAUTH_TOKEN env var (non-empty)
-      2. %USERPROFILE%\\.claude\\.credentials.json (Windows) or
-         $HOME/.claude/.credentials.json (POSIX) — exists and is non-empty
-
-    Returns:
-        issue string if neither source is present, else None.
-
-    Limitations: presence-only check — does not validate the token against
-    the Claude API. An invalid/expired token will surface at adapter runtime
-    via the SDK's error path. The point of preflight is to catch the common
-    'forgot to log in' case cheaply, not to verify validity.
-    """
-    if os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
-        return None
-    creds_path = os.path.join(
-        os.environ.get("USERPROFILE") or os.environ.get("HOME") or "",
-        ".claude",
-        ".credentials.json",
-    )
-    if os.path.isfile(creds_path) and os.path.getsize(creds_path) > 0:
-        return None
-    return (
-        "Claude subscription auth not detected. Set CLAUDE_CODE_OAUTH_TOKEN "
-        "(recommended via a credential vault) or run `claude /login` in a "
-        "terminal as the same user."
-    )
 
 
 def check_vendor():
@@ -216,13 +181,6 @@ def preflight_check(assignments, sflo_dir=None):
     yaml_issue = check_pipeline_yaml()
     if yaml_issue:
         all_issues.append(yaml_issue)
-
-    # Check Claude subscription auth before any subprocess spawn.
-    # Cheap, deterministic, catches the most common "I forgot to log in"
-    # failure mode without burning Scout LLM tokens.
-    auth_issue = check_claude_subscription_auth()
-    if auth_issue:
-        all_issues.append(auth_issue)
 
     # Check the vendor/agent-skills submodule is initialized (read-only).
     vendor_issue = check_vendor()

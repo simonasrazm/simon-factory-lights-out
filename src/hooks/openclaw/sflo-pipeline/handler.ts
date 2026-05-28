@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import {
   existsSync,
   readFileSync,
@@ -32,40 +33,93 @@ interface HookEvent {
 }
 
 /**
- * Resolve the workspace directory containing .sflo/state.json.
+ * Resolve the workspace directory that may contain SFLO state.
  * Checks (in order):
  *   1. event.context.workspaceDir (if OpenClaw provides it)
  *   2. SFLO_WORKSPACE env var (explicit user config)
- *   3. Walk common locations from HOME
  */
 function resolveWorkspace(event: HookEvent): string | null {
   // 1. Event context (may be available for some event types)
   if (event.context.workspaceDir) {
-    const candidate = event.context.workspaceDir as string;
-    if (existsSync(join(candidate, ".sflo", "state.json"))) {
-      return candidate;
-    }
+    return event.context.workspaceDir as string;
   }
 
   // 2. Explicit env var
   const envWorkspace = process.env.SFLO_WORKSPACE;
-  if (envWorkspace && existsSync(join(envWorkspace, ".sflo", "state.json"))) {
+  if (envWorkspace) {
     return envWorkspace;
   }
 
-  // 3. Walk common locations from HOME (fragile — prefer SFLO_WORKSPACE)
-  const home = process.env.HOME;
-  if (!home) return null;
+  return null;
+}
 
-  const candidates = [
-    join(home, "clawd"),
-    join(home, "workspace"),
-    home,
-  ];
+function hasState(sfloDir: string): boolean {
+  return existsSync(join(sfloDir, "state.json"));
+}
 
-  for (const dir of candidates) {
-    if (existsSync(join(dir, ".sflo", "state.json"))) {
-      return dir;
+/**
+ * Resolve the active SFLO state directory.
+ * Prefer active named factories recorded in .sflo/registry.json, with the
+ * legacy .sflo/state.json layout kept as fallback for old local state.
+ */
+function resolveSfloDir(workspaceDir: string): string | null {
+  const sfloParent = join(workspaceDir, ".sflo");
+  const registryPath = join(sfloParent, "registry.json");
+
+  if (existsSync(registryPath)) {
+    let factories: Record<string, { status?: string; last_active?: string; sflo_dir?: string }>;
+    try {
+      const registry = JSON.parse(readFileSync(registryPath, "utf-8"));
+      factories = registry.factories ?? {};
+    } catch {
+      factories = {};
+    }
+
+    const entries = Object.entries(factories)
+      .filter(([, entry]) => entry?.status === "active")
+      .sort(([, a], [, b]) => (b.last_active ?? "").localeCompare(a.last_active ?? ""));
+
+    for (const [name, entry] of entries) {
+      const candidate = entry.sflo_dir ?? join(sfloParent, name);
+      if (hasState(candidate)) return candidate;
+    }
+  }
+
+  if (hasState(sfloParent)) {
+    return sfloParent;
+  }
+
+  return null;
+}
+
+/**
+ * Resolve the SFLO checkout that owns scaffold.py.
+ * setup.sh writes .sflo-home next to this copied hook; SFLO_HOME lets users
+ * override it when they move directories after setup.
+ */
+function resolveSfloHome(workspaceDir: string): string | null {
+  const candidates: string[] = [];
+
+  if (process.env.SFLO_HOME) {
+    candidates.push(process.env.SFLO_HOME);
+  }
+
+  try {
+    const hookDir = dirname(fileURLToPath(import.meta.url));
+    const recordedHome = join(hookDir, ".sflo-home");
+    if (existsSync(recordedHome)) {
+      const value = readFileSync(recordedHome, "utf-8").trim();
+      if (value) candidates.push(value);
+    }
+  } catch {
+    /* ignore — fallback candidates below */
+  }
+
+  candidates.push(join(workspaceDir, "sflo"));
+
+  for (const candidate of candidates) {
+    if (existsSync(join(candidate, "src", "scaffold.py"))) {
+      return candidate;
     }
   }
 
@@ -89,7 +143,8 @@ const handler = async (event: HookEvent): Promise<void> => {
   const workspaceDir = resolveWorkspace(event);
   if (!workspaceDir) return;
 
-  const sfloDir = join(workspaceDir, ".sflo");
+  const sfloDir = resolveSfloDir(workspaceDir);
+  if (!sfloDir) return;
   const stateFile = join(sfloDir, "state.json");
 
   let state: { current_state?: string };
@@ -120,13 +175,9 @@ const handler = async (event: HookEvent): Promise<void> => {
     }
   }
 
-  // Find scaffold.py relative to workspace
-  const scaffoldPaths = [
-    join(workspaceDir, "sflo", "src", "scaffold.py"),
-    join(workspaceDir, "sflo-dev", "sflo", "src", "scaffold.py"),
-  ];
-  const scaffoldPath = scaffoldPaths.find((p) => existsSync(p));
-  if (!scaffoldPath) return;
+  const sfloHome = resolveSfloHome(workspaceDir);
+  if (!sfloHome) return;
+  const scaffoldPath = join(sfloHome, "src", "scaffold.py");
 
   // Get next instruction from scaffold (async — does not block event loop)
   const pythonCmd = process.env.SFLO_PYTHON ?? "python3";

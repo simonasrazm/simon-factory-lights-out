@@ -255,11 +255,9 @@ def build_context_map(gate_num, sflo_dir, gates=None):
         )
     for gate_key in sorted(_gates):
         gate_info = _gates[gate_key]
-        if isinstance(gate_info, list):
-            continue
-        runner_path = gate_info.get("runner")
-        if runner_path:
-            artifact = gate_info.get("artifact", "")
+        entries = gate_info if isinstance(gate_info, list) else [gate_info]
+        for entry in entries:
+            artifact = entry.get("artifact", "")
             fb_name = artifact.replace(".md", "-FEEDBACK.md") if artifact else None
             if fb_name:
                 fb_path = os.path.join(sflo_dir, fb_name)
