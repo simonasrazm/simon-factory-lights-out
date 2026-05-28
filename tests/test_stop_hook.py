@@ -4,6 +4,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.dirname(__file__))
 
 from conftest import run_scaffold, run_hook, PASSING_ARTIFACTS
+
+
+CLAUDE_HOOK = os.path.join(
+    os.path.dirname(__file__), "..", "src", "hooks", "claude-code", "stop_hook.py"
+)
+CURSOR_HOOK = os.path.join(
+    os.path.dirname(__file__), "..", "src", "hooks", "cursor", "stop_hook.py"
+)
 
 
 class TestHookDecisions(unittest.TestCase):
@@ -85,6 +94,232 @@ class TestHookDecisions(unittest.TestCase):
         result, rc = run_hook(self.state_dir, stop_active=True)
         self.assertIsNotNone(result)
         self.assertEqual(result["decision"], "block")
+
+    def test_active_factory_state_blocks(self):
+        """Hook finds active named factory state under .sflo/<factory>/."""
+        project_dir = tempfile.mkdtemp()
+        try:
+            factory_dir = os.path.join(project_dir, ".sflo", "click-counter")
+            os.makedirs(factory_dir, exist_ok=True)
+            self.write_state("gate-1")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(factory_dir, "state.json"),
+            )
+            registry = {
+                "version": 1,
+                "factories": {
+                    "click-counter": {
+                        "status": "active",
+                        "pid": os.getpid(),
+                        "last_active": "2026-05-27T00:00:00+00:00",
+                        "sflo_dir": factory_dir,
+                    }
+                },
+            }
+            with open(
+                os.path.join(project_dir, ".sflo", "registry.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(registry, f)
+
+            hook_input = json.dumps(
+                {
+                    "stop_hook_active": False,
+                    "cwd": project_dir,
+                    "session_id": "test",
+                    "last_assistant_message": "test",
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, CLAUDE_HOOK],
+                input=hook_input,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip(), result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["decision"], "block")
+            self.assertIn("SFLO PIPELINE", data["reason"])
+            self.assertTrue(os.path.isfile(os.path.join(factory_dir, ".last_hook_state")))
+        finally:
+            shutil.rmtree(project_dir)
+
+    def test_cursor_hook_active_factory_returns_followup(self):
+        """Cursor hook also finds active named factory state."""
+        project_dir = tempfile.mkdtemp()
+        try:
+            factory_dir = os.path.join(project_dir, ".sflo", "click-counter")
+            os.makedirs(factory_dir, exist_ok=True)
+            self.write_state("gate-1")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(factory_dir, "state.json"),
+            )
+            registry = {
+                "version": 1,
+                "factories": {
+                    "click-counter": {
+                        "status": "active",
+                        "pid": os.getpid(),
+                        "last_active": "2026-05-27T00:00:00+00:00",
+                        "sflo_dir": factory_dir,
+                    }
+                },
+            }
+            with open(
+                os.path.join(project_dir, ".sflo", "registry.json"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                json.dump(registry, f)
+
+            hook_input = json.dumps(
+                {
+                    "status": "completed",
+                    "loop_count": 0,
+                    "cwd": project_dir,
+                    "hook_event_name": "stop",
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, CURSOR_HOOK],
+                input=hook_input,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip(), result.stderr)
+            data = json.loads(result.stdout)
+            self.assertIn("followup_message", data)
+            self.assertIn("SFLO PIPELINE", data["followup_message"])
+            self.assertTrue(os.path.isfile(os.path.join(factory_dir, ".last_hook_state")))
+        finally:
+            shutil.rmtree(project_dir)
+
+    def test_active_factory_wins_over_legacy_flat_state(self):
+        """Named active factory state is canonical when legacy state also exists."""
+        project_dir = tempfile.mkdtemp()
+        try:
+            legacy_dir = os.path.join(project_dir, ".sflo")
+            factory_dir = os.path.join(legacy_dir, "click-counter")
+            os.makedirs(factory_dir, exist_ok=True)
+
+            self.write_state("done")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(legacy_dir, "state.json"),
+            )
+            self.write_state("gate-1")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(factory_dir, "state.json"),
+            )
+            registry = {
+                "version": 1,
+                "factories": {
+                    "click-counter": {
+                        "status": "active",
+                        "pid": os.getpid(),
+                        "last_active": "2026-05-27T00:00:00+00:00",
+                        "sflo_dir": factory_dir,
+                    }
+                },
+            }
+            with open(
+                os.path.join(legacy_dir, "registry.json"), "w", encoding="utf-8"
+            ) as f:
+                json.dump(registry, f)
+
+            hook_input = json.dumps(
+                {
+                    "stop_hook_active": False,
+                    "cwd": project_dir,
+                    "session_id": "test",
+                    "last_assistant_message": "test",
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, CLAUDE_HOOK],
+                input=hook_input,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip(), result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["decision"], "block")
+            self.assertTrue(os.path.isfile(os.path.join(factory_dir, ".last_hook_state")))
+            self.assertFalse(os.path.isfile(os.path.join(legacy_dir, ".last_hook_state")))
+        finally:
+            shutil.rmtree(project_dir)
+
+    def test_cursor_active_factory_wins_over_legacy_flat_state(self):
+        """Cursor follows named active factory state before legacy flat state."""
+        project_dir = tempfile.mkdtemp()
+        try:
+            legacy_dir = os.path.join(project_dir, ".sflo")
+            factory_dir = os.path.join(legacy_dir, "click-counter")
+            os.makedirs(factory_dir, exist_ok=True)
+
+            self.write_state("done")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(legacy_dir, "state.json"),
+            )
+            self.write_state("gate-1")
+            shutil.copy2(
+                os.path.join(self.state_dir, "state.json"),
+                os.path.join(factory_dir, "state.json"),
+            )
+            registry = {
+                "version": 1,
+                "factories": {
+                    "click-counter": {
+                        "status": "active",
+                        "pid": os.getpid(),
+                        "last_active": "2026-05-27T00:00:00+00:00",
+                        "sflo_dir": factory_dir,
+                    }
+                },
+            }
+            with open(
+                os.path.join(legacy_dir, "registry.json"), "w", encoding="utf-8"
+            ) as f:
+                json.dump(registry, f)
+
+            hook_input = json.dumps(
+                {
+                    "status": "completed",
+                    "loop_count": 0,
+                    "cwd": project_dir,
+                    "hook_event_name": "stop",
+                }
+            )
+            result = subprocess.run(
+                [sys.executable, CURSOR_HOOK],
+                input=hook_input,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip(), result.stderr)
+            data = json.loads(result.stdout)
+            self.assertIn("followup_message", data)
+            self.assertTrue(os.path.isfile(os.path.join(factory_dir, ".last_hook_state")))
+            self.assertFalse(os.path.isfile(os.path.join(legacy_dir, ".last_hook_state")))
+        finally:
+            shutil.rmtree(project_dir)
 
 
 class TestHookPipelineTraversal(unittest.TestCase):

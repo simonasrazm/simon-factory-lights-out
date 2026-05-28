@@ -1,71 +1,66 @@
 #!/usr/bin/env bash
 # SFLO Hook Installer
-# Detects the runtime environment and installs the appropriate hook.
+# Installs the hook for the explicitly selected runtime.
 #
 # Usage:
-#   bash sflo/src/hooks/install.sh [--workspace PATH]
+#   bash sflo/src/hooks/install.sh --runtime <openclaw|cursor|claude-code> [--install-dir PATH]
 #
 # Supported runtimes:
-#   - OpenClaw: symlinks hook to <workspace>/hooks/ and enables in config
+#   - OpenClaw: copies hook to <install-dir>/hooks/ and enables in config
+#   - Cursor: configures .cursor/hooks.json and .cursor/rules/sflo.mdc
 #   - Claude Code: configures stop hook in .claude/settings.json
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SFLO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SFLO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Parse args
-WORKSPACE=""
+RUNTIME=""
+INSTALL_DIR=""
+
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --runtime) RUNTIME="$2"; shift 2 ;;
+    --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
   esac
 done
 
-# --- Detect runtime ---
+if [[ -z "$RUNTIME" ]]; then
+  echo "ERROR: --runtime is required. Pass one of: openclaw, cursor, claude-code"
+  exit 1
+fi
 
-detect_runtime() {
-  if command -v openclaw &>/dev/null; then
-    echo "openclaw"
-  elif [[ -f "${SFLO_ROOT}/.claude/settings.json" ]] || command -v claude &>/dev/null; then
-    echo "claude-code"
-  else
-    echo "unknown"
-  fi
-}
-
-RUNTIME=$(detect_runtime)
 echo "SFLO Hook Installer"
 echo "  Runtime: $RUNTIME"
 echo "  SFLO root: $SFLO_ROOT"
 
+detect_python() {
+  if command -v python3 &>/dev/null; then
+    echo "python3"
+  else
+    echo "python"
+  fi
+}
+
+PYTHON_CMD="$(detect_python)"
+
+default_install_dir() {
+  if [[ -z "$INSTALL_DIR" ]]; then
+    INSTALL_DIR="$(pwd)"
+  fi
+}
+
 # --- OpenClaw ---
 
 install_openclaw() {
-  # Resolve workspace
-  if [[ -z "$WORKSPACE" ]]; then
-    # Try to read from OpenClaw config
-    local config="$HOME/.openclaw/openclaw.json"
-    if [[ -f "$config" ]]; then
-      WORKSPACE=$(python3 -c "
-import json
-with open('$config') as f:
-    c = json.load(f)
-w = c.get('agents',{}).get('defaults',{}).get('workspace','')
-print(w)
-" 2>/dev/null || true)
-    fi
-    # Fallback
-    if [[ -z "$WORKSPACE" ]]; then
-      WORKSPACE="$HOME/clawd"
-    fi
-  fi
+  default_install_dir
 
-  echo "  Workspace: $WORKSPACE"
+  echo "  Install dir: $INSTALL_DIR"
 
   local hook_src="$SCRIPT_DIR/openclaw/sflo-pipeline"
-  local hook_dst="$WORKSPACE/hooks/sflo-pipeline"
+  local hook_dst="$INSTALL_DIR/hooks/sflo-pipeline"
 
   if [[ ! -d "$hook_src" ]]; then
     echo "ERROR: Hook source not found at $hook_src"
@@ -73,16 +68,17 @@ print(w)
   fi
 
   # Create hooks dir if needed
-  mkdir -p "$WORKSPACE/hooks"
+  mkdir -p "$INSTALL_DIR/hooks"
 
-  # Symlink or copy
+  # Replace any prior installed hook.
   if [[ -L "$hook_dst" || -d "$hook_dst" ]]; then
-    echo "  Hook already exists at $hook_dst — updating symlink"
+    echo "  Hook already exists at $hook_dst — replacing"
     rm -rf "$hook_dst"
   fi
 
   cp -r "$hook_src" "$hook_dst"
-  echo "  Symlinked: $hook_dst -> $hook_src"
+  printf '%s\n' "$SFLO_ROOT" > "$hook_dst/.sflo-home"
+  echo "  Copied: $hook_src -> $hook_dst"
 
   # Enable in OpenClaw config
   if command -v openclaw &>/dev/null; then
@@ -90,7 +86,7 @@ print(w)
     # Use openclaw CLI if available, otherwise manual patch
     local config="$HOME/.openclaw/openclaw.json"
     if [[ -f "$config" ]]; then
-      python3 -c "
+      "$PYTHON_CMD" -c "
 import json
 
 config_path = '$config'
@@ -119,9 +115,60 @@ print('  Config updated: hooks.internal.entries.sflo-pipeline.enabled = true')
   echo "  OpenClaw hook installed successfully."
 }
 
+# --- Cursor ---
+
+install_cursor() {
+  default_install_dir
+
+  local stop_hook="$SCRIPT_DIR/cursor/stop_hook.py"
+  local rule_src="$SCRIPT_DIR/cursor/sflo.mdc"
+  local cursor_dir="$INSTALL_DIR/.cursor"
+  local rules_dir="$cursor_dir/rules"
+  local hooks_file="$cursor_dir/hooks.json"
+  local hook_command="$PYTHON_CMD \"$stop_hook\""
+
+  if [[ ! -f "$stop_hook" ]]; then
+    echo "ERROR: Cursor stop hook not found at $stop_hook"
+    exit 1
+  fi
+  if [[ ! -f "$rule_src" ]]; then
+    echo "ERROR: Cursor rule not found at $rule_src"
+    exit 1
+  fi
+
+  mkdir -p "$rules_dir"
+  "$PYTHON_CMD" - "$hooks_file" "$hook_command" <<'PYEOF'
+import json, os, sys
+
+path, hook_cmd = sys.argv[1], sys.argv[2]
+data = {"version": 1, "hooks": {}}
+if os.path.isfile(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        pass
+data.setdefault("version", 1)
+hooks = data.setdefault("hooks", {})
+stop_list = [
+    h for h in hooks.get("stop", [])
+    if "stop_hook.py" not in str(h.get("command", ""))
+]
+stop_list.insert(0, {"command": hook_cmd, "loop_limit": None})
+hooks["stop"] = stop_list
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+PYEOF
+  cp "$rule_src" "$rules_dir/sflo.mdc"
+  echo "  Cursor hook installed successfully."
+}
+
 # --- Claude Code ---
 
 install_claude_code() {
+  default_install_dir
+
   local stop_hook="$SCRIPT_DIR/claude-code/stop_hook.py"
 
   if [[ ! -f "$stop_hook" ]]; then
@@ -129,7 +176,7 @@ install_claude_code() {
     exit 1
   fi
 
-  local settings_dir="$SFLO_ROOT/.claude"
+  local settings_dir="$INSTALL_DIR/.claude"
   local settings_file="$settings_dir/settings.json"
 
   mkdir -p "$settings_dir"
@@ -143,33 +190,30 @@ install_claude_code() {
   fi
   local hook_command="$py_cmd \"$stop_hook\""
 
-  # Create or update settings.json with stop hook (correct Claude Code format)
-  if [[ -f "$settings_file" ]]; then
-    "$py_cmd" -c "
-import json, sys
-with open('$settings_file') as f:
-    settings = json.load(f)
-hooks = settings.setdefault('hooks', {})
-hooks['Stop'] = [{'type': 'command', 'command': '$hook_command'}]
-with open('$settings_file', 'w') as f:
+  "$py_cmd" - "$settings_file" "$hook_command" <<'PYEOF' || {
+import json
+import os
+import sys
+
+settings_file, hook_command = sys.argv[1], sys.argv[2]
+settings = {}
+if os.path.isfile(settings_file):
+    with open(settings_file, encoding="utf-8") as f:
+        existing = f.read().strip()
+    if existing:
+        settings = json.loads(existing)
+hooks = settings.setdefault("hooks", {})
+hooks["Stop"] = [{"type": "command", "command": hook_command}]
+hooks.pop("stop", None)
+os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+with open(settings_file, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
-print('  Updated $settings_file with Stop hook')
-" 2>/dev/null || echo "  WARNING: Could not update settings automatically."
-  else
-    cat > "$settings_file" << SETTINGSEOF
-{
-  "hooks": {
-    "Stop": [
-      {
-        "type": "command",
-        "command": "$hook_command"
-      }
-    ]
+    f.write("\n")
+print(f"  Updated {settings_file} with Stop hook")
+PYEOF
+    echo "ERROR: Could not update $settings_file" >&2
+    exit 1
   }
-}
-SETTINGSEOF
-    echo "  Created $settings_file with Stop hook"
-  fi
 
   echo "  Claude Code hook installed successfully."
 }
@@ -180,20 +224,14 @@ case "$RUNTIME" in
   openclaw)
     install_openclaw
     ;;
+  cursor)
+    install_cursor
+    ;;
   claude-code)
     install_claude_code
     ;;
-  unknown)
-    echo ""
-    echo "Could not detect runtime. Install manually:"
-    echo ""
-    echo "  For OpenClaw:"
-    echo "    cp -r $SCRIPT_DIR/openclaw/sflo-pipeline <workspace>/hooks/sflo-pipeline"
-    echo "    # Enable in ~/.openclaw/openclaw.json under hooks.internal.entries"
-    echo "    # Restart gateway"
-    echo ""
-    echo "  For Claude Code:"
-    echo "    Add to .claude/settings.json:"
-    echo '    {"hooks": {"Stop": [{"type": "command", "command": "python3 \"'$SCRIPT_DIR'/claude-code/stop_hook.py\""}]}}'
+  *)
+    echo "ERROR: unknown --runtime '$RUNTIME'. Valid: openclaw, cursor, claude-code"
+    exit 1
     ;;
 esac

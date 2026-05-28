@@ -29,7 +29,8 @@ SFLO is a five-gate pipeline for building software with AI agents. The runner (`
 
 - **PM:** Gates 1 (Discovery) and 4 (Verification)
 - **Developer:** Gate 2 (Build)
-- **QA:** Gate 3 (Test)
+- **QA:** Gate 3 (Test, parallel)
+- **Security:** Gate 3 (Security review, parallel)
 - **SFLO:** Gate 5 (Ship) + pipeline coordination
 
 Custom agents can extend any role. Core gate checks are always enforced by the scaffold regardless of which agent runs.
@@ -40,17 +41,17 @@ Custom agents can extend any role. Core gate checks are always enforced by the s
 |------|----------|----------------------|
 | 1. Discovery | `SCOPE.md` | Data sources section, acceptance criteria |
 | 2. Build | `BUILD-STATUS.md` | Build success marker, all checks marked |
-| 3. Test | `QA-REPORT.md` | Grade present, grade meets threshold (configured in `pipeline.yaml`), auto-fail patterns |
+| 3. Test + Security | `QA-REPORT.md`, `SECURITY-REPORT.md` | QA grade present and meets threshold; security verdict present and meets threshold; auto-fail patterns |
 | 4. Verify | `PM-VERIFY.md` | Verdict present, verdict = APPROVED |
 | 5. Ship | `SHIP-DECISION.md` | Decision present, decision ∈ {SHIP, HOLD, KILL} |
 
-All artifacts are produced in `.sflo/` — runtime outputs, not source code.
+All artifacts are produced in `.sflo/<factory>/` — runtime outputs, not source code.
 
 ## Fail Loops
 
 Enforced by the scaffold state machine:
 
-- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `pipeline.yaml`, default B+.)
+- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `pipeline.yaml`, default A.)
 - **PM rejects:** Outer loop — back to Dev→QA with PM's deviation list. Inner counter resets. Max 10 outer loops.
 - **Limits exhausted:** Scaffold escalates to human. No agent can continue.
 

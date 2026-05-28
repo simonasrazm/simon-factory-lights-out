@@ -130,3 +130,49 @@ class TestClassifySdkError:
         classified = _classify_sdk_error(err)
         # Returns the original (not a NonRetryableError wrap)
         assert classified is err
+
+
+class TestClaudeSdkDependency:
+    def test_installs_sdk_into_factory_venv_when_missing(self, monkeypatch, tmp_path):
+        """Adapter dependency bootstrap belongs to execution env, not setup."""
+        import src.adapters.claude_code as mod
+
+        imports = {"count": 0}
+        calls = []
+
+        def fake_import():
+            imports["count"] += 1
+            if imports["count"] == 1:
+                raise ImportError("missing")
+            return "Client", "Options", "HookMatcher"
+
+        monkeypatch.setattr(mod, "_import_claude_agent_sdk", fake_import)
+        monkeypatch.setattr(
+            mod,
+            "_install_claude_agent_sdk",
+            lambda venv_path: calls.append(("install", venv_path)),
+        )
+        monkeypatch.setattr(
+            mod,
+            "_add_venv_site_packages",
+            lambda venv_path: calls.append(("site", venv_path)),
+        )
+
+        result = mod._ensure_claude_agent_sdk({"VIRTUAL_ENV": str(tmp_path)})
+
+        assert result == ("Client", "Options", "HookMatcher")
+        assert calls == [("install", str(tmp_path)), ("site", str(tmp_path))]
+
+    def test_missing_sdk_without_factory_venv_fails_actionably(self, monkeypatch):
+        import src.adapters.claude_code as mod
+
+        monkeypatch.setattr(
+            mod,
+            "_import_claude_agent_sdk",
+            lambda: (_ for _ in ()).throw(ImportError("missing")),
+        )
+
+        with pytest.raises(RuntimeError) as exc:
+            mod._ensure_claude_agent_sdk({})
+
+        assert "Factory venv was unavailable" in str(exc.value)

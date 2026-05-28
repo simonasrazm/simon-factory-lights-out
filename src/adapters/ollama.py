@@ -9,7 +9,7 @@ from .base import RuntimeAdapter
 from .tool_handlers import TOOL_HANDLERS
 
 # ---------------------------------------------------------------------------
-# Tool policy for OllamaAdapter — driven by `tools:` field in bindings.yaml.
+# Tool policy for OllamaAdapter — driven by `tools:` field in pipeline.yaml.
 # Same philosophy as ClaudeCodeAdapter: workhorse roles get every locally-
 # implemented tool by default; only `tools: readonly` clamps to read/search.
 #

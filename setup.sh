@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# SFLO Setup — One-command installation for OpenClaw and Claude Code
+# SFLO Setup — One-command installation for OpenClaw, Cursor, Claude Code, and Codex
 #
 # Usage:
-#   bash setup.sh --runtime <openclaw|cursor|claude-code> [--workspace PATH] [--source PATH_OR_URL] [--branch BRANCH]
+#   bash setup.sh --runtime <openclaw|cursor|claude-code|codex> [--install-dir PATH] [--source PATH_OR_URL] [--branch BRANCH]
+#
+# Install directory:
+#   Directory where SFLO installs runtime integration files and, when needed,
+#   an SFLO checkout. Defaults to the current directory.
 #
 # What this does:
-#   1. Copies/clones SFLO into the workspace (or configures in-place)
-#   2. Installs the appropriate hook for your runtime
-#   3. Creates default bindings.yaml if missing
+#   1. Copies/clones SFLO into the install directory (or configures in-place)
+#   2. Installs the appropriate hook/config for your runtime
+#   3. Verifies pipeline.yaml is present
 #   4. Installs the skill (OpenClaw only)
 #   5. Writes setup status marker
 
@@ -15,7 +19,7 @@ set -euo pipefail
 
 DEFAULT_REPO="https://github.com/simonasrazm/simon-factory-lights-out.git"
 BRANCH="main"
-WORKSPACE=""
+INSTALL_DIR=""
 SOURCE=""
 RUNTIME=""
 SFLO_DIR_NAME="sflo"
@@ -42,7 +46,7 @@ fi
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --workspace) WORKSPACE="$2"; shift 2 ;;
+    --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     --source) SOURCE="$2"; shift 2 ;;
     --sflo-path) SFLO_PATH_OVERRIDE="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
@@ -62,14 +66,14 @@ echo ""
 # deliberate choice, not something to guess: auto-detection silently picked
 # the wrong runtime on machines with more than one installed. Pass --runtime.
 if [[ -z "$RUNTIME" ]]; then
-  echo "ERROR: --runtime is required. Pass one of: openclaw, cursor, claude-code"
-  echo "  e.g.  bash setup.sh --runtime cursor"
+  echo "ERROR: --runtime is required. Pass one of: openclaw, cursor, claude-code, codex"
+  echo "  e.g.  bash setup.sh --runtime codex"
   exit 1
 fi
 case "$RUNTIME" in
-  openclaw|cursor|claude-code) ;;
+  openclaw|cursor|claude-code|codex) ;;
   *)
-    echo "ERROR: unknown --runtime '$RUNTIME'. Valid: openclaw, cursor, claude-code"
+    echo "ERROR: unknown --runtime '$RUNTIME'. Valid: openclaw, cursor, claude-code, codex"
     exit 1
     ;;
 esac
@@ -104,31 +108,16 @@ else
   echo "  ⚠ Not a git work tree — skipping. Populate vendor/agent-skills manually."
 fi
 
-# --- Resolve workspace ---
+# --- Resolve install directory ---
 
-if [[ -z "$WORKSPACE" ]]; then
-  if [[ "$RUNTIME" == "openclaw" ]]; then
-    local_config="$HOME/.openclaw/openclaw.json"
-    if [[ -f "$local_config" ]]; then
-      WORKSPACE=$("$PYTHON_CMD" -c '
-import json, sys
-with open(sys.argv[1]) as f:
-    c = json.load(f)
-print(c.get("agents", {}).get("defaults", {}).get("workspace", ""))
-' "$local_config" 2>/dev/null || true)
-    fi
-    if [[ -z "$WORKSPACE" ]]; then
-      WORKSPACE="$HOME/clawd"
-    fi
-  else
-    WORKSPACE="$(pwd)"
-  fi
+if [[ -z "$INSTALL_DIR" ]]; then
+  INSTALL_DIR="$(pwd)"
 fi
 
-echo "Workspace: $WORKSPACE"
+echo "Install dir: $INSTALL_DIR"
 echo ""
 
-# --- Install SFLO to workspace ---
+# --- Install SFLO to install directory ---
 
 # If --sflo-path was provided, sflo is already in place — skip copy entirely
 if [[ -n "${SFLO_PATH_OVERRIDE:-}" ]]; then
@@ -138,27 +127,27 @@ if [[ -n "${SFLO_PATH_OVERRIDE:-}" ]]; then
   echo "  ✓ SFLO at $SFLO_PATH"
 else
 
-SFLO_PATH="$WORKSPACE/$SFLO_DIR_NAME"
+SFLO_PATH="$INSTALL_DIR/$SFLO_DIR_NAME"
 IN_PLACE=false
 
-# Detect in-place install: source IS the target (or its parent is the workspace)
+# Detect in-place install: source IS the target (or its parent is install dir)
 resolve_real() { cd "$1" 2>/dev/null && pwd; }
 
 SOURCE_REAL="$(resolve_real "$SOURCE" || echo "")"
 SFLO_REAL="$(resolve_real "$SFLO_PATH" || echo "")"
-WORKSPACE_REAL="$(resolve_real "$WORKSPACE" || echo "")"
+INSTALL_DIR_REAL="$(resolve_real "$INSTALL_DIR" || echo "")"
 
 if [[ -n "$SOURCE_REAL" && -n "$SFLO_REAL" && "$SOURCE_REAL" == "$SFLO_REAL" ]]; then
   # Source and destination are the same directory
   IN_PLACE=true
-  echo "Running from SFLO repo inside workspace — configuring in-place (no copy needed)"
-elif [[ -n "$SOURCE_REAL" && -n "$WORKSPACE_REAL" && "$SOURCE_REAL" == "$WORKSPACE_REAL" ]]; then
-  # Source is the workspace itself (user ran setup.sh from the sflo repo root)
+  echo "Running from SFLO repo inside install directory — configuring in-place (no copy needed)"
+elif [[ -n "$SOURCE_REAL" && -n "$INSTALL_DIR_REAL" && "$SOURCE_REAL" == "$INSTALL_DIR_REAL" ]]; then
+  # Source is the install directory itself (user ran setup.sh from the SFLO repo root)
   IN_PLACE=true
   SFLO_PATH="$SOURCE"
   echo "Running from SFLO repo root — configuring in-place (no copy needed)"
 elif [[ -n "$SOURCE_REAL" && -n "$SFLO_REAL" && "$SOURCE_REAL" == "$SFLO_REAL"/* ]]; then
-  # Source is INSIDE the target (e.g. sflo-dev/sflo/ submodule inside sflo-dev/)
+  # Source is INSIDE the target (e.g. an in-repo SFLO checkout)
   # Copying would destroy the source. Use source's parent as SFLO_PATH.
   IN_PLACE=true
   SFLO_PATH="$SFLO_REAL"
@@ -208,7 +197,7 @@ fi  # end of SFLO_PATH_OVERRIDE check
 echo ""
 echo "Installing hooks..."
 
-# Resolve relative hook path from workspace to stop_hook.py
+# Resolve relative hook path from install directory to stop_hook.py
 relative_hook_path() {
   local from="$1"
   local to="$2"
@@ -220,13 +209,14 @@ print(os.path.relpath(sys.argv[1], sys.argv[2]))
 
 if [[ "$RUNTIME" == "openclaw" ]]; then
   HOOK_SRC="$SFLO_PATH/src/hooks/openclaw/sflo-pipeline"
-  HOOK_DST="$WORKSPACE/hooks/sflo-pipeline"
+  HOOK_DST="$INSTALL_DIR/hooks/sflo-pipeline"
 
-  mkdir -p "$WORKSPACE/hooks"
+  mkdir -p "$INSTALL_DIR/hooks"
 
   if [[ -d "$HOOK_SRC" ]]; then
     rm -rf "$HOOK_DST"
     cp -r "$HOOK_SRC" "$HOOK_DST"
+    printf '%s\n' "$SFLO_PATH" > "$HOOK_DST/.sflo-home"
     echo "  ✓ Hook copied to $HOOK_DST"
   else
     echo "  ⚠ Hook source not found at $HOOK_SRC"
@@ -255,12 +245,12 @@ elif [[ "$RUNTIME" == "cursor" ]]; then
   # and Cursor reloads them automatically when the file is saved (no IDE
   # restart needed). Rules live in .cursor/rules/sflo.mdc and apply
   # automatically because we set alwaysApply: true in the front matter.
-  CURSOR_DIR="$WORKSPACE/.cursor"
+  CURSOR_DIR="$INSTALL_DIR/.cursor"
   HOOKS_FILE="$CURSOR_DIR/hooks.json"
   RULES_DIR="$CURSOR_DIR/rules"
   RULE_FILE="$RULES_DIR/sflo.mdc"
   STOP_HOOK_ABS="$SFLO_PATH/src/hooks/cursor/stop_hook.py"
-  STOP_HOOK_REL="$(relative_hook_path "$WORKSPACE" "$STOP_HOOK_ABS")"
+  STOP_HOOK_REL="$(relative_hook_path "$INSTALL_DIR" "$STOP_HOOK_ABS")"
 
   mkdir -p "$RULES_DIR"
 
@@ -309,10 +299,10 @@ PYEOF
   fi
 
 elif [[ "$RUNTIME" == "claude-code" ]]; then
-  SETTINGS_DIR="$WORKSPACE/.claude"
+  SETTINGS_DIR="$INSTALL_DIR/.claude"
   SETTINGS_FILE="$SETTINGS_DIR/settings.json"
   STOP_HOOK_ABS="$SFLO_PATH/src/hooks/claude-code/stop_hook.py"
-  STOP_HOOK_REL="$(relative_hook_path "$WORKSPACE" "$STOP_HOOK_ABS")"
+  STOP_HOOK_REL="$(relative_hook_path "$INSTALL_DIR" "$STOP_HOOK_ABS")"
 
   mkdir -p "$SETTINGS_DIR"
 
@@ -343,56 +333,70 @@ with open(settings_file, "w") as f:
 print("  ✓ Created .claude/settings.json with Stop hook")
 ' "$SETTINGS_FILE" "$HOOK_CMD" 2>/dev/null || echo "  ⚠ Could not create settings.json"
   fi
-fi
 
-# --- Provision venv for Claude Code (claude-agent-sdk) ---
+elif [[ "$RUNTIME" == "codex" ]]; then
+  echo "  ✓ Codex runtime selected — no stop hook installation required"
+  AGENTS_FILE="$INSTALL_DIR/AGENTS.md"
+  AGENTS_TEMPLATE="$SFLO_PATH/src/hooks/codex/AGENTS.md"
+  SFLO_MD_REL="$(relative_hook_path "$INSTALL_DIR" "$SFLO_PATH/sflo.md")"
+  "$PYTHON_CMD" - "$AGENTS_FILE" "$SFLO_MD_REL" "$AGENTS_TEMPLATE" <<'PYEOF' || echo "  ⚠ Could not update AGENTS.md"
+import os
+import sys
 
-if [[ "$RUNTIME" == "claude-code" ]]; then
-  VENV_DIR="$WORKSPACE/.sflo/.venv"
-  if "$PYTHON_CMD" -c "import claude_agent_sdk" 2>/dev/null; then
-    echo "  ✓ claude-agent-sdk available"
+agents_file, sflo_md_rel, template_path = sys.argv[1], sys.argv[2], sys.argv[3]
+start = "<!-- SFLO-AGENTS-START -->"
+end = "<!-- SFLO-AGENTS-END -->"
+legacy_start = "<!-- SFLO-CODEX-START -->"
+legacy_end = "<!-- SFLO-CODEX-END -->"
+with open(template_path, encoding="utf-8") as f:
+    block = f.read().replace("{{SFLO_MD}}", sflo_md_rel).strip()
+
+existing = ""
+if os.path.isfile(agents_file):
+    with open(agents_file, encoding="utf-8") as f:
+        existing = f.read().rstrip()
+
+content = None
+for old_start, old_end in ((start, end), (legacy_start, legacy_end)):
+    if old_start in existing and old_end in existing:
+        before, rest = existing.split(old_start, 1)
+        _, after = rest.split(old_end, 1)
+        content = before.rstrip() + "\n\n" + block + after.lstrip("\n")
+        break
+if content is None and existing:
+    content = existing + "\n\n" + block
+elif content is None:
+    content = block
+
+os.makedirs(os.path.dirname(agents_file) or ".", exist_ok=True)
+with open(agents_file, "w", encoding="utf-8") as f:
+    f.write(content.rstrip() + "\n")
+print("  ✓ AGENTS.md updated with SFLO trigger")
+PYEOF
+  if ! command -v codex &>/dev/null; then
+    echo "  NOTE: codex CLI not on PATH — install/login before triggering the pipeline."
   else
-    echo "  Provisioning venv for claude-agent-sdk..."
-    # Find Python 3.10+ (SDK requirement)
-    VENV_PYTHON=""
-    for candidate in python3.12 python3.11 python3.10 python3 "$PYTHON_CMD"; do
-      if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" -c "import sys; print(sys.version_info >= (3, 10))" 2>/dev/null || echo "False")
-        if [[ "$ver" == "True" ]]; then
-          VENV_PYTHON="$candidate"
-          break
-        fi
-      fi
-    done
-    if [[ -n "$VENV_PYTHON" ]]; then
-      mkdir -p "$(dirname "$VENV_DIR")"
-      "$VENV_PYTHON" -m venv "$VENV_DIR"
-      "$VENV_DIR/bin/pip" install -q claude-agent-sdk
-      echo "  ✓ venv created at $VENV_DIR with claude-agent-sdk"
-      echo "  Note: run the pipeline with $VENV_DIR/bin/python3 sflo/src/runner.py"
-    else
-      echo "  ⚠ Python 3.10+ not found — claude-agent-sdk requires it. Install manually."
-    fi
+    echo "  ✓ codex CLI detected"
   fi
 fi
 
-# --- Verify bindings exist ---
+# --- Verify pipeline config exists ---
 
-BINDINGS_FILE="$SFLO_PATH/bindings.yaml"
-if [[ ! -f "$BINDINGS_FILE" ]]; then
-  echo "  ⚠ bindings.yaml not found at $BINDINGS_FILE — installation may be incomplete"
+PIPELINE_FILE="$SFLO_PATH/pipeline.yaml"
+if [[ ! -f "$PIPELINE_FILE" ]]; then
+  echo "  ⚠ pipeline.yaml not found at $PIPELINE_FILE — installation may be incomplete"
 else
-  echo "  ✓ bindings.yaml present"
+  echo "  ✓ pipeline.yaml present"
 fi
 
 # --- Install skill (OpenClaw only) ---
 
 if [[ "$RUNTIME" == "openclaw" ]]; then
   SKILL_SRC="$SFLO_PATH/src/hooks/openclaw/skill"
-  SKILL_DST="$WORKSPACE/skills/sflo"
+  SKILL_DST="$INSTALL_DIR/skills/sflo"
 
   if [[ -d "$SKILL_SRC" ]]; then
-    mkdir -p "$WORKSPACE/skills"
+    mkdir -p "$INSTALL_DIR/skills"
     rm -rf "$SKILL_DST"
     mkdir -p "$SKILL_DST"
     cp -r "$SKILL_SRC"/* "$SKILL_DST/"
@@ -414,14 +418,14 @@ fi
 
 # --- Write setup status ---
 
-STATUS_DIR="$WORKSPACE/.sflo"
+STATUS_DIR="$INSTALL_DIR/.sflo"
 mkdir -p "$STATUS_DIR"
 STATUS_FILE="$STATUS_DIR/.setup-status"
 if [[ "$RUNTIME" == "openclaw" ]]; then
   echo "restart_required" > "$STATUS_FILE"
 else
   # claude-code hot-reloads settings.json; cursor live-reloads
-  # .cursor/hooks.json and .cursor/rules/* — neither needs restart.
+  # .cursor/hooks.json and .cursor/rules/*; codex has no hook.
   echo "ready" > "$STATUS_FILE"
 fi
 
@@ -432,4 +436,4 @@ echo "╔═══════════════════════�
 echo "║  SFLO installed successfully!             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-echo "SFLO_SETUP_RESULT:{\"ok\":true,\"runtime\":\"$RUNTIME\",\"workspace\":\"$WORKSPACE\",\"sflo_path\":\"$SFLO_PATH\",\"status\":\"$(cat "$STATUS_FILE")\"}"
+echo "SFLO_SETUP_RESULT:{\"ok\":true,\"runtime\":\"$RUNTIME\",\"install_dir\":\"$INSTALL_DIR\",\"sflo_path\":\"$SFLO_PATH\",\"status\":\"$(cat "$STATUS_FILE")\"}"

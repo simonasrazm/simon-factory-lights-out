@@ -18,7 +18,7 @@ When user asks to install or download SFLO:
 
 2. Run setup:
    ```bash
-   bash setup.sh --workspace <workspace_path> --source <source>
+   bash setup.sh --runtime openclaw --install-dir <install_dir> --source <source>
    ```
 
 3. Parse the last line of output for SFLO_SETUP_RESULT JSON
@@ -32,17 +32,21 @@ When user asks to install or download SFLO:
 When user says "SFLO: [description]":
 
 1. Detect Python (`python3` or `python` — whichever is available)
-2. Run: `<python> {{SFLO_PATH}}/src/scaffold.py init`
-3. Follow the scaffold output — it tells you what to do next
-4. The hook keeps the pipeline running automatically after each gate
+2. Run:
+   ```bash
+   printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py
+   ```
+3. The runner handles the gated pipeline automatically
+4. The hook keeps the pipeline running after each gate
 
 ## Key Commands
 
 ```bash
-<python> {{SFLO_PATH}}/src/scaffold.py init      # Start pipeline
-<python> {{SFLO_PATH}}/src/scaffold.py next      # Get next action
-<python> {{SFLO_PATH}}/src/scaffold.py status    # Show pipeline state
-<python> {{SFLO_PATH}}/src/scaffold.py prompt    # Get reinjectable instruction
+printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py  # Start pipeline
+<python> {{SFLO_PATH}}/src/runner.py --help                            # Show runner help
+<python> {{SFLO_PATH}}/src/scaffold.py status                           # Advanced: show pipeline state
+<python> {{SFLO_PATH}}/src/scaffold.py next                             # Advanced: get next action
+<python> {{SFLO_PATH}}/src/scaffold.py prompt                           # Advanced: get reinjectable instruction
 ```
 
 Where `<python>` is `python3` (macOS/Linux) or `python` (Windows).

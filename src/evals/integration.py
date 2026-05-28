@@ -17,7 +17,7 @@ inside LLM), Guardrails AI Guard.wrap() pattern, MS Semantic Kernel
 Kernel.InvokeAsync orchestrator.
 
 No security-specific logic lives here. Security/quality plugins are
-provided by host projects via the eval registry.
+provided by host projects through pipeline.yaml `evals:`.
 """
 
 from __future__ import annotations

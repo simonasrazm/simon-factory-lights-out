@@ -1,11 +1,10 @@
-"""Tests for src.preflight — SOUL validation, auth, vendor, and browser checks."""
+"""Tests for src.preflight — SOUL validation, vendor, and browser checks."""
 
 import pytest
 
 import src.preflight as preflight_mod
 from src.preflight import (
     check_agent_soul,
-    check_claude_subscription_auth,
     check_vendor,
     preflight_check,
 )
@@ -70,13 +69,6 @@ class TestCheckAgentSoul:
 
 
 class TestPreflightCheck:
-    @pytest.fixture(autouse=True)
-    def _claude_auth_present(self, monkeypatch):
-        # preflight_check now also runs the Claude subscription-auth check.
-        # These tests exercise agent-path validation, not auth — pin a token
-        # so the auth check passes and does not add an unrelated issue.
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
-
     def test_all_agents_pass(self, tmp_path):
         for role, content in [
             ("dev", "## rebuild mode\nFix."),
@@ -116,26 +108,6 @@ class TestCheckBrowser:
         )
         assert isinstance(msg, str), (
             f"check_browser msg should be str, got {type(msg).__name__}"
-        )
-
-
-class TestCheckClaudeSubscriptionAuth:
-    """Preflight auth check — CLAUDE_CODE_OAUTH_TOKEN or creds-file presence."""
-
-    def test_token_env_var_passes(self, monkeypatch):
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "a-token")
-        assert check_claude_subscription_auth() is None, (
-            "a non-empty token env var should satisfy the auth check"
-        )
-
-    def test_no_token_no_creds_returns_issue(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        issue = check_claude_subscription_auth()
-        assert issue is not None, "missing auth should produce an issue"
-        assert "auth" in issue.lower(), (
-            f"issue should mention auth, got: {issue!r}"
         )
 
 

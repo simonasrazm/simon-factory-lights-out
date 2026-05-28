@@ -20,6 +20,45 @@ def _safe_remove(path):
         pass
 
 
+def _has_state(sflo_dir):
+    return os.path.isfile(os.path.join(sflo_dir, "state.json"))
+
+
+def _active_factory_dir(sflo_parent):
+    registry_file = os.path.join(sflo_parent, "registry.json")
+    if not os.path.isfile(registry_file):
+        return None
+    try:
+        with open(registry_file, encoding="utf-8") as f:
+            registry = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    factories = registry.get("factories", {})
+    if not isinstance(factories, dict):
+        return None
+
+    entries = sorted(
+        factories.items(),
+        key=lambda item: item[1].get("last_active", "") if isinstance(item[1], dict) else "",
+        reverse=True,
+    )
+    for name, entry in entries:
+        if not isinstance(entry, dict) or entry.get("status") != "active":
+            continue
+        candidate = entry.get("sflo_dir") or os.path.join(sflo_parent, name)
+        if _has_state(candidate):
+            return candidate
+    return None
+
+
+def _resolve_sflo_dir(cwd):
+    sflo_parent = os.path.join(cwd, ".sflo")
+    return _active_factory_dir(sflo_parent) or (
+        sflo_parent if _has_state(sflo_parent) else None
+    )
+
+
 def main():
     try:
         hook_input = json.load(sys.stdin)
@@ -29,14 +68,12 @@ def main():
     stop_active = hook_input.get("stop_hook_active", False)
     cwd = hook_input.get("cwd", os.getcwd())
 
-    # Use absolute paths derived from cwd — no os.chdir()
-    sflo_dir = os.path.join(cwd, ".sflo")
+    # Use absolute paths derived from cwd — no os.chdir().
+    sflo_dir = _resolve_sflo_dir(cwd)
+    if not sflo_dir:
+        sys.exit(0)
     state_file = os.path.join(sflo_dir, "state.json")
     marker = os.path.join(sflo_dir, ".last_hook_state")
-
-    # No pipeline running — let Claude stop
-    if not os.path.isfile(state_file):
-        sys.exit(0)
 
     try:
         with open(state_file) as f:

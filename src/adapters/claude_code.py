@@ -3,6 +3,8 @@
 import asyncio
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time as _time
 from pathlib import Path
@@ -86,6 +88,73 @@ def _classify_sdk_error(exc):
                 "reducing the skill set for this gate, or use --system-prompt-file."
             )
     return exc
+
+
+def _import_claude_agent_sdk():
+    from claude_agent_sdk import (
+        ClaudeSDKClient,
+        ClaudeAgentOptions,
+        HookMatcher,
+    )
+
+    return ClaudeSDKClient, ClaudeAgentOptions, HookMatcher
+
+
+def _venv_python(venv_path):
+    bin_dir = "Scripts" if os.name == "nt" else "bin"
+    exe = "python.exe" if os.name == "nt" else "python"
+    return os.path.join(venv_path, bin_dir, exe)
+
+
+def _install_claude_agent_sdk(venv_path):
+    python = _venv_python(venv_path)
+    if not os.path.isfile(python):
+        raise RuntimeError(f"Factory venv Python not found at {python}")
+    subprocess.run(
+        [python, "-m", "pip", "install", "-q", "claude-agent-sdk"],
+        check=True,
+    )
+
+
+def _add_venv_site_packages(venv_path):
+    python = _venv_python(venv_path)
+    result = subprocess.run(
+        [
+            python,
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    site_packages = result.stdout.strip()
+    if site_packages and site_packages not in sys.path:
+        sys.path.insert(0, site_packages)
+
+
+def _ensure_claude_agent_sdk(env=None):
+    try:
+        return _import_claude_agent_sdk()
+    except ImportError as first_error:
+        venv_path = (env or {}).get("VIRTUAL_ENV")
+        if not venv_path:
+            raise RuntimeError(
+                "claude_agent_sdk not available. Factory venv was unavailable; "
+                "run SFLO through runner.py so it can provision one, or install "
+                "claude-agent-sdk in the Python environment running SFLO."
+            ) from first_error
+
+        try:
+            _install_claude_agent_sdk(venv_path)
+            _add_venv_site_packages(venv_path)
+            return _import_claude_agent_sdk()
+        except Exception as install_error:
+            raise RuntimeError(
+                "claude_agent_sdk not available and SFLO could not install it "
+                f"into factory venv {venv_path!r}. Install manually with: "
+                f"{_venv_python(venv_path)} -m pip install claude-agent-sdk"
+            ) from install_error
 
 # ---------------------------------------------------------------------------
 # Tool policy — driven by `tools:` field in pipeline.yaml per role.
@@ -314,17 +383,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         mcp_servers=None,
         env=None,
     ):
-        try:
-            from claude_agent_sdk import (
-                ClaudeSDKClient,
-                ClaudeAgentOptions,
-                HookMatcher,
-            )
-        except ImportError:
-            raise RuntimeError(
-                "claude_agent_sdk not available. "
-                "Run setup.sh or: pip install claude-agent-sdk"
-            )
+        ClaudeSDKClient, ClaudeAgentOptions, HookMatcher = _ensure_claude_agent_sdk(env)
 
         stderr_lines = []
         self._last_stderr = []  # Preserve for crash diagnostics

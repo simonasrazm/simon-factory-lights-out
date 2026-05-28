@@ -11,14 +11,14 @@ Public API (everything here is stable; internals in base.py / registry.py may ch
         EvalSeverity,
         EvalCategory,
         EvalAbortError,
-        load_evals_from_bindings,
+        load_evals_from_config,
         registered_evals_for_site,
         call_adapter_with_evals,
     )
 
 Design borrowings:
   LangChain Callbacks: typed ABC with multi-site lifecycle methods
-  Guardrails AI: bindings.yaml `evals:` section, severity + category taxonomy
+  Guardrails AI: pipeline.yaml `evals:` section, severity + category taxonomy
   Anthropic Claude Code Hooks: `match:` selector for fire-only-when-relevant
 """
 
@@ -35,7 +35,7 @@ from .base import (
 from .decorator import eval
 from .registry import (
     clear_registry,
-    load_evals_from_bindings,
+    load_evals_from_config,
     matches_filter,
     registered_evals_for_site,
 )
@@ -52,7 +52,7 @@ __all__ = [
     "EvalCategory",
     "EvalAbortError",
     # Registry API
-    "load_evals_from_bindings",
+    "load_evals_from_config",
     "registered_evals_for_site",
     "matches_filter",
     "clear_registry",

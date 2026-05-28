@@ -43,6 +43,18 @@ def _write_sibling_artifacts(tmpdir, gate_num, skip_artifact=None):
                 )
 
 
+def _gate_role_threshold(gate_num, role):
+    """Return effective threshold for a gate role, including per-entry override."""
+    info = GATES.get(gate_num)
+    entries = info if isinstance(info, list) else [info]
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") != role:
+            continue
+        threshold = entry.get("threshold")
+        return GRADE_MAP.get(threshold, GRADE_THRESHOLD) if threshold else GRADE_THRESHOLD
+    return GRADE_THRESHOLD
+
+
 class TestScaffoldingDecoysRejected(unittest.TestCase):
     """Synthetic bad artifacts must be caught by the current built-in checks.
 
@@ -120,8 +132,9 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
 
     def test_gate3_low_grade_fails(self):
         """QA-REPORT.md with grade below threshold fails grade_sufficient."""
+        threshold = _gate_role_threshold(3, "qa")
         below_val = max(
-            (v for v in GRADE_MAP.values() if v < GRADE_THRESHOLD), default=None
+            (v for v in GRADE_MAP.values() if v < threshold), default=None
         )
         below_letter = next((k for k, v in GRADE_MAP.items() if v == below_val), None)
         if below_letter is None:
@@ -137,7 +150,7 @@ class TestScaffoldingDecoysRejected(unittest.TestCase):
         _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, checks = validate_gate(3, self.tmpdir)
         self.assertFalse(
-            passed, f"Grade {below_letter} should fail at threshold {GRADE_THRESHOLD}"
+            passed, f"Grade {below_letter} should fail at threshold {threshold}"
         )
         failed_names = {c["name"] for c in checks if not c["pass"]}
         self.assertIn("grade_sufficient", failed_names)
@@ -317,8 +330,9 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_fail_entries_dont_block_grade(self):
         """FAIL entries in test results don't block if grade is sufficient."""
+        threshold = _gate_role_threshold(3, "qa")
         threshold_letter = next(
-            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+            (k for k, v in GRADE_MAP.items() if v == threshold), "A"
         )
         self.write(
             "QA-REPORT.md",
@@ -343,8 +357,9 @@ class TestContentDepthPassPath(unittest.TestCase):
 
     def test_gate3_mixed_case_grade(self):
         """Grade field extraction should work with various formats."""
+        threshold = _gate_role_threshold(3, "qa")
         threshold_letter = next(
-            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "A"
+            (k for k, v in GRADE_MAP.items() if v == threshold), "A"
         )
         self.write(
             "QA-REPORT.md",

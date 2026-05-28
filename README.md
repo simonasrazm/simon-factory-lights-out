@@ -7,8 +7,9 @@ flowchart LR
     G1["Gate 1<br/>DISCOVER<br/><br/>PM Agent<br/>SCOPE.md"] --> DEV_QA
 
     subgraph DEV_QA ["Inner Loop — max 10 rounds"]
-        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>TEST<br/><br/>QA Agent<br/>QA-REPORT.md"]
-        G3 -- "below threshold" --> G2
+        direction TB
+        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>PARALLEL REVIEW<br/><br/>QA Agent + Security Agent<br/>QA-REPORT.md + SECURITY-REPORT.md"]
+        G3 -- "below threshold or security fail" --> G2
     end
 
     DEV_QA -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
@@ -26,46 +27,29 @@ Tell your AI agent:
 
 > Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-The agent will clone the repo, run `setup.sh`, install the pipeline hook, and configure bindings. After a gateway restart (OpenClaw) or new session (Claude Code), SFLO is ready.
+The agent will clone the repo, run setup, install the runtime instructions, and configure the default files. SFLO is ready in a new agent session.
 
-### Windows (PowerShell, Claude subscription auth)
-
-On Windows, Claude Code stores its OAuth token as plaintext JSON in
-`%USERPROFILE%\.claude\.credentials.json`. `setup.ps1` provides a more secure
-alternative: it installs `Microsoft.PowerShell.SecretManagement` +
-`Microsoft.PowerShell.SecretStore`, registers an encrypted `SfloVault`, and
-adds an `Invoke-SFLO` command to your PowerShell profile that pulls the token
-from the vault instead of a file. Works in both PowerShell 7 and Windows
-PowerShell 5.1.
-
-From the SFLO repo root, in PowerShell:
-
-```powershell
-.\setup.ps1
-```
-
-`setup.ps1` sets up an **empty** vault — it never handles your token. Storing
-the Claude OAuth token is a deliberate manual step you run yourself:
-
-```powershell
-claude setup-token                              # generates a long-lived OAuth token
-Set-Secret -Name SFLO_CLAUDE -Vault SfloVault   # paste the token — input is hidden
-. $PROFILE                                       # reload your profile
-Invoke-SFLO build a click counter                # run the factory
-```
-
-If you already use the Windows SecretStore for other secrets, `setup.ps1`
-will **abort rather than wipe it** and tell you how to proceed — it only
-configures a store that is genuinely fresh.
+Current SFLO defaults are tuned for Codex/OpenAI models. Claude defaults are preserved in `pipeline-claude.yaml`.
 
 ## Usage
 
 Say **"SFLO: [describe what to build]"** to start the pipeline. Examples:
 
 - "SFLO: build a job board website with search and filters"
-- "SFLO: create a CLI tool that scans code for vulnerabilities"
+- "SFLO: build a fancy click counter"
 
-The pipeline runs automatically — Scout picks the right agents, gates enforce quality, hooks keep it moving until done or escalated.
+The pipeline runs automatically. Scout picks the right agents, gates enforce quality, and the configured runtime keeps the flow moving until done or escalated.
+
+### Factories
+
+Each CLI run gets its own factory directory under `.sflo/`, named from the prompt or from `--factory NAME`. This lets multiple factories run in parallel against the same project without sharing `state.json`, locks, logs, or gate artifacts.
+
+Useful commands from the SFLO checkout:
+
+- `python3 src/runner.py --list`
+- `python3 src/runner.py --resume fancy-click-counter`
+- `python3 src/runner.py --kill fancy-click-counter`
+- `python3 src/runner.py --clean-stale`
 
 ## Agents
 
@@ -108,23 +92,11 @@ Scout will discover your agent automatically on the next pipeline run — no con
 
 SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, but you can override it by placing your own `pipeline.yaml` in your project root.
 
-```yaml
-# project-root/pipeline.yaml
-threshold: A-  # Raise the quality bar
+`pipeline.yaml` is the source of truth for models, reasoning effort, thresholds, agents, vendor skills, custom gates, and runtime policy. See `pipeline.yaml` for the full default configuration with all options documented.
 
-guardian:
-  enabled: true   # Enable safety limits
-  max_spawns: 30  # Max agent spawns before escalating
+### Parallel QA and security
 
-gates:
-  1:
-    artifact: SCOPE.md
-    role: pm
-    gate_doc: sflo/gates/discovery.md
-  # Add custom gates by inserting float keys, e.g. 1.5 for an architecture gate
-```
-
-See `sflo/pipeline.yaml` for the full default configuration with all options documented.
+Gate 3 is a parallel fan-out by default. QA and security review the same build output at the same stage, write their own reports, and SFLO advances only when both artifacts satisfy their validators and thresholds.
 
 ## Contributing
 

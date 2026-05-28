@@ -8,7 +8,7 @@ Usage:
         ...
 
 The decorator returns a SfloEval subclass that can be referenced from
-bindings.yaml just like a hand-written class.
+pipeline.yaml just like a hand-written class.
 """
 
 from __future__ import annotations

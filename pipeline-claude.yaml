@@ -8,8 +8,9 @@ gates:
   1:
     artifact: SCOPE.md
     role: pm
-    model: gpt-5.5
-    effort: xhigh
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
     skills:
       - spec-driven-development
       - debugging-and-error-recovery
@@ -18,7 +19,8 @@ gates:
     artifact: BUILD-STATUS.md
     role: dev
     agent: agents/dev
-    model: gpt-5.3-codex
+    model: sonnet
+    thinking: adaptive
     effort: low
     skills:
       - test-driven-development
@@ -37,8 +39,9 @@ gates:
       agents:
         - agents/qa-w-agent-skills
         - vendor/agent-skills/agents/code-reviewer
-      model: gpt-5.5
-      effort: xhigh
+      model: sonnet
+      thinking: adaptive
+      effort: max
       threshold: A
       skills:
         - code-review-and-quality
@@ -47,15 +50,17 @@ gates:
     - artifact: SECURITY-REPORT.md
       role: security
       agent: agents/security
-      model: gpt-5.5
-      effort: xhigh
+      model: claude-opus-4-6
+      thinking: adaptive
+      effort: max
       threshold: A
       gate_doc: gates/security-review.md
   4:
     artifact: PM-VERIFY.md
     role: pm-verify
-    model: gpt-5.5
-    effort: xhigh
+    model: claude-opus-4-6
+    thinking: adaptive
+    effort: max
     gate_doc: gates/verify.md
   5:
     artifact: SHIP-DECISION.md
@@ -65,14 +70,16 @@ gates:
 # Scout configuration
 scout:
   agent: agents/scout
-  model: gpt-5.5
-  effort: xhigh
+  model: sonnet
+  thinking: adaptive
+  effort: medium
   tools: readonly
 
 # SFLO orchestrator
 sflo:
-  model: gpt-5.5
-  effort: xhigh
+  model: claude-opus-4-6
+  thinking: adaptive
+  effort: max
 
 # Scout filtering (optional)
 # exclude_agents: pm-website, foo

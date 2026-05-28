@@ -18,12 +18,13 @@ Cursor's stop hook protocol (cursor.com/docs/agent/hooks):
         {}                                            -> Cursor stops
 
 We use this to keep the SFLO pipeline self-driving inside Cursor:
-  - If `.sflo/state.json` exists and the pipeline is mid-flight, ask
-    `scaffold.py prompt` for the next reinjectable instruction and return
-    it as `followup_message` so Cursor auto-submits the next gate prompt.
+  - If active SFLO state exists, ask `scaffold.py prompt` for the next
+    reinjectable instruction and return it as `followup_message` so Cursor
+    auto-submits the next gate prompt.
   - Terminal states (`done`, `escalate`) emit `{}` so Cursor stops cleanly.
-  - Loop protection: track last state in `.sflo/.last_hook_state` and bail
-    out if two consecutive fires saw the same state — prevents the same
+  - Loop protection: track last state in the active factory's
+    `.last_hook_state` and bail out if two consecutive fires saw the same
+    state — prevents the same
     failing gate from spinning forever inside Cursor's loop_limit budget.
 
 Cursor's own `loop_limit` (default 5) is a secondary safety net; the
@@ -51,6 +52,45 @@ def _emit(obj):
     sys.exit(0)
 
 
+def _has_state(sflo_dir):
+    return os.path.isfile(os.path.join(sflo_dir, "state.json"))
+
+
+def _active_factory_dir(sflo_parent):
+    registry_file = os.path.join(sflo_parent, "registry.json")
+    if not os.path.isfile(registry_file):
+        return None
+    try:
+        with open(registry_file, encoding="utf-8") as f:
+            registry = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+    factories = registry.get("factories", {})
+    if not isinstance(factories, dict):
+        return None
+
+    entries = sorted(
+        factories.items(),
+        key=lambda item: item[1].get("last_active", "") if isinstance(item[1], dict) else "",
+        reverse=True,
+    )
+    for name, entry in entries:
+        if not isinstance(entry, dict) or entry.get("status") != "active":
+            continue
+        candidate = entry.get("sflo_dir") or os.path.join(sflo_parent, name)
+        if _has_state(candidate):
+            return candidate
+    return None
+
+
+def _resolve_sflo_dir(cwd):
+    sflo_parent = os.path.join(cwd, ".sflo")
+    return _active_factory_dir(sflo_parent) or (
+        sflo_parent if _has_state(sflo_parent) else None
+    )
+
+
 def main():
     try:
         hook_input = json.load(sys.stdin)
@@ -66,13 +106,11 @@ def main():
     # process cwd which is set to the workspace root for project hooks.
     cwd = hook_input.get("cwd") or os.environ.get("CURSOR_WORKSPACE") or os.getcwd()
 
-    sflo_dir = os.path.join(cwd, ".sflo")
+    sflo_dir = _resolve_sflo_dir(cwd)
+    if not sflo_dir:
+        _emit({})
     state_file = os.path.join(sflo_dir, "state.json")
     marker = os.path.join(sflo_dir, ".last_hook_state")
-
-    # No active pipeline — let Cursor stop normally.
-    if not os.path.isfile(state_file):
-        _emit({})
 
     # If the agent crashed or the user aborted, don't try to drive forward.
     # The user may want to inspect state, edit artifacts, or re-issue the

@@ -1,6 +1,6 @@
 """sflo eval registry — plugin discovery, loading, and filtering.
 
-Plugins are discovered from the `evals:` section of bindings.yaml, loaded by
+Plugins are discovered from the `evals:` section of pipeline.yaml, loaded by
 importlib at runner startup, and stored in a module-level list. Adapters call
 registered_evals_for_site() to get the filtered set for a given hook site.
 
@@ -63,8 +63,8 @@ def clear_registry() -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_evals_from_bindings(bindings_path: Path) -> List[SfloEval]:
-    """Read `evals:` section from bindings.yaml and load + register plugins.
+def load_evals_from_config(evals_path: Path) -> List[SfloEval]:
+    """Read `evals:` section from a pipeline config and load + register plugins.
 
     For each entry:
       - importlib.import_module(entry['module'])
@@ -80,10 +80,10 @@ def load_evals_from_bindings(bindings_path: Path) -> List[SfloEval]:
     # holding a direct reference to _LOADED_EVALS see the updated state.
     _registry.clear()
 
-    if not bindings_path:
+    if not evals_path:
         return []
 
-    bp = Path(bindings_path)
+    bp = Path(evals_path)
     if not bp.is_file():
         return []
 
@@ -146,12 +146,12 @@ def load_evals_from_bindings(bindings_path: Path) -> List[SfloEval]:
             instance = cls(config=config)
             # Attach match filter (for registered_evals_for_site filtering)
             instance._match = entry.get("match") or {}  # type: ignore[attr-defined]
-            # Effective priority: bindings override > class default
+            # Effective priority: config override > class default
             entry_priority = entry.get("priority")
             if entry_priority is not None:
-                instance._bindings_priority = int(entry_priority)  # type: ignore[attr-defined]
+                instance._config_priority = int(entry_priority)  # type: ignore[attr-defined]
             else:
-                instance._bindings_priority = cls.priority  # type: ignore[attr-defined]
+                instance._config_priority = cls.priority  # type: ignore[attr-defined]
             loaded.append(instance)
         except Exception as exc:
             warnings.warn(
@@ -161,7 +161,7 @@ def load_evals_from_bindings(bindings_path: Path) -> List[SfloEval]:
             continue
 
     # Stable sort by priority (lower = first), registration order breaks ties
-    loaded.sort(key=lambda e: getattr(e, "_bindings_priority", 100))
+    loaded.sort(key=lambda e: getattr(e, "_config_priority", 100))
     _registry.clear()
     _registry.extend(loaded)
     return list(_LOADED_EVALS)
@@ -230,12 +230,12 @@ def matches_filter(
 
 
 # ---------------------------------------------------------------------------
-# bindings.yaml parser for the `evals:` section
+# pipeline.yaml parser for the `evals:` section
 # ---------------------------------------------------------------------------
 
 
-def _load_evals_section(bindings_path: Path) -> List[dict]:
-    """Parse the `evals:` section from bindings.yaml.
+def _load_evals_section(evals_path: Path) -> List[dict]:
+    """Parse the `evals:` section from pipeline.yaml.
 
     Tries yaml.safe_load first (if PyYAML is available); falls back to a
     hand-rolled mini-parser for the specific evals: format so there's
@@ -245,7 +245,7 @@ def _load_evals_section(bindings_path: Path) -> List[dict]:
     try:
         import yaml as _yaml  # type: ignore[import]
 
-        with open(bindings_path, "r", encoding="utf-8") as f:
+        with open(evals_path, "r", encoding="utf-8") as f:
             data = _yaml.safe_load(f) or {}
         result = data.get("evals") or []
         return result if isinstance(result, list) else []
@@ -255,7 +255,7 @@ def _load_evals_section(bindings_path: Path) -> List[dict]:
         return []
 
     # Fallback: hand-rolled parser for the specific evals: subset
-    return _parse_evals_section_manual(bindings_path)
+    return _parse_evals_section_manual(evals_path)
 
 
 def _parse_value(v: str):
@@ -294,7 +294,7 @@ def _parse_value(v: str):
     return v
 
 
-def _parse_evals_section_manual(bindings_path: Path) -> List[dict]:
+def _parse_evals_section_manual(evals_path: Path) -> List[dict]:
     """Minimal hand-rolled parser for the evals: section.
 
     Handles:
@@ -305,7 +305,7 @@ def _parse_evals_section_manual(bindings_path: Path) -> List[dict]:
       - Inline lists [a, b, c] and bool/int scalars
     """
     try:
-        with open(bindings_path, "r", encoding="utf-8") as f:
+        with open(evals_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
     except (OSError, IOError):
         return []
