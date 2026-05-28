@@ -7,11 +7,16 @@ written. Spawned agents cannot bypass the pipeline.
 
 Usage (called by runtime hook/skill, not directly):
     from src.runner import run_pipeline
-    result = await run_pipeline("Build a click counter", sflo_dir=".sflo")
+    result = await run_pipeline(
+        "Build a click counter",
+        sflo_dir=".sflo",
+        runtime="<openclaw|claude-code|codex|cursor|ollama>",
+    )
 
 CLI (for testing):
-    python3 src/runner.py "Build a click counter" [--sflo-dir .sflo] [--quiet]
+    python3 src/runner.py "Build a click counter" --runtime codex [--sflo-dir .sflo] [--quiet]
 
+    --runtime NAME    Required for pipeline starts. Runtime adapter to use.
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
     --quiet           Suppress verbose logging to stderr.
 """
@@ -673,9 +678,7 @@ def _resolve_skill_references(skill_path, skill_content):
     return refs
 
 
-def build_agent_prompt(
-    agent_info, user_prompt, sflo_dir, runtime="codex", output_dir=None
-):
+def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_dir=None):
     """Build system prompt and user prompt for a gate agent.
 
     Agents get: SOUL + gate doc as system prompt, user request + context
@@ -864,7 +867,7 @@ async def run_pipeline(
     user_prompt,
     sflo_dir=".sflo",
     output_dir=None,
-    runtime="codex",
+    runtime=None,
     verbose=True,
     assignments=None,
 ):
@@ -874,7 +877,7 @@ async def run_pipeline(
         user_prompt: What to build.
         sflo_dir: Where to store pipeline state and artifacts.
         output_dir: User deliverables directory (agent cwd). If None, uses inherited cwd.
-        runtime: "openclaw", "claude-code", "codex", "cursor", or "ollama".
+        runtime: Required. "openclaw", "claude-code", "codex", "cursor", or "ollama".
         verbose: Print progress to stderr.
         assignments: Optional dict with pre-computed agent assignments
             (keys: pm, dev, qa). When provided, core's scout LLM call is
@@ -1802,7 +1805,8 @@ def main():
     parser.add_argument(
         "--runtime",
         choices=["openclaw", "claude-code", "codex", "cursor", "ollama"],
-        default="codex",
+        default=None,
+        help="Runtime adapter for pipeline starts.",
     )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
@@ -1846,6 +1850,12 @@ def main():
         else:
             print("No stale or aborted factories to clean.")
         return
+
+    if not args.runtime:
+        parser.error(
+            "--runtime is required for pipeline starts. "
+            "Pass one of: claude-code, codex, cursor, openclaw, ollama."
+        )
 
     prompt = args.prompt
     if not prompt or prompt == "-":

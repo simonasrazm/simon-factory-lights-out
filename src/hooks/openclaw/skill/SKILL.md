@@ -34,7 +34,7 @@ When user says "SFLO: [description]":
 1. Detect Python (`python3` or `python` — whichever is available)
 2. Run:
    ```bash
-   printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py
+   printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py --runtime openclaw
    ```
 3. The runner handles the gated pipeline automatically
 4. The hook keeps the pipeline running after each gate
@@ -42,11 +42,11 @@ When user says "SFLO: [description]":
 ## Key Commands
 
 ```bash
-printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py  # Start pipeline
-<python> {{SFLO_PATH}}/src/runner.py --help                            # Show runner help
-<python> {{SFLO_PATH}}/src/scaffold.py status                           # Advanced: show pipeline state
-<python> {{SFLO_PATH}}/src/scaffold.py next                             # Advanced: get next action
-<python> {{SFLO_PATH}}/src/scaffold.py prompt                           # Advanced: get reinjectable instruction
+printf '%s\n' "[description]" | <python> {{SFLO_PATH}}/src/runner.py --runtime openclaw  # Start pipeline
+<python> {{SFLO_PATH}}/src/runner.py --help                                               # Show runner help
+<python> {{SFLO_PATH}}/src/scaffold.py status                                              # Advanced: show pipeline state
+<python> {{SFLO_PATH}}/src/scaffold.py next                                                # Advanced: get next action
+<python> {{SFLO_PATH}}/src/scaffold.py prompt                                              # Advanced: get reinjectable instruction
 ```
 
 Where `<python>` is `python3` (macOS/Linux) or `python` (Windows).

@@ -37,7 +37,7 @@ When user says "SFLO: [description]":
 
 ```bash
 SFLO_DIR="${SFLO_DIR:-sflo}"
-printf '%s\n' "[description]" | python3 "$SFLO_DIR/src/runner.py"
+printf '%s\n' "[description]" | python3 "$SFLO_DIR/src/runner.py" --runtime openclaw
 ```
 
 The runner handles everything automatically:
