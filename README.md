@@ -27,16 +27,17 @@ Tell your AI agent:
 
 > Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-The agent will clone the repo, run setup, install the runtime instructions, and configure the default files. SFLO is ready in a new agent session.
+The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project.
 
 Current SFLO defaults are tuned for Codex/OpenAI models. Claude defaults are preserved in `pipeline-claude.yaml`.
 
 ## Usage
 
-Say **"SFLO: [describe what to build]"** to start the pipeline. Examples:
+Ask your agent to start an SFLO factory and describe what to build. Examples:
 
-- "SFLO: build a job board website with search and filters"
-- "SFLO: build a fancy click counter"
+- "Use SFLO to build a job board website with search and filters"
+- "Start an SFLO factory for a fancy click counter"
+- Cursor: `/sflo build a job board website with search and filters`
 
 The pipeline runs automatically. Scout picks the right agents, gates enforce quality, and the configured runtime keeps the flow moving until done or escalated.
 

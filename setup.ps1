@@ -14,7 +14,7 @@
     REQUIRED. One of: codex, cursor, claude-code.
 
 .PARAMETER InstallDir
-    Directory for runtime files such as AGENTS.md, .cursor, or .claude.
+    Directory for runtime files such as .agents, .cursor, or .claude.
     Defaults to the current directory.
 
 .PARAMETER SfloHome
@@ -81,6 +81,27 @@ function Get-SfloPythonCommand {
         return 'py -3'
     }
     return 'python'
+}
+
+function Get-CursorSkillsRoot {
+    if ($env:CURSOR_HOME) {
+        return (Join-Path $env:CURSOR_HOME 'skills')
+    }
+    return (Join-Path $HOME '.cursor\skills')
+}
+
+function ConvertTo-ShSingleQuoted {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Value)
+
+    return "'" + ($Value -replace "'", "'\''") + "'"
+}
+
+function ConvertTo-PowerShellSingleQuoted {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
 }
 
 function Read-JsonObject {
@@ -209,6 +230,128 @@ function Set-CursorStopHook {
     Write-JsonObject -Path $HooksFile -Object $data
 }
 
+function Write-RenderedTemplate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceFile,
+        [Parameter(Mandatory)][string]$DestinationFile,
+        [Parameter(Mandatory)][string]$SfloHome
+    )
+
+    if (-not (Test-Path $SourceFile)) {
+        throw "SFLO template not found at $SourceFile."
+    }
+
+    $dir = Split-Path -Parent $DestinationFile
+    if ($dir) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    $runner = Join-Path $SfloHome 'src\runner.py'
+    $scaffold = Join-Path $SfloHome 'src\scaffold.py'
+    $cursorStopHook = Join-Path $SfloHome 'src\hooks\cursor\stop_hook.py'
+    $content = (Get-Content $SourceFile -Raw).Replace('{{SFLO_PATH}}', $SfloHome)
+    $content = $content.Replace('{{SFLO_RUNNER_SH}}', (ConvertTo-ShSingleQuoted -Value $runner))
+    $content = $content.Replace('{{SFLO_SCAFFOLD_SH}}', (ConvertTo-ShSingleQuoted -Value $scaffold))
+    $content = $content.Replace('{{SFLO_CURSOR_STOP_HOOK_SH}}', (ConvertTo-ShSingleQuoted -Value $cursorStopHook))
+    Set-Content -Path $DestinationFile -Value $content -Encoding UTF8
+}
+
+function Install-SfloSkillDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceDir,
+        [Parameter(Mandatory)][string]$DestinationDir,
+        [Parameter(Mandatory)][string]$SfloHome
+    )
+
+    if (-not (Test-Path $SourceDir)) {
+        throw "SFLO skill source not found at $SourceDir."
+    }
+
+    if (Test-Path $DestinationDir) {
+        Remove-Item -Path $DestinationDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $SourceDir '*') -Destination $DestinationDir -Recurse -Force
+
+    $skillFile = Join-Path $DestinationDir 'SKILL.md'
+    if (Test-Path $skillFile) {
+        Write-RenderedTemplate -SourceFile $skillFile -DestinationFile $skillFile -SfloHome $SfloHome
+    }
+}
+
+function Test-SfloOwnedSkillDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (Test-Path (Join-Path $Path '.sflo-owned')) {
+        return $true
+    }
+    $skillFile = Join-Path $Path 'SKILL.md'
+    if (Test-Path $skillFile) {
+        return ((Get-Content $skillFile -Raw) -match 'SFLO Factory Triggering')
+    }
+    return $false
+}
+
+function Install-SfloOwnedSkillDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceDir,
+        [Parameter(Mandatory)][string]$DestinationDir,
+        [Parameter(Mandatory)][string]$SfloHome
+    )
+
+    if (Test-Path $DestinationDir) {
+        if (-not (Test-SfloOwnedSkillDirectory -Path $DestinationDir)) {
+            throw "Cursor skill already exists at $DestinationDir and is not SFLO-owned."
+        }
+        Remove-Item -Path $DestinationDir -Recurse -Force
+    }
+    Install-SfloSkillDirectory -SourceDir $SourceDir -DestinationDir $DestinationDir -SfloHome $SfloHome
+    Set-Content -Path (Join-Path $DestinationDir '.sflo-owned') -Value 'sflo' -Encoding UTF8
+}
+
+function Remove-SfloOwnedSkillDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+    if (Test-SfloOwnedSkillDirectory -Path $Path) {
+        Remove-Item -Path $Path -Recurse -Force
+    } else {
+        Write-Host "    Leaving non-SFLO skill directory untouched: $Path" -ForegroundColor Yellow
+    }
+}
+
+function Remove-SfloOldAgentsBlock {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$AgentsFile)
+
+    if (-not (Test-Path $AgentsFile)) {
+        return
+    }
+
+    $existing = Get-Content $AgentsFile -Raw
+    foreach ($pair in @(
+        @('<!-- SFLO-AGENTS-START -->', '<!-- SFLO-AGENTS-END -->'),
+        @('<!-- SFLO-CODEX-START -->', '<!-- SFLO-CODEX-END -->')
+    )) {
+        $pattern = '(?s)\s*' + [regex]::Escape($pair[0]) + '.*?' + [regex]::Escape($pair[1]) + '\s*'
+        $existing = [regex]::Replace($existing, $pattern, "`n`n")
+    }
+
+    $trimmed = ($existing -replace '\s+$', '').Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        Remove-Item -Path $AgentsFile -Force
+    } else {
+        Set-Content -Path $AgentsFile -Value ($trimmed + "`n") -Encoding UTF8
+    }
+}
+
 function Install-SfloCodex {
     [CmdletBinding()]
     param(
@@ -222,32 +365,11 @@ function Install-SfloCodex {
     Write-Host "==> Installing SFLO Codex integration" -ForegroundColor Cyan
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    $template = Join-Path $SfloHome 'src\hooks\codex\AGENTS.md'
-    if (-not (Test-Path $template)) {
-        throw "SFLO Codex AGENTS template not found at $template."
-    }
-
-    $sfloMd = Join-Path $SfloHome 'sflo.md'
-    $block = (Get-Content $template -Raw).Replace('{{SFLO_MD}}', $sfloMd).Trim()
-    $agentsFile = Join-Path $InstallDir 'AGENTS.md'
-    $existing = if (Test-Path $agentsFile) { Get-Content $agentsFile -Raw } else { '' }
-
-    foreach ($pair in @(
-        @('<!-- SFLO-AGENTS-START -->', '<!-- SFLO-AGENTS-END -->'),
-        @('<!-- SFLO-CODEX-START -->', '<!-- SFLO-CODEX-END -->')
-    )) {
-        $pattern = '(?s)\s*' + [regex]::Escape($pair[0]) + '.*?' + [regex]::Escape($pair[1]) + '\s*'
-        $existing = [regex]::Replace($existing, $pattern, "`n`n")
-    }
-
-    $trimmed = ($existing -replace '\s+$', '').Trim()
-    $updated = if ([string]::IsNullOrWhiteSpace($trimmed)) {
-        $block
-    } else {
-        "$trimmed`n`n$block"
-    }
-    Set-Content -Path $agentsFile -Value ($updated.TrimEnd() + "`n") -Encoding UTF8
-    Write-Host "    AGENTS.md updated" -ForegroundColor Green
+    $skillSrc = Join-Path $SfloHome 'src\hooks\codex\skills\sflo-factory-triggering'
+    $skillDst = Join-Path $InstallDir '.agents\skills\sflo-factory-triggering'
+    Install-SfloSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
+    Remove-SfloOldAgentsBlock -AgentsFile (Join-Path $InstallDir 'AGENTS.md')
+    Write-Host "    Codex factory-triggering skill installed" -ForegroundColor Green
 
     if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
         Write-Host "    NOTE: codex CLI not on PATH. Install/login before triggering SFLO." -ForegroundColor Yellow
@@ -267,20 +389,34 @@ function Install-SfloCursor {
     Initialize-SfloSubmodules -SfloHome $SfloHome
 
     $stopHook = Join-Path $SfloHome 'src\hooks\cursor\stop_hook.py'
-    $ruleSrc = Join-Path $SfloHome 'src\hooks\cursor\sflo.mdc'
+    $skillSrc = Join-Path $SfloHome 'src\hooks\cursor\skills\sflo'
     if (-not (Test-Path $stopHook)) { throw "Cursor stop hook not found at $stopHook." }
-    if (-not (Test-Path $ruleSrc)) { throw "Cursor rule not found at $ruleSrc." }
+    if (-not (Test-Path $skillSrc)) { throw "Cursor factory-triggering skill not found at $skillSrc." }
 
     Write-Host "==> Installing SFLO Cursor integration" -ForegroundColor Cyan
     $cursorDir = Join-Path $InstallDir '.cursor'
-    $rulesDir = Join-Path $cursorDir 'rules'
     $hooksFile = Join-Path $cursorDir 'hooks.json'
-    New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null
+    $rulesDir = Join-Path $cursorDir 'rules'
+    $skillsRoot = Get-CursorSkillsRoot
+    $skillDst = Join-Path $skillsRoot 'sflo'
 
     $python = Get-SfloPythonCommand
-    Set-CursorStopHook -HooksFile $hooksFile -HookCommand "$python `"$stopHook`""
-    Copy-Item -Path $ruleSrc -Destination (Join-Path $rulesDir 'sflo.mdc') -Force
-    Write-Host "    .cursor hooks and rule installed" -ForegroundColor Green
+    Set-CursorStopHook -HooksFile $hooksFile -HookCommand "$python $(ConvertTo-PowerShellSingleQuoted -Value $stopHook)"
+    Install-SfloOwnedSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
+    $oldSkillDst = Join-Path $skillsRoot 'sflo-factory-triggering'
+    Remove-SfloOwnedSkillDirectory -Path $oldSkillDst
+    foreach ($staleRule in @(
+        (Join-Path $rulesDir 'sflo.mdc'),
+        (Join-Path $rulesDir 'sflo-factory-triggering.mdc')
+    )) {
+        if (Test-Path $staleRule) {
+            Remove-Item -Path $staleRule -Force
+        }
+    }
+    if ((Test-Path $rulesDir) -and -not (Get-ChildItem -Path $rulesDir -Force)) {
+        Remove-Item -Path $rulesDir -Force
+    }
+    Write-Host "    .cursor hook and global factory-triggering skill installed" -ForegroundColor Green
 
     if (-not (Get-Command cursor-agent -ErrorAction SilentlyContinue)) {
         Write-Host "    NOTE: cursor-agent CLI not on PATH. Install/login before triggering SFLO." -ForegroundColor Yellow
@@ -305,7 +441,7 @@ function Install-SfloClaudeCode {
     Write-Host "==> Installing SFLO Claude Code integration" -ForegroundColor Cyan
     $settingsFile = Join-Path $InstallDir '.claude\settings.json'
     $python = Get-SfloPythonCommand
-    Set-StopHook -SettingsFile $settingsFile -HookCommand "$python `"$stopHook`""
+    Set-StopHook -SettingsFile $settingsFile -HookCommand "$python $(ConvertTo-PowerShellSingleQuoted -Value $stopHook)"
     Write-Host "    .claude/settings.json updated" -ForegroundColor Green
 }
 

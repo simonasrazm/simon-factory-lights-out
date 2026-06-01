@@ -7,7 +7,7 @@
 #
 # Supported runtimes:
 #   - OpenClaw: copies hook to <install-dir>/hooks/ and enables in config
-#   - Cursor: configures .cursor/hooks.json and .cursor/rules/sflo.mdc
+#   - Cursor: configures .cursor/hooks.json and installs a global Cursor skill
 #   - Claude Code: configures stop hook in .claude/settings.json
 
 set -euo pipefail
@@ -49,6 +49,97 @@ PYTHON_CMD="$(detect_python)"
 default_install_dir() {
   if [[ -z "$INSTALL_DIR" ]]; then
     INSTALL_DIR="$(pwd)"
+  fi
+}
+
+render_template_file() {
+  local src="$1"
+  local dst="$2"
+
+  "$PYTHON_CMD" - "$src" "$dst" "$SFLO_ROOT" <<'PYEOF'
+import os
+import shlex
+import sys
+
+src, dst, sflo_root = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as f:
+    content = f.read()
+content = content.replace("{{SFLO_PATH}}", sflo_root)
+content = content.replace(
+    "{{SFLO_RUNNER_SH}}",
+    shlex.quote(os.path.join(sflo_root, "src", "runner.py")),
+)
+content = content.replace(
+    "{{SFLO_SCAFFOLD_SH}}",
+    shlex.quote(os.path.join(sflo_root, "src", "scaffold.py")),
+)
+content = content.replace(
+    "{{SFLO_CURSOR_STOP_HOOK_SH}}",
+    shlex.quote(os.path.join(sflo_root, "src", "hooks", "cursor", "stop_hook.py")),
+)
+os.makedirs(os.path.dirname(dst), exist_ok=True)
+with open(dst, "w", encoding="utf-8") as f:
+    f.write(content)
+PYEOF
+}
+
+shell_quote() {
+  "$PYTHON_CMD" - "$1" <<'PYEOF'
+import shlex
+import sys
+
+print(shlex.quote(sys.argv[1]))
+PYEOF
+}
+
+install_skill_dir() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ ! -d "$src" ]]; then
+    echo "ERROR: SFLO skill source not found at $src"
+    exit 1
+  fi
+
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  cp -r "$src"/* "$dst/"
+  if [[ -f "$dst/SKILL.md" ]]; then
+    render_template_file "$dst/SKILL.md" "$dst/SKILL.md"
+  fi
+}
+
+is_sflo_skill_dir() {
+  local dir="$1"
+
+  [[ -f "$dir/.sflo-owned" ]] && return 0
+  [[ -f "$dir/SKILL.md" ]] && grep -q "SFLO Factory Triggering" "$dir/SKILL.md"
+}
+
+install_owned_skill_dir() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ -e "$dst" ]]; then
+    if ! is_sflo_skill_dir "$dst"; then
+      echo "ERROR: Cursor skill already exists at $dst and is not SFLO-owned"
+      exit 1
+    fi
+    rm -rf "$dst"
+  fi
+
+  install_skill_dir "$src" "$dst"
+  printf '%s\n' "sflo" > "$dst/.sflo-owned"
+}
+
+remove_owned_skill_dir() {
+  local dir="$1"
+
+  [[ -e "$dir" ]] || return 0
+  if is_sflo_skill_dir "$dir"; then
+    rm -rf "$dir"
+  else
+    echo "  Leaving non-SFLO skill directory untouched: $dir"
   fi
 }
 
@@ -121,22 +212,24 @@ install_cursor() {
   default_install_dir
 
   local stop_hook="$SCRIPT_DIR/cursor/stop_hook.py"
-  local rule_src="$SCRIPT_DIR/cursor/sflo.mdc"
+  local skill_src="$SCRIPT_DIR/cursor/skills/sflo"
+  local skills_root="${CURSOR_HOME:-$HOME/.cursor}/skills"
+  local skill_dir="$skills_root/sflo"
   local cursor_dir="$INSTALL_DIR/.cursor"
   local rules_dir="$cursor_dir/rules"
   local hooks_file="$cursor_dir/hooks.json"
-  local hook_command="$PYTHON_CMD \"$stop_hook\""
+  local hook_command="$PYTHON_CMD $(shell_quote "$stop_hook")"
 
   if [[ ! -f "$stop_hook" ]]; then
     echo "ERROR: Cursor stop hook not found at $stop_hook"
     exit 1
   fi
-  if [[ ! -f "$rule_src" ]]; then
-    echo "ERROR: Cursor rule not found at $rule_src"
+  if [[ ! -d "$skill_src" ]]; then
+    echo "ERROR: Cursor factory-triggering skill not found at $skill_src"
     exit 1
   fi
 
-  mkdir -p "$rules_dir"
+  mkdir -p "$cursor_dir"
   "$PYTHON_CMD" - "$hooks_file" "$hook_command" <<'PYEOF'
 import json, os, sys
 
@@ -160,8 +253,11 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
 PYEOF
-  cp "$rule_src" "$rules_dir/sflo.mdc"
-  echo "  Cursor hook installed successfully."
+  install_owned_skill_dir "$skill_src" "$skill_dir"
+  remove_owned_skill_dir "$skills_root/sflo-factory-triggering"
+  rm -f "$rules_dir/sflo.mdc" "$rules_dir/sflo-factory-triggering.mdc"
+  rmdir "$rules_dir" 2>/dev/null || true
+  echo "  Cursor hook and global skill installed successfully."
 }
 
 # --- Claude Code ---
@@ -188,7 +284,7 @@ install_claude_code() {
   else
     py_cmd="python"
   fi
-  local hook_command="$py_cmd \"$stop_hook\""
+  local hook_command="$py_cmd $(shell_quote "$stop_hook")"
 
   "$py_cmd" - "$settings_file" "$hook_command" <<'PYEOF' || {
 import json

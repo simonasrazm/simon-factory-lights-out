@@ -10,12 +10,13 @@ through every gate without any "decision: block" workaround.
 | File | Purpose |
 |------|---------|
 | `stop_hook.py` | Reads the active factory state, asks `scaffold.py` for the next instruction, returns it as `followup_message` so Cursor auto-submits the next gate. |
+| `skills/sflo/SKILL.md` | Slash-only factory-triggering skill installed globally into `~/.cursor/skills/sflo/`. |
 | `hooks.json.template` | The `.cursor/hooks.json` snippet `setup.sh` writes into your workspace. |
 
 ## How it fires
 
-1. The user types `SFLO: build a click counter` in Cursor's agent chat.
-2. The `.cursor/rules/sflo.mdc` rule tells Cursor to invoke the configured SFLO pipeline, which writes state under `.sflo/<factory>/`.
+1. The user explicitly invokes `/sflo`, for example `/sflo build a click counter`.
+2. The global Cursor skill tells Cursor to invoke the configured SFLO pipeline only for explicit factory requests, which writes state under `.sflo/<factory>/`.
 3. When Cursor's response ends, the `stop` hook fires.
 4. The hook reads state, asks `scaffold.py prompt` for the next gate's instruction, and returns `{"followup_message": "<that instruction>"}`.
 5. Cursor auto-submits the message — gate 2 runs.
@@ -42,7 +43,7 @@ Add to `.cursor/hooks.json` in your workspace (replace the path):
   "hooks": {
     "stop": [
       {
-        "command": "python /absolute/path/to/sflo/src/hooks/cursor/stop_hook.py",
+        "command": "python '/absolute/path/to/sflo/src/hooks/cursor/stop_hook.py'",
         "loop_limit": null
       }
     ]
@@ -51,3 +52,12 @@ Add to `.cursor/hooks.json` in your workspace (replace the path):
 ```
 
 Cursor watches this file and reloads it automatically — no restart needed.
+
+Install the skill globally:
+
+```bash
+mkdir -p "$HOME/.cursor/skills"
+cp -R '/absolute/path/to/sflo/src/hooks/cursor/skills/sflo' "$HOME/.cursor/skills/"
+```
+
+Replace `{{SFLO_PATH}}` in the copied `SKILL.md` with the absolute SFLO checkout path. `setup.sh --runtime cursor` does this automatically.

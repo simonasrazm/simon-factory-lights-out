@@ -8,8 +8,8 @@ from pathlib import Path
 SFLO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_setup_sh_codex_install_dir_writes_agents_block(tmp_path):
-    """Codex setup installs AGENTS.md and ready status in install dir."""
+def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
+    """Codex setup installs the factory-triggering skill and ready status."""
     install_dir = tmp_path / "install"
 
     result = subprocess.run(
@@ -32,13 +32,118 @@ def test_setup_sh_codex_install_dir_writes_agents_block(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert '"install_dir":"' + str(install_dir) + '"' in result.stdout
     assert '"workspace":' not in result.stdout
-    agents = (install_dir / "AGENTS.md").read_text(encoding="utf-8")
-    assert "<!-- SFLO-AGENTS-START -->" in agents
-    assert "sflo.md" in agents
-    assert "pipeline.yaml" in agents
+    skill = (
+        install_dir / ".agents" / "skills" / "sflo-factory-triggering" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "name: sflo-factory-triggering" in skill
+    assert "--runtime codex" in skill
+    assert str(SFLO_ROOT) in skill
+    assert "{{SFLO_PATH}}" not in skill
+    assert "{{SFLO_RUNNER_SH}}" not in skill
+    assert "<<'SFLO_TASK'" in skill
+    assert not (install_dir / "AGENTS.md").exists()
     assert (install_dir / ".sflo" / ".setup-status").read_text(
         encoding="utf-8"
     ) == "ready\n"
+
+
+def test_setup_sh_codex_removes_old_agents_trigger_block(tmp_path):
+    """Codex setup removes old token-trigger AGENTS blocks without clobbering user text."""
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    agents_file = install_dir / "AGENTS.md"
+    agents_file.write_text(
+        "Keep this.\n\n"
+        "<!-- SFLO-AGENTS-START -->\n"
+        "# SFLO\n"
+        "When the user says `SFLO:`, run it.\n"
+        "<!-- SFLO-AGENTS-END -->\n\n"
+        "Keep this too.\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "setup.sh"),
+            "--runtime",
+            "codex",
+            "--install-dir",
+            str(install_dir),
+            "--sflo-path",
+            str(SFLO_ROOT),
+        ],
+        cwd=SFLO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    agents = agents_file.read_text(encoding="utf-8")
+    assert "Keep this." in agents
+    assert "Keep this too." in agents
+    assert "SFLO-AGENTS-START" not in agents
+    assert "When the user says `SFLO:`" not in agents
+
+
+def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
+    """Cursor setup installs the guarded factory-triggering skill globally."""
+    install_dir = tmp_path / "install"
+    home_dir = tmp_path / "home"
+    rule_file = install_dir / ".cursor" / "rules" / "sflo.mdc"
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text("old token trigger\n", encoding="utf-8")
+    duplicate_rule = install_dir / ".cursor" / "rules" / "sflo-factory-triggering.mdc"
+    duplicate_rule.write_text("intermediate duplicate\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(home_dir)
+    old_global_skill = (
+        home_dir / ".cursor" / "skills" / "sflo-factory-triggering" / "SKILL.md"
+    )
+    old_global_skill.parent.mkdir(parents=True)
+    old_global_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "setup.sh"),
+            "--runtime",
+            "cursor",
+            "--install-dir",
+            str(install_dir),
+            "--sflo-path",
+            str(SFLO_ROOT),
+        ],
+        cwd=SFLO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    skill = (
+        home_dir
+        / ".cursor"
+        / "skills"
+        / "sflo"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "SFLO Factory Triggering" in skill
+    assert "name: sflo" in skill
+    assert "disable-model-invocation: true" in skill
+    assert "--runtime cursor" in skill
+    assert str(SFLO_ROOT) in skill
+    assert "{{SFLO_PATH}}" not in skill
+    assert "{{SFLO_RUNNER_SH}}" not in skill
+    assert "<<'SFLO_TASK'" in skill
+    assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
+    assert not rule_file.exists()
+    assert not duplicate_rule.exists()
+    assert not (install_dir / ".cursor" / "rules").exists()
+    assert not old_global_skill.parent.exists()
+    assert (install_dir / ".cursor" / "hooks.json").is_file()
 
 
 def test_setup_sh_rejects_removed_workspace_flag(tmp_path):
@@ -96,6 +201,72 @@ def test_hook_installer_openclaw_copies_hook(tmp_path):
     assert not copied.is_symlink()
     assert "Copied:" in result.stdout
     assert "Symlinked:" not in result.stdout
+
+
+def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
+    """Cursor hook repair installs the guarded global factory-triggering skill."""
+    install_dir = tmp_path / "install"
+    home_dir = tmp_path / "home"
+    old_rule = install_dir / ".cursor" / "rules" / "sflo.mdc"
+    old_rule.parent.mkdir(parents=True)
+    old_rule.write_text("old token trigger\n", encoding="utf-8")
+    duplicate_rule = install_dir / ".cursor" / "rules" / "sflo-factory-triggering.mdc"
+    duplicate_rule.write_text("intermediate duplicate\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["HOME"] = str(home_dir)
+    old_global_skill = (
+        home_dir / ".cursor" / "skills" / "sflo-factory-triggering" / "SKILL.md"
+    )
+    old_global_skill.parent.mkdir(parents=True)
+    old_global_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "src/hooks/install.sh"),
+            "--runtime",
+            "cursor",
+            "--install-dir",
+            str(install_dir),
+        ],
+        cwd=SFLO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    skill = (
+        home_dir
+        / ".cursor"
+        / "skills"
+        / "sflo"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "name: sflo" in skill
+    assert "disable-model-invocation: true" in skill
+    assert "--runtime cursor" in skill
+    assert str(SFLO_ROOT) in skill
+    assert "{{SFLO_PATH}}" not in skill
+    assert "{{SFLO_RUNNER_SH}}" not in skill
+    assert "<<'SFLO_TASK'" in skill
+    assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
+    assert not old_rule.exists()
+    assert not duplicate_rule.exists()
+    assert not (install_dir / ".cursor" / "rules").exists()
+    assert not old_global_skill.parent.exists()
+    assert (install_dir / ".cursor" / "hooks.json").is_file()
+
+
+def test_cursor_hook_template_uses_shell_quoted_placeholder():
+    """Manual Cursor hook template does not ship an unquoted SFLO path."""
+    text = (SFLO_ROOT / "src/hooks/cursor/hooks.json.template").read_text(
+        encoding="utf-8"
+    )
+
+    assert "{{SFLO_CURSOR_STOP_HOOK_SH}}" in text
+    assert "{{SFLO_PATH}}/src/hooks/cursor/stop_hook.py" not in text
 
 
 def test_hook_installer_rejects_removed_workspace_flag(tmp_path):
@@ -355,7 +526,80 @@ def test_public_skill_uses_required_runtime_and_install_dir():
     assert "--runtime" in text
     assert "--install-dir" in text
     assert 'src/runner.py "[description]"' not in text
-    assert "| python3" in text
+    assert "printf '%s\\n'" not in text
+    assert '"[description]"' not in text
+    assert "<<'SFLO_TASK'" in text
+    assert "| python3" not in text
+    assert "Use when user says SFLO" not in text
+    assert 'When user says "SFLO:' not in text
+
+
+def test_trigger_docs_use_heredoc_not_shell_quoted_prompt_placeholders():
+    """Runtime-facing docs avoid examples that expand prompt text in the shell."""
+    docs = {
+        "sflo.md": (SFLO_ROOT / "sflo.md").read_text(encoding="utf-8"),
+        "root skill": (SFLO_ROOT / "skill" / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
+        "openclaw skill": (
+            SFLO_ROOT / "src/hooks/openclaw/skill/SKILL.md"
+        ).read_text(encoding="utf-8"),
+    }
+
+    for name, text in docs.items():
+        assert "echo '<description>'" not in text, name
+        assert "printf '%s\\n' \"[description]\"" not in text, name
+        assert '"[description]"' not in text, name
+        assert "<<'SFLO_TASK'" in text, name
+
+
+def test_codex_and_cursor_factory_skills_have_explicit_trigger_guard():
+    """Runtime factory skills reject inert SFLO token mentions."""
+    codex = (
+        SFLO_ROOT
+        / "src"
+        / "hooks"
+        / "codex"
+        / "skills"
+        / "sflo-factory-triggering"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    cursor = (
+        SFLO_ROOT
+        / "src"
+        / "hooks"
+        / "cursor"
+        / "skills"
+        / "sflo"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "--runtime codex" in codex
+    assert "Run only for an explicit factory action" in codex
+    assert "Quoted text, docs, logs" in codex
+    assert "printf '%s\\n'" not in codex
+    assert '"[task description]"' not in codex
+    assert "{{SFLO_RUNNER_SH}}" in codex
+    assert "--runtime cursor" in cursor
+    assert "name: sflo" in cursor
+    assert "disable-model-invocation: true" in cursor
+    assert "Run only when explicitly invoked as `/sflo`" in cursor
+    assert "Quoted text, docs, logs" in cursor
+    assert "printf '%s\\n'" not in cursor
+    assert '"[task description]"' not in cursor
+    assert "{{SFLO_RUNNER_SH}}" in cursor
+
+
+def test_old_token_trigger_templates_are_not_shipped():
+    """Obsolete token-trigger templates stay out of the source tree."""
+    assert not (SFLO_ROOT / "src/hooks/codex/AGENTS.md").exists()
+    assert not (SFLO_ROOT / "src/hooks/cursor/sflo.mdc").exists()
+    assert not (
+        SFLO_ROOT / "src/hooks/cursor/skills/sflo-factory-triggering.mdc"
+    ).exists()
+    assert not (
+        SFLO_ROOT / "src/hooks/cursor/skills/sflo-factory-triggering"
+    ).exists()
 
 
 def test_installed_openclaw_skill_uses_runner_entrypoint():
@@ -365,5 +609,8 @@ def test_installed_openclaw_skill_uses_runner_entrypoint():
     )
 
     assert "scaffold.py init" not in text
-    assert "src/runner.py" in text
-    assert "printf '%s\\n'" in text
+    assert "{{SFLO_RUNNER_SH}}" in text
+    assert "printf '%s\\n'" not in text
+    assert "<<'SFLO_TASK'" in text
+    assert "Use when user says SFLO" not in text
+    assert 'When user says "SFLO:' not in text

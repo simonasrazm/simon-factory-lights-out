@@ -12,7 +12,7 @@
 #   1. Copies/clones SFLO into the install directory (or configures in-place)
 #   2. Installs the appropriate hook/config for your runtime
 #   3. Verifies pipeline.yaml is present
-#   4. Installs the skill (OpenClaw only)
+#   4. Installs runtime skills where supported
 #   5. Writes setup status marker
 
 set -euo pipefail
@@ -207,6 +207,141 @@ print(os.path.relpath(sys.argv[1], sys.argv[2]))
 ' "$to" "$from" 2>/dev/null
 }
 
+render_template_file() {
+  local src="$1"
+  local dst="$2"
+  local label="$3"
+
+  if [[ ! -f "$src" ]]; then
+    echo "  ⚠ $label source not found at $src"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$dst")"
+  "$PYTHON_CMD" - "$src" "$dst" "$SFLO_PATH" <<'PYEOF'
+import os
+import shlex
+import sys
+
+src, dst, sflo_path = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as f:
+    content = f.read()
+content = content.replace("{{SFLO_PATH}}", sflo_path)
+content = content.replace(
+    "{{SFLO_RUNNER_SH}}",
+    shlex.quote(os.path.join(sflo_path, "src", "runner.py")),
+)
+content = content.replace(
+    "{{SFLO_SCAFFOLD_SH}}",
+    shlex.quote(os.path.join(sflo_path, "src", "scaffold.py")),
+)
+content = content.replace(
+    "{{SFLO_CURSOR_STOP_HOOK_SH}}",
+    shlex.quote(os.path.join(sflo_path, "src", "hooks", "cursor", "stop_hook.py")),
+)
+with open(dst, "w", encoding="utf-8") as f:
+    f.write(content)
+PYEOF
+  echo "  ✓ $label installed at $dst"
+}
+
+shell_quote() {
+  "$PYTHON_CMD" - "$1" <<'PYEOF'
+import shlex
+import sys
+
+print(shlex.quote(sys.argv[1]))
+PYEOF
+}
+
+install_skill_dir() {
+  local src="$1"
+  local dst="$2"
+  local label="$3"
+
+  if [[ ! -d "$src" ]]; then
+    echo "  ⚠ $label skill source not found at $src"
+    return 1
+  fi
+
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  cp -r "$src"/* "$dst/"
+  if [[ -f "$dst/SKILL.md" ]]; then
+    render_template_file "$dst/SKILL.md" "$dst/SKILL.md" "$label skill"
+  fi
+}
+
+is_sflo_skill_dir() {
+  local dir="$1"
+
+  [[ -f "$dir/.sflo-owned" ]] && return 0
+  [[ -f "$dir/SKILL.md" ]] && grep -q "SFLO Factory Triggering" "$dir/SKILL.md"
+}
+
+install_owned_skill_dir() {
+  local src="$1"
+  local dst="$2"
+  local label="$3"
+
+  if [[ -e "$dst" ]]; then
+    if ! is_sflo_skill_dir "$dst"; then
+      echo "  ⚠ $label skill already exists at $dst and is not SFLO-owned"
+      return 1
+    fi
+    rm -rf "$dst"
+  fi
+
+  install_skill_dir "$src" "$dst" "$label" || return 1
+  printf '%s\n' "sflo" > "$dst/.sflo-owned"
+}
+
+remove_owned_skill_dir() {
+  local dir="$1"
+
+  [[ -e "$dir" ]] || return 0
+  if is_sflo_skill_dir "$dir"; then
+    rm -rf "$dir"
+  else
+    echo "  ⚠ Leaving non-SFLO skill directory untouched: $dir"
+  fi
+}
+
+remove_old_agents_block() {
+  local agents_file="$1"
+
+  [[ -f "$agents_file" ]] || return 0
+
+  "$PYTHON_CMD" - "$agents_file" <<'PYEOF'
+import os
+import re
+import sys
+
+agents_file = sys.argv[1]
+with open(agents_file, encoding="utf-8") as f:
+    existing = f.read()
+
+cleaned = existing
+for start, end in (
+    ("<!-- SFLO-AGENTS-START -->", "<!-- SFLO-AGENTS-END -->"),
+    ("<!-- SFLO-CODEX-START -->", "<!-- SFLO-CODEX-END -->"),
+):
+    cleaned = re.sub(
+        r"\n*" + re.escape(start) + r".*?" + re.escape(end) + r"\n*",
+        "\n\n",
+        cleaned,
+        flags=re.S,
+    )
+
+cleaned = cleaned.strip()
+if cleaned:
+    with open(agents_file, "w", encoding="utf-8") as f:
+        f.write(cleaned + "\n")
+else:
+    os.remove(agents_file)
+PYEOF
+}
+
 if [[ "$RUNTIME" == "openclaw" ]]; then
   HOOK_SRC="$SFLO_PATH/src/hooks/openclaw/sflo-pipeline"
   HOOK_DST="$INSTALL_DIR/hooks/sflo-pipeline"
@@ -241,20 +376,22 @@ else:
   fi
 
 elif [[ "$RUNTIME" == "cursor" ]]; then
-  # Native Cursor integration: hook + rule. Hooks live in .cursor/hooks.json
-  # and Cursor reloads them automatically when the file is saved (no IDE
-  # restart needed). Rules live in .cursor/rules/sflo.mdc and apply
-  # automatically because we set alwaysApply: true in the front matter.
+  # Cursor integration: project stop hook plus a global Agent Skill. The
+  # skill lives under ~/.cursor/skills so projects do not accumulate SFLO
+  # rule files; the stop hook remains project-local because Cursor reads
+  # hooks from the workspace.
   CURSOR_DIR="$INSTALL_DIR/.cursor"
   HOOKS_FILE="$CURSOR_DIR/hooks.json"
   RULES_DIR="$CURSOR_DIR/rules"
-  RULE_FILE="$RULES_DIR/sflo.mdc"
+  CURSOR_SKILL_SRC="$SFLO_PATH/src/hooks/cursor/skills/sflo"
+  CURSOR_SKILL_ROOT="${CURSOR_HOME:-$HOME/.cursor}/skills"
+  CURSOR_SKILL_DST="$CURSOR_SKILL_ROOT/sflo"
   STOP_HOOK_ABS="$SFLO_PATH/src/hooks/cursor/stop_hook.py"
   STOP_HOOK_REL="$(relative_hook_path "$INSTALL_DIR" "$STOP_HOOK_ABS")"
 
-  mkdir -p "$RULES_DIR"
+  mkdir -p "$CURSOR_DIR"
 
-  HOOK_CMD="$PYTHON_CMD $STOP_HOOK_REL"
+  HOOK_CMD="$PYTHON_CMD $(shell_quote "$STOP_HOOK_REL")"
 
   # Cursor hooks.json: merge if exists, create if not. We replace any
   # existing 'stop' entries that point to our stop_hook.py so reruns are
@@ -280,13 +417,10 @@ with open(path, "w") as f:
 print("  ✓ .cursor/hooks.json updated (stop hook -> SFLO)")
 PYEOF
 
-  RULE_SRC="$SFLO_PATH/src/hooks/cursor/sflo.mdc"
-  if [[ -f "$RULE_SRC" ]]; then
-    cp "$RULE_SRC" "$RULE_FILE"
-    echo "  ✓ .cursor/rules/sflo.mdc installed"
-  else
-    echo "  ⚠ Cursor rule not found at $RULE_SRC"
-  fi
+  install_owned_skill_dir "$CURSOR_SKILL_SRC" "$CURSOR_SKILL_DST" "Cursor factory-triggering" || exit 1
+  remove_owned_skill_dir "$CURSOR_SKILL_ROOT/sflo-factory-triggering"
+  rm -f "$RULES_DIR/sflo.mdc" "$RULES_DIR/sflo-factory-triggering.mdc"
+  rmdir "$RULES_DIR" 2>/dev/null || true
 
   # Sanity: warn (don't fail) if cursor-agent CLI isn't on PATH. The
   # adapter raises a clear error at first spawn, but installers expect
@@ -307,7 +441,7 @@ elif [[ "$RUNTIME" == "claude-code" ]]; then
   mkdir -p "$SETTINGS_DIR"
 
   # Use relative path so settings.json is portable (not machine-specific)
-  HOOK_CMD="$PYTHON_CMD $STOP_HOOK_REL"
+  HOOK_CMD="$PYTHON_CMD $(shell_quote "$STOP_HOOK_REL")"
 
   if [[ -f "$SETTINGS_FILE" ]]; then
     "$PYTHON_CMD" -c '
@@ -336,43 +470,11 @@ print("  ✓ Created .claude/settings.json with Stop hook")
 
 elif [[ "$RUNTIME" == "codex" ]]; then
   echo "  ✓ Codex runtime selected — no stop hook installation required"
-  AGENTS_FILE="$INSTALL_DIR/AGENTS.md"
-  AGENTS_TEMPLATE="$SFLO_PATH/src/hooks/codex/AGENTS.md"
-  SFLO_MD_REL="$(relative_hook_path "$INSTALL_DIR" "$SFLO_PATH/sflo.md")"
-  "$PYTHON_CMD" - "$AGENTS_FILE" "$SFLO_MD_REL" "$AGENTS_TEMPLATE" <<'PYEOF' || echo "  ⚠ Could not update AGENTS.md"
-import os
-import sys
-
-agents_file, sflo_md_rel, template_path = sys.argv[1], sys.argv[2], sys.argv[3]
-start = "<!-- SFLO-AGENTS-START -->"
-end = "<!-- SFLO-AGENTS-END -->"
-legacy_start = "<!-- SFLO-CODEX-START -->"
-legacy_end = "<!-- SFLO-CODEX-END -->"
-with open(template_path, encoding="utf-8") as f:
-    block = f.read().replace("{{SFLO_MD}}", sflo_md_rel).strip()
-
-existing = ""
-if os.path.isfile(agents_file):
-    with open(agents_file, encoding="utf-8") as f:
-        existing = f.read().rstrip()
-
-content = None
-for old_start, old_end in ((start, end), (legacy_start, legacy_end)):
-    if old_start in existing and old_end in existing:
-        before, rest = existing.split(old_start, 1)
-        _, after = rest.split(old_end, 1)
-        content = before.rstrip() + "\n\n" + block + after.lstrip("\n")
-        break
-if content is None and existing:
-    content = existing + "\n\n" + block
-elif content is None:
-    content = block
-
-os.makedirs(os.path.dirname(agents_file) or ".", exist_ok=True)
-with open(agents_file, "w", encoding="utf-8") as f:
-    f.write(content.rstrip() + "\n")
-print("  ✓ AGENTS.md updated with SFLO trigger")
-PYEOF
+  CODEX_SKILL_SRC="$SFLO_PATH/src/hooks/codex/skills/sflo-factory-triggering"
+  CODEX_SKILL_DST="$INSTALL_DIR/.agents/skills/sflo-factory-triggering"
+  mkdir -p "$INSTALL_DIR/.agents/skills"
+  install_skill_dir "$CODEX_SKILL_SRC" "$CODEX_SKILL_DST" "Codex factory-triggering" || exit 1
+  remove_old_agents_block "$INSTALL_DIR/AGENTS.md"
   if ! command -v codex &>/dev/null; then
     echo "  NOTE: codex CLI not on PATH — install/login before triggering the pipeline."
   else
@@ -395,25 +497,8 @@ if [[ "$RUNTIME" == "openclaw" ]]; then
   SKILL_SRC="$SFLO_PATH/src/hooks/openclaw/skill"
   SKILL_DST="$INSTALL_DIR/skills/sflo"
 
-  if [[ -d "$SKILL_SRC" ]]; then
-    mkdir -p "$INSTALL_DIR/skills"
-    rm -rf "$SKILL_DST"
-    mkdir -p "$SKILL_DST"
-    cp -r "$SKILL_SRC"/* "$SKILL_DST/"
-    # Resolve path placeholders in SKILL.md (cross-platform — no sed -i variance)
-    if [[ -f "$SKILL_DST/SKILL.md" ]]; then
-      "$PYTHON_CMD" -c '
-import sys
-p, sflo_path = sys.argv[1], sys.argv[2]
-with open(p) as f:
-    content = f.read()
-content = content.replace("{{SFLO_PATH}}", sflo_path)
-with open(p, "w") as f:
-    f.write(content)
-' "$SKILL_DST/SKILL.md" "$SFLO_PATH"
-    fi
-    echo "  ✓ Skill installed at $SKILL_DST (paths resolved)"
-  fi
+  mkdir -p "$INSTALL_DIR/skills"
+  install_skill_dir "$SKILL_SRC" "$SKILL_DST" "OpenClaw" || true
 fi
 
 # --- Write setup status ---
@@ -425,7 +510,7 @@ if [[ "$RUNTIME" == "openclaw" ]]; then
   echo "restart_required" > "$STATUS_FILE"
 else
   # claude-code hot-reloads settings.json; cursor live-reloads
-  # .cursor/hooks.json and .cursor/rules/*; codex has no hook.
+  # .cursor/hooks.json and discovers the global skill; codex has no hook.
   echo "ready" > "$STATUS_FILE"
 fi
 

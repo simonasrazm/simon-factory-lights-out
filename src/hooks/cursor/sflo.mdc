@@ -1,6 +1,0 @@
----
-description: SFLO pipeline trigger
-alwaysApply: true
----
-
-When the user sends a message starting with `SFLO:`, treat the rest of the message as the SFLO task and invoke the workspace's configured SFLO Cursor pipeline. The stop hook drives follow-up gate instructions.
