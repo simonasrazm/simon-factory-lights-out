@@ -205,6 +205,40 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
             state["current_state"], "gate-2", "inner loop should reset state to gate-2"
         )
 
+    def test_qa_failure_with_gate_1_5_still_loops_to_dev(self):
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            1.5: {
+                "artifact": "WORK-BREAKDOWN.md",
+                "role": "decomposer",
+                "on_reject_restart_at": 1.5,
+            },
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            2.5: {
+                "artifact": "STST-REPORT.md",
+                "runner": "tools/stst/sflo_driver.py",
+                "on_reject_restart_at": 2,
+            },
+            3: [{"artifact": "QA-REPORT.md", "role": "qa"}],
+            4: {"artifact": "PM-VERIFY.md", "role": "pm"},
+            5: {"artifact": "SHIP-DECISION.md", "role": "sflo"},
+        }
+        self.write_state("check-3", inner=2)
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
+        )
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir, gates=gates)
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
+
+        self.assertEqual(result["state"], "loop-inner")
+        self.assertEqual(
+            state["current_state"],
+            "gate-2",
+            "gate 1.5 must not become the dev rebuild target",
+        )
+
     def test_qa_failure_exhausted(self):
         self.write_state("check-3")
         self.write_artifact(
@@ -272,6 +306,31 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         self.assertEqual(
             returned, result, "non-check actions should pass through unchanged"
         )
+
+    def test_pm_precise_escalation_reroutes_to_full_pm(self):
+        self.write_state("check-1")
+        self.write_artifact(
+            "SCOPE.md",
+            "## VERDICT: ESCALATE\n\nReason: architectural choice needed.\n",
+        )
+        state = self.read_state_file()
+        state["assignments"] = {
+            "pm": "/tmp/agents/pm-precise",
+            "pm_fallback": "/tmp/agents/pm",
+            "scope_tier": "precise",
+        }
+        result = {
+            "action": "check_failed",
+            "gate": 1,
+            "checks": [{"name": "pm_precise_not_escalated", "pass": False}],
+        }
+
+        result = apply_transition(state, result, self.sflo_dir)
+
+        self.assertEqual(result["state"], "pm-precise-escalated")
+        self.assertEqual(state["current_state"], "gate-1")
+        self.assertEqual(state["assignments"]["pm"], "/tmp/agents/pm")
+        self.assertEqual(state["assignments"]["scope_tier"], "standard")
 
 
 class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):

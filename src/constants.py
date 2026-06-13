@@ -4,7 +4,10 @@ import os
 import shutil
 import sys
 
-from .config import load_pipeline_config, GRADE_MAP  # noqa: F401 — re-export
+try:
+    from .config import load_pipeline_config, GRADE_MAP  # noqa: F401 — re-export
+except ImportError:  # Support legacy top-level imports from sflo/src on sys.path.
+    from config import load_pipeline_config, GRADE_MAP  # noqa: F401
 
 # Root of the sflo repo.
 # SFLO_ROOT env var (set by host app to vault path) takes precedence.

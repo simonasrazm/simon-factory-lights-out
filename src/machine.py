@@ -64,6 +64,34 @@ def _last_gate(gates=None):
     return keys[-1] if keys else None
 
 
+def _gate_entries(gate_info):
+    """Return normalized gate entries for single or parallel gate configs."""
+    return gate_info if isinstance(gate_info, list) else [gate_info]
+
+
+def _first_gate_with_role(role, gates=None):
+    """Return the first gate key containing the given role."""
+    _gates = gates if gates is not None else GATES
+    for key in _sorted_gates(gates=_gates):
+        for entry in _gate_entries(_gates[key]):
+            if isinstance(entry, dict) and entry.get("role") == role:
+                return key
+    return None
+
+
+def _inner_loop_restart_gate(gates=None):
+    """Return the dev/rebuild gate.
+
+    Historical configs used the second gate as Dev. Gate 1.5 breaks that
+    positional assumption, so prefer the first `role: dev` gate.
+    """
+    dev_gate = _first_gate_with_role("dev", gates=gates)
+    if dev_gate is not None:
+        return dev_gate
+    sorted_gates = _sorted_gates(gates=gates)
+    return sorted_gates[1] if len(sorted_gates) >= 2 else None
+
+
 def _discover_vendor_dirs(sflo_base):
     """Discover all vendor directories (SFLO_ROOT/vendor/* and sflo_base/vendor/*).
 
@@ -681,7 +709,7 @@ def apply_transition(state, result, sflo_dir, gates=None):
 
         # Clean up feedback files once they've served their purpose
         sorted_gates = _sorted_gates(gates=gates)
-        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+        inner_loop_restart = _inner_loop_restart_gate(gates=gates)
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
         outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
 
@@ -712,8 +740,9 @@ def apply_transition(state, result, sflo_dir, gates=None):
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
         # Outer loop gate is the second to last (gate 4 in default pipeline)
         outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
-        # Inner loop restart gate is gate 2 in default pipeline
-        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+        # Inner loop restart is the first dev gate. Gate 1.5 means this is no
+        # longer reliably the second configured gate.
+        inner_loop_restart = _inner_loop_restart_gate(gates=gates)
 
         # Config-driven restart: gates with on_reject_restart_at loop back
         # to a specific gate without touching inner_loops/outer_loops.
@@ -782,6 +811,31 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     "action": "loop_back",
                     "gate_retry_count": gate_retries[gate_key],
                     "max": INNER_LOOP_MAX,
+                    "next": compute_next(state, sflo_dir, gates=gates),
+                }
+
+        failed_check_names = {
+            c.get("name") for c in result.get("checks", []) if not c.get("pass", True)
+        }
+        if n == 1 and "pm_precise_not_escalated" in failed_check_names:
+            fallback = (state.get("assignments") or {}).get("pm_fallback")
+            current_pm = (state.get("assignments") or {}).get("pm")
+            if fallback and fallback != current_pm:
+                state.setdefault("assignments", {})["pm"] = fallback
+                state["assignments"]["scope_tier"] = "standard"
+                artifact_path = os.path.join(sflo_dir, "SCOPE.md")
+                if os.path.isfile(artifact_path):
+                    from .archive import archive_to_logs
+
+                    archive_to_logs(sflo_dir, [artifact_path])
+                state["gates"].setdefault("1", {})["status"] = "pending"
+                state["current_state"] = "gate-1"
+                write_state(sflo_dir, state)
+                return {
+                    **result,
+                    "state": "pm-precise-escalated",
+                    "action": "loop_back",
+                    "reason": "pm-precise requested full PM reroute",
                     "next": compute_next(state, sflo_dir, gates=gates),
                 }
 

@@ -878,6 +878,7 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_d
 # Single definition; used in two places within run_pipeline.
 _ARCHIVABLE_ARTIFACTS = [
     "SCOPE.md",
+    "WORK-BREAKDOWN.md",
     "BUILD-STATUS.md",
     "QA-REPORT.md",
     "SECURITY-REPORT.md",
@@ -900,6 +901,110 @@ def _archivable_paths(sflo_dir, include_state=False):
     except OSError:
         pass
     return [os.path.join(sflo_dir, name) for name in dict.fromkeys(names)]
+
+
+def _gate_entries(gate_info):
+    return gate_info if isinstance(gate_info, list) else [gate_info]
+
+
+def _first_gate_with_role(role):
+    for key in sorted(GATES.keys()):
+        for entry in _gate_entries(GATES[key]):
+            if isinstance(entry, dict) and entry.get("role") == role:
+                return key
+    return None
+
+
+def _next_gate_after_local(gate_num):
+    keys = sorted(GATES.keys())
+    for i, key in enumerate(keys):
+        if key == gate_num and i + 1 < len(keys):
+            return keys[i + 1]
+    return None
+
+
+def _current_gate_number(state):
+    match = re.match(r"gate-(\d+\.?\d*)$", state.get("current_state", ""))
+    if not match:
+        return None
+    value = float(match.group(1))
+    return int(value) if value.is_integer() else value
+
+
+def _scope_complexity(sflo_dir):
+    scope_path = os.path.join(sflo_dir, "SCOPE.md")
+    if not os.path.isfile(scope_path):
+        return None
+    try:
+        with open(scope_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    patterns = [
+        r"(?is)##\s*Complexity\s+Estimate\b.*?\b(XL|L|M|S)\b",
+        r"(?im)^\s*[-*]?\s*\*\*?Complexity\*\*?\s*:\s*(XL|L|M|S)\b",
+        r"(?im)^\s*Complexity\s*:\s*(XL|L|M|S)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, content)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def _work_breakdown_skip_reason(state, sflo_dir):
+    gate_num = _current_gate_number(state)
+    if gate_num != 1.5:
+        return None
+    gate_info = GATES.get(1.5, {})
+    if gate_info.get("artifact") != "WORK-BREAKDOWN.md":
+        return None
+
+    assignments = state.get("assignments") or {}
+    scope_tier = str(assignments.get("scope_tier", "")).lower()
+    if scope_tier == "precise":
+        return "scout classified task as precise"
+
+    complexity = _scope_complexity(sflo_dir)
+    if complexity == "S":
+        return "SCOPE.md complexity estimate is S"
+
+    return None
+
+
+def _skip_current_gate(state, sflo_dir, log, reason):
+    gate_num = _current_gate_number(state)
+    if gate_num is None:
+        return False
+    gate_key = str(gate_num)
+    state["gates"].setdefault(gate_key, {})["status"] = "skipped"
+    next_gate = _next_gate_after_local(gate_num)
+    state["current_state"] = f"gate-{next_gate}" if next_gate is not None else S_DONE
+    _locked_write_state(sflo_dir, state)
+    log(f"  Gate {gate_num} skipped — {reason}")
+    return True
+
+
+def _should_run_epic_iteration(state, sflo_dir):
+    dev_gate = _first_gate_with_role("dev")
+    if dev_gate is None or _current_gate_number(state) != dev_gate:
+        return False
+
+    wb_path = os.path.join(sflo_dir, "WORK-BREAKDOWN.md")
+    if not os.path.isfile(wb_path):
+        return False
+
+    epic_state = state.get("epic_iteration") or {}
+    if epic_state.get("active"):
+        return True
+
+    completed = epic_state.get("completed") or []
+    total = epic_state.get("total_epics") or 0
+    if total and len(completed) >= total and not epic_state.get("failed"):
+        return False
+
+    return True
 
 
 async def run_pipeline(
@@ -1349,6 +1454,61 @@ async def run_pipeline(
             json.dumps(state.get("gates", {}), sort_keys=True),
             json.dumps(state.get("gate_retries", {}), sort_keys=True),
         )
+
+        skip_reason = _work_breakdown_skip_reason(state, sflo_dir)
+        if skip_reason:
+            _skip_current_gate(state, sflo_dir, log, skip_reason)
+            continue
+
+        if _should_run_epic_iteration(state, sflo_dir):
+            from .epic_orchestrator import detect_epics, run_epic_iteration
+
+            epics = detect_epics(sflo_dir)
+            if epics:
+                log(f"  Epic iteration detected: {len(epics)} epics")
+                epic_result = await run_epic_iteration(
+                    epics,
+                    sflo_dir,
+                    state,
+                    adapter,
+                    user_prompt=user_prompt,
+                    output_dir=output_dir,
+                    runtime=runtime,
+                    log=log,
+                    gates_config=GATES,
+                    roles=roles,
+                    assignments=assignments,
+                )
+                state = read_state(sflo_dir) or state
+                if epic_result.escalated or not epic_result.all_passed:
+                    state["current_state"] = S_ESCALATE
+                    state["escalate_reason"] = (
+                        epic_result.escalation_reason
+                        or f"Epic iteration failed for epics {epic_result.failed_epics}"
+                    )
+                    state["escalate_options"] = [
+                        "inspect failed epic artifacts and retry",
+                        f"delete {sflo_dir}/ and retry",
+                        "fall back to linear gate execution",
+                    ]
+                    _locked_write_state(sflo_dir, state)
+                    log(f"  ESCALATE: {state['escalate_reason']}")
+                    break
+
+                next_after_epic = _next_gate_after_local(3)
+                for gate_key in sorted(GATES.keys()):
+                    if 2 <= gate_key <= 3:
+                        state["gates"].setdefault(str(gate_key), {})[
+                            "status"
+                        ] = "done"
+                state["current_state"] = (
+                    f"gate-{next_after_epic}"
+                    if next_after_epic is not None
+                    else S_DONE
+                )
+                _locked_write_state(sflo_dir, state)
+                log("  Epic iteration ✓ — advancing to post-epic gates")
+                continue
 
         auto_transition(state, sflo_dir)
         result = compute_next(state, sflo_dir)
