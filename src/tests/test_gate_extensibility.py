@@ -346,6 +346,61 @@ class TestMachineApplyTransition:
             f"expected 1 retry for gate 2.5, got {state['gate_retries'].get('2.5')}"
         )
 
+    def test_custom_gate_reject_invalidates_restart_artifacts(self, tmp_path):
+        """Custom gate reject archives restart-gate artifacts so rebuild is real."""
+        from src.state import write_state
+        from src.machine import apply_transition
+
+        test_gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm", "gate_doc": "gates/discovery.md"},
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev", "gate_doc": "gates/build.md"},
+            2.1: {"artifact": "DEVLOOP-REPORT.md", "role": "devloop", "gate_doc": "gates/devloop.md"},
+            2.5: {
+                "artifact": "STST-REPORT.md",
+                "runner": "tools/stst/sflo_driver.py",
+                "validator": "tools/stst/sflo_validator.py",
+                "gate_doc": "gates/stst_filter.md",
+                "on_reject_restart_at": 2,
+            },
+            3: {"artifact": "QA-REPORT.md", "role": "qa", "gate_doc": "gates/test.md"},
+        }
+
+        sflo_dir = str(tmp_path / ".sflo")
+        os.makedirs(sflo_dir, exist_ok=True)
+        for name in ("BUILD-STATUS.md", "DEVLOOP-REPORT.md", "STST-REPORT.md", "STST-FEEDBACK.md"):
+            with open(os.path.join(sflo_dir, name), "w", encoding="utf-8") as f:
+                f.write(name)
+
+        state = {
+            "current_state": "check-2.5",
+            "assignments": {},
+            "roles": {},
+            "inner_loops": 0,
+            "outer_loops": 0,
+            "gates": {
+                str(k): {"status": "done", "artifact": v["artifact"]}
+                for k, v in test_gates.items()
+            },
+            "gate_retries": {},
+        }
+        write_state(sflo_dir, state)
+
+        result = {
+            "action": "check_failed",
+            "gate": 2.5,
+            "pass": False,
+            "checks": [{"name": "verdict_is_pass", "pass": False}],
+        }
+
+        out = apply_transition(state, result, sflo_dir, gates=test_gates)
+
+        assert out["action"] == "loop_back"
+        assert state["current_state"] == "gate-2"
+        assert not os.path.exists(os.path.join(sflo_dir, "BUILD-STATUS.md"))
+        assert not os.path.exists(os.path.join(sflo_dir, "DEVLOOP-REPORT.md"))
+        assert not os.path.exists(os.path.join(sflo_dir, "STST-REPORT.md"))
+        assert os.path.exists(os.path.join(sflo_dir, "STST-FEEDBACK.md"))
+
     def test_parallel_gate_check_failed_loops_back(self, tmp_path):
         """Parallel gate at check-3 failing loops back to gate-2 (default)."""
         from src.state import write_state
@@ -718,11 +773,15 @@ class TestSkillResolution:
         paths = resolve_skill_paths([], str(tmp_path))
         assert paths == [], f"empty skill list should return empty list, got {paths}"
 
-    def test_resolve_skill_paths_missing_file_skipped(self, tmp_path):
-        from src.machine import resolve_skill_paths
+    def test_resolve_skill_paths_missing_file_raises(self, tmp_path):
+        from src.machine import SkillResolutionError, resolve_skill_paths
 
-        paths = resolve_skill_paths(["nonexistent-skill"], str(tmp_path))
-        assert paths == [], f"missing skill file should be skipped, got {paths}"
+        try:
+            resolve_skill_paths(["nonexistent-skill"], str(tmp_path))
+        except SkillResolutionError as err:
+            assert "nonexistent-skill" in str(err)
+        else:
+            raise AssertionError("missing skill should raise SkillResolutionError")
 
 
 class TestSkillInjectionInComputeNext:

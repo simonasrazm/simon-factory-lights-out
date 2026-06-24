@@ -183,13 +183,24 @@ class TestSkillPathResolution:
         assert result[0].endswith("SKILL.md")
         assert "test-skill" in result[0]
 
-    def test_resolve_not_found(self, tmp_path):
-        """TC-SP2: Missing skill returns empty list."""
-        from src.machine import resolve_skill_paths
+    def _assert_unresolved_skill_raises(self, skill_name, tmp_path, expected_detail):
+        from src.machine import SkillResolutionError, resolve_skill_paths
 
         with mock.patch("src.machine.SFLO_ROOT", str(tmp_path)):
-            result = resolve_skill_paths(["nonexistent-skill"], str(tmp_path))
-        assert result == []
+            try:
+                resolve_skill_paths([skill_name], str(tmp_path))
+            except SkillResolutionError as err:
+                msg = str(err)
+                assert skill_name in msg
+                assert expected_detail in msg
+            else:
+                raise AssertionError(f"{skill_name!r} should raise SkillResolutionError")
+
+    def test_resolve_not_found(self, tmp_path):
+        """TC-SP2: Missing skill raises instead of silently degrading."""
+        self._assert_unresolved_skill_raises(
+            "nonexistent-skill", tmp_path, "not found in any vendor"
+        )
 
     def test_resolve_empty_input(self):
         """TC-SP3: Empty or None input returns empty list."""
@@ -199,19 +210,24 @@ class TestSkillPathResolution:
         assert resolve_skill_paths(None, "/tmp") == []
 
     def test_resolve_rejects_path_traversal(self, tmp_path):
-        """TC-SP4: Skill names with path separators or .. are rejected."""
+        """TC-SP4: Invalid/unresolved skill names raise fail-fast errors."""
         # Create a skill that WOULD resolve if traversal was allowed
         evil_dir = tmp_path / "vendor" / "agent-skills" / "skills" / "legit"
         evil_dir.mkdir(parents=True)
         (evil_dir / "SKILL.md").write_text("# Legit")
 
-        from src.machine import resolve_skill_paths
-
-        with mock.patch("src.machine.SFLO_ROOT", str(tmp_path)):
-            assert resolve_skill_paths(["../etc/passwd"], str(tmp_path)) == []
-            assert resolve_skill_paths(["foo/bar"], str(tmp_path)) == []
-            assert resolve_skill_paths(["foo\\bar"], str(tmp_path)) == []
-            assert resolve_skill_paths([".."], str(tmp_path)) == []
+        self._assert_unresolved_skill_raises(
+            "../etc/passwd", tmp_path, "rejected: traversal sequence"
+        )
+        self._assert_unresolved_skill_raises(
+            "foo/bar", tmp_path, "vendor or skill not found"
+        )
+        self._assert_unresolved_skill_raises(
+            "foo\\bar", tmp_path, "rejected: traversal sequence"
+        )
+        self._assert_unresolved_skill_raises(
+            "..", tmp_path, "rejected: traversal sequence"
+        )
 
 
 # =========================================================================

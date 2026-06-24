@@ -20,6 +20,8 @@ from .validate import (
     clean_artifacts_from,
     save_qa_feedback,
     save_pm_feedback,
+    feedback_name_for_artifact,
+    feedback_paths_for_gate,
 )
 
 
@@ -245,26 +247,34 @@ def build_context_map(gate_num, sflo_dir, gates=None):
     """
     _gates = gates if gates is not None else GATES
     feedback_files = []
-    qa_feedback = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-    pm_feedback = os.path.join(sflo_dir, "PM-FEEDBACK.md")
-    if os.path.isfile(pm_feedback):
-        feedback_files.append(f"  - {pm_feedback} (PM reviewed and requested changes)")
-    if os.path.isfile(qa_feedback):
-        feedback_files.append(
-            f"  - {qa_feedback} (Gate 3 agents found issues in your code)"
-        )
+    seen_feedback = set()
     for gate_key in sorted(_gates):
         gate_info = _gates[gate_key]
         entries = gate_info if isinstance(gate_info, list) else [gate_info]
         for entry in entries:
             artifact = entry.get("artifact", "")
-            fb_name = artifact.replace(".md", "-FEEDBACK.md") if artifact else None
+            fb_name = feedback_name_for_artifact(artifact) if artifact else None
             if fb_name:
                 fb_path = os.path.join(sflo_dir, fb_name)
                 if os.path.isfile(fb_path):
+                    seen_feedback.add(os.path.abspath(fb_path))
                     feedback_files.append(
                         f"  - {fb_path} (gate {gate_key} found issues — fix before proceeding)"
                     )
+    try:
+        for filename in sorted(os.listdir(sflo_dir)):
+            if not filename.endswith("-FEEDBACK.md"):
+                continue
+            fb_path = os.path.join(sflo_dir, filename)
+            if (
+                os.path.isfile(fb_path)
+                and os.path.abspath(fb_path) not in seen_feedback
+            ):
+                feedback_files.append(
+                    f"  - {fb_path} (feedback file found — fix before proceeding)"
+                )
+    except OSError:
+        pass
 
     is_rebuild = len(feedback_files) > 0
 
@@ -662,18 +672,22 @@ def apply_transition(state, result, sflo_dir, gates=None):
         sorted_gates = _sorted_gates(gates=gates)
         inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
+        outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
 
         # Archive feedback files to logs/ once they've served their purpose
         from .archive import archive_to_logs
 
+        feedback_to_archive = list(feedback_paths_for_gate(sflo_dir, n, gates=gates))
         if n == inner_loop_restart:
-            pm_fb = os.path.join(sflo_dir, "PM-FEEDBACK.md")
-            if os.path.isfile(pm_fb):
-                archive_to_logs(sflo_dir, [pm_fb])
+            feedback_to_archive.extend(
+                feedback_paths_for_gate(sflo_dir, outer_loop_gate, gates=gates)
+            )
         if n == inner_loop_gate:
-            qa_fb = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-            if os.path.isfile(qa_fb):
-                archive_to_logs(sflo_dir, [qa_fb])
+            feedback_to_archive.extend(
+                feedback_paths_for_gate(sflo_dir, inner_loop_gate, gates=gates)
+            )
+        if feedback_to_archive:
+            archive_to_logs(sflo_dir, list(dict.fromkeys(feedback_to_archive)))
 
         next_action = compute_next(state, sflo_dir, gates=gates)
         result["next"] = next_action
@@ -728,11 +742,22 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     return compute_next(state, sflo_dir, gates=gates)
                 from .archive import archive_to_logs
 
-                artifact_name = gate_info.get("artifact")
-                if artifact_name:
-                    artifact_path = os.path.join(sflo_dir, artifact_name)
-                    if os.path.isfile(artifact_path):
-                        archive_to_logs(sflo_dir, [artifact_path])
+                artifacts_to_archive = []
+                for gate_num in _sorted_gates(gates=_gates):
+                    if gate_num < restart_gate:
+                        continue
+                    raw = _gates.get(gate_num, {})
+                    entries = raw if isinstance(raw, list) else [raw]
+                    for entry in entries:
+                        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+                        if not artifact:
+                            continue
+                        artifact_path = os.path.join(sflo_dir, artifact)
+                        if os.path.isfile(artifact_path):
+                            artifacts_to_archive.append(artifact_path)
+                    state["gates"].setdefault(str(gate_num), {})["status"] = "pending"
+                if artifacts_to_archive:
+                    archive_to_logs(sflo_dir, artifacts_to_archive)
                 state["current_state"] = f"gate-{restart_gate}"
                 write_state(sflo_dir, state)
                 return {
@@ -790,10 +815,8 @@ def apply_transition(state, result, sflo_dir, gates=None):
             else:
                 restart_gate = inner_loop_restart
                 state["current_state"] = f"gate-{restart_gate}"
-                # Save PM's verdict as PM-FEEDBACK.md before cleanup
-                # deletes PM-VERIFY.md. Same pattern as QA-FEEDBACK.md:
-                # gate artifact deleted for auto_transition, feedback
-                # copy persists for dev's context map.
+                # Save the outer gate verdict before cleanup deletes the gate
+                # artifact. The feedback copy persists for dev's context map.
                 save_pm_feedback(sflo_dir)
                 clean_artifacts_from(restart_gate, sflo_dir)
                 write_state(sflo_dir, state)
