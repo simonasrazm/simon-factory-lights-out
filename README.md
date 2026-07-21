@@ -31,9 +31,9 @@ Tell your AI agent:
 
 The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project. If a Cursor build exposes `~/.cursor/skills-cursor/` as its active skill root, setup also installs an SFLO-owned compatibility copy there.
 
-SFLO vendors a pinned snapshot of [Matt Pocock's composable engineering skills](https://github.com/mattpocock/skills), including provenance in `vendor/mattpocock-skills/SFLO-VENDOR.md`. Skills are opt-in per gate through `skills:`. The Codex default attaches TDD plus code-review to Developer and code-review to QA because those treatments earned professional comparative evidence; other roles remain skill-free. Add or change skills only when role-specific evaluation shows a measurable gain over that role's no-skill configuration. Role SOULs, gate documents, and artifact contracts remain authoritative when a supplemental skill describes an incompatible workflow. Custom runners own their prompts and are outside this automatic attachment boundary. Vendor updates are deliberate: replace the snapshot from a reviewed release commit, inspect the selected skill and companion-file diff, then run the full test suite and prompt-budget check.
+SFLO vendors a pinned snapshot of [Matt Pocock's composable engineering skills](https://github.com/mattpocock/skills), including provenance in `vendor/mattpocock-skills/SFLO-VENDOR.md`. Skills are opt-in per gate through `skills:`. The Codex default attaches TDD plus code-review to Developer and code-review to QA because those treatments earned [professional comparative evidence](docs/evaluation.md); other roles remain skill-free. Add or change skills only when role-specific evaluation shows a measurable gain over that role's no-skill configuration. Role SOULs, gate documents, and artifact contracts remain authoritative when a supplemental skill describes an incompatible workflow. Custom runners own their prompts and are outside this automatic attachment boundary. Vendor updates are deliberate: replace the snapshot from a reviewed release commit, inspect the selected skill and companion-file diff, then run the full test suite and prompt-budget check.
 
-Current SFLO defaults are tuned for Codex/OpenAI models in `pipeline.yaml`. Cursor setup installs `pipeline-cursor.yaml` as the project `pipeline.yaml`; Claude defaults are preserved in `pipeline-claude.yaml`.
+Current SFLO defaults are tuned for Codex/OpenAI models in `pipeline.yaml`. On a new Cursor project, setup installs `pipeline-cursor.yaml` as the project `pipeline.yaml`; when a custom pipeline already exists, setup preserves it and writes the proposed defaults to `pipeline.yaml.sflo-default`. Claude defaults are preserved in `pipeline-claude.yaml`.
 
 ## Usage
 
@@ -101,9 +101,9 @@ SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with 
 
 `pipeline.yaml` is the source of truth for models, reasoning effort, thresholds, agents, vendor skills, custom gates, and runtime policy. See `pipeline.yaml` for the full default configuration with all options documented.
 
-### Parallel QA and security
+### Sequential QA and security
 
-Gate 3 is a parallel fan-out by default. QA and security review the same build output at the same stage, write their own reports, and SFLO advances only when both artifacts satisfy their validators and thresholds.
+QA completes before the security review in the default pipeline. Each role writes its own report, and SFLO advances only when both artifacts satisfy their validators and thresholds. A full run invokes up to six sequential model roles and can take several minutes; the defaults prioritize professional reliability over minimum latency.
 
 ## Contributing
 

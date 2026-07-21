@@ -563,12 +563,13 @@ def test_setup_ps1_writes_all_runtime_status_and_result():
 
 
 def test_setup_ps1_cursor_installs_runtime_pipeline():
-    """Windows Cursor setup installs pipeline-cursor.yaml as pipeline.yaml."""
+    """Windows Cursor setup preserves custom pipelines and stages new defaults."""
     text = (SFLO_ROOT / "setup.ps1").read_text(encoding="utf-8")
 
     assert "function Install-SfloRuntimePipeline" in text
     assert "pipeline-cursor.yaml" in text
-    assert "pipeline.yaml" in text
+    assert "pipeline.yaml.sflo-default" in text
+    assert "Existing project pipeline preserved" in text
 
 
 def test_openclaw_hook_resolves_active_factory_not_workspace_state():
@@ -666,6 +667,33 @@ def test_codex_and_cursor_factory_skills_have_explicit_trigger_guard():
     assert "printf '%s\\n'" not in cursor
     assert '"[task description]"' not in cursor
     assert "{{SFLO_RUNNER_SH}}" in cursor
+    assert "```powershell" in codex
+    assert "```powershell" in cursor
+    assert "@'" in codex
+    assert "@'" in cursor
+
+
+def test_vendor_provenance_matches_pinned_upstream_release():
+    provenance = (
+        SFLO_ROOT / "vendor" / "mattpocock-skills" / "SFLO-VENDOR.md"
+    ).read_text(encoding="utf-8")
+
+    assert "d574778f94cf620fcc8ce741584093bc650a61d3" in provenance
+    assert "d574778f7a8a2fdfe902a4ca60929ef5af946717" not in provenance
+
+
+def test_readme_describes_sequential_reviews_and_links_evidence():
+    readme = (SFLO_ROOT / "README.md").read_text(encoding="utf-8")
+    evaluation = SFLO_ROOT / "docs" / "evaluation.md"
+
+    assert "### Sequential QA and security" in readme
+    assert "Gate 3 is a parallel fan-out by default" not in readme
+    assert "docs/evaluation.md" in readme
+    assert evaluation.is_file()
+    evidence = evaluation.read_text(encoding="utf-8")
+    assert "788" in evidence
+    assert "951" in evidence
+    assert "End-to-end latency" in evidence
 
 
 def test_old_token_trigger_templates_are_not_shipped():

@@ -2,7 +2,7 @@
 
 - Upstream: https://github.com/mattpocock/skills
 - Release: `v1.1.0`
-- Commit: `d574778f7a8a2fdfe902a4ca60929ef5af946717`
+- Commit: `d574778f94cf620fcc8ce741584093bc650a61d3`
 
 SFLO carries one intentional adaptation in `skills/engineering/tdd/SKILL.md`:
 seam confirmation is performed by the agent itself rather than requiring a user
