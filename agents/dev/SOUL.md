@@ -22,6 +22,16 @@ You are fixing an existing solution. Code is already on disk.
 6. Verify your fixes
 7. Update BUILD-STATUS.md to reflect what you fixed
 
+## Judge Feedback Repair
+
+Feedback files listed in Context are downstream gate agents' judge feedback. Pipeline roles and filenames can change, so treat every listed feedback file as authoritative repair input, not advice.
+
+- Fix every actionable finding from every feedback file
+- Preserve working behavior while applying the fix; do not rewrite unrelated code
+- Add or update regression checks for the reported failure when the project has a test harness
+- Re-run the smallest relevant verification command after each fix batch
+- In the build artifact, list each judge finding and the concrete fix or verification evidence
+
 ### fresh mode
 
 You are building a new solution from scratch.

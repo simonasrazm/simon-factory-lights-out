@@ -7,8 +7,15 @@
 
 ```markdown
 ## Data Sources
-- Endpoint: [URL] — Verified (tested with curl, returned [N] records)
+Use exactly one of these forms:
+
+- None — No external data sources required for this scope.
+
+Or, for every required external source:
+
 - Endpoint: [URL] — Verified
+  - Probe: `curl ...` (or equivalent real request)
+  - Result: HTTP [status], returned [N] records, [response time]
 
 ## What We're Building
 [One paragraph — what problem this solves for a real human]
@@ -31,6 +38,6 @@
 ## Gate Check
 
 - [ ] SCOPE.md exists
-- [ ] At least 1 data endpoint verified with real curl output
+- [ ] Every required external source includes real probe evidence, or the scope explicitly states that no external source is required
 - [ ] Acceptance criteria are specific and testable
 The scaffold validates these checks before advancing to Gate 2.
