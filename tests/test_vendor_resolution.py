@@ -173,19 +173,16 @@ class TestResolveSkillPaths(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
 
-    def test_unqualified_resolves_first_match(self):
-        """Unqualified 'tdd' resolves to agent-skills vendor (sorted first)."""
+    def test_unqualified_ambiguous_fails_with_qualification_choices(self):
+        """Unqualified duplicate leaves fail instead of silently choosing."""
         with patch("src.machine.SFLO_ROOT", self.tmpdir):
-            paths = resolve_skill_paths(["tdd"], self.tmpdir)
-        self.assertEqual(len(paths), 1)
-        # agent-skills sorts before custom-vendor, so first match is agent-skills
-        self.assertIn("agent-skills", paths[0])
-        self.assertTrue(paths[0].endswith("SKILL.md"))
+            with self.assertRaisesRegex(SkillResolutionError, "ambiguous"):
+                resolve_skill_paths(["tdd"], self.tmpdir)
 
     def test_unqualified_multiple_skills(self):
         """Multiple unqualified skills all resolve."""
         with patch("src.machine.SFLO_ROOT", self.tmpdir):
-            paths = resolve_skill_paths(["tdd", "lint", "fmt"], self.tmpdir)
+            paths = resolve_skill_paths(["agent-skills/tdd", "lint", "fmt"], self.tmpdir)
         self.assertEqual(len(paths), 3)
 
     def test_qualified_resolves_specific_vendor(self):
@@ -264,14 +261,14 @@ class TestResolveSkillPaths(unittest.TestCase):
     def test_resolved_paths_are_absolute(self):
         """All returned paths are absolute paths."""
         with patch("src.machine.SFLO_ROOT", self.tmpdir):
-            paths = resolve_skill_paths(["tdd", "custom-vendor/fmt"], self.tmpdir)
+            paths = resolve_skill_paths(["agent-skills/tdd", "custom-vendor/fmt"], self.tmpdir)
         for p in paths:
             self.assertTrue(os.path.isabs(p), f"Path not absolute: {p}")
 
     def test_resolved_paths_exist_on_disk(self):
         """All returned paths actually exist as files."""
         with patch("src.machine.SFLO_ROOT", self.tmpdir):
-            paths = resolve_skill_paths(["tdd", "lint", "fmt"], self.tmpdir)
+            paths = resolve_skill_paths(["agent-skills/tdd", "lint", "fmt"], self.tmpdir)
         for p in paths:
             self.assertTrue(os.path.isfile(p), f"File does not exist: {p}")
 
@@ -284,26 +281,25 @@ class TestResolveSkillPathsWithRealVendor(unittest.TestCase):
     SFLO_BASE = SFLO_REPO_ROOT
 
     def test_real_vendor_discovered(self):
-        """_discover_vendor_dirs finds real agent-skills vendor."""
+        """_discover_vendor_dirs finds real Matt Pocock vendor."""
         with patch("src.machine.SFLO_ROOT", self.SFLO_BASE):
             dirs = _discover_vendor_dirs(self.SFLO_BASE)
         basenames = [os.path.basename(d) for d in dirs]
-        self.assertIn("agent-skills", basenames)
+        self.assertIn("mattpocock-skills", basenames)
 
     def test_real_skill_resolves(self):
         """A known real skill resolves from the actual vendor dir."""
-        # We know code-review-and-quality exists from ls earlier
         with patch("src.machine.SFLO_ROOT", self.SFLO_BASE):
-            paths = resolve_skill_paths(["code-review-and-quality"], self.SFLO_BASE)
+            paths = resolve_skill_paths(["tdd"], self.SFLO_BASE)
         self.assertEqual(len(paths), 1)
         self.assertTrue(os.path.isfile(paths[0]))
-        self.assertIn("agent-skills", paths[0])
+        self.assertIn("mattpocock-skills", paths[0])
 
     def test_real_qualified_resolves(self):
         """Qualified name resolves against real vendor."""
         with patch("src.machine.SFLO_ROOT", self.SFLO_BASE):
             paths = resolve_skill_paths(
-                ["agent-skills/code-review-and-quality"], self.SFLO_BASE
+                ["mattpocock-skills/engineering/tdd"], self.SFLO_BASE
             )
         self.assertEqual(len(paths), 1)
         self.assertTrue(os.path.isfile(paths[0]))

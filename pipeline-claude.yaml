@@ -8,12 +8,9 @@ gates:
   1:
     artifact: SCOPE.md
     role: pm
-    model: claude-opus-4-6
+    model: claude-opus-4-8
     thinking: adaptive
     effort: max
-    skills:
-      - spec-driven-development
-      - debugging-and-error-recovery
     gate_doc: gates/discovery.md
   2:
     artifact: BUILD-STATUS.md
@@ -23,10 +20,8 @@ gates:
     thinking: adaptive
     effort: low
     skills:
-      - test-driven-development
-      - frontend-ui-engineering
-      - api-and-interface-design
-      - source-driven-development
+      - mattpocock-skills/engineering/tdd
+      - mattpocock-skills/engineering/code-review
     gate_doc: gates/build.md
   # Insert custom float-keyed gates (e.g. 2.5 for static analysis, 3.5 for
   # security audit) by extending this map in your project's pipeline.yaml.
@@ -34,31 +29,32 @@ gates:
   # or run()), and `validator:` for a custom validation script. See
   # src/runner.py _load_custom_runner() for the integration contract.
   3:
-    - artifact: QA-REPORT.md
-      role: qa
-      agents:
-        - agents/qa-w-agent-skills
-        - vendor/agent-skills/agents/code-reviewer
-      model: sonnet
-      thinking: adaptive
-      effort: max
-      threshold: A
-      skills:
-        - code-review-and-quality
-        - performance-optimization
-      gate_doc: gates/test.md
-    - artifact: SECURITY-REPORT.md
-      role: security
-      agent: agents/security
-      model: claude-opus-4-6
-      thinking: adaptive
-      effort: max
-      threshold: A
-      gate_doc: gates/security-review.md
+    artifact: QA-REPORT.md
+    role: qa
+    model: sonnet
+    thinking: adaptive
+    effort: max
+    threshold: A
+    skills:
+      - mattpocock-skills/engineering/code-review
+    on_reject_restart_at: 2
+    gate_doc: gates/test.md
+  # Security reviews the post-QA tree. Keep this sequential: QA may repair
+  # production code, which would make a parallel security verdict stale.
+  3.5:
+    artifact: SECURITY-REPORT.md
+    role: security
+    agent: agents/security
+    model: claude-opus-4-8
+    thinking: adaptive
+    effort: max
+    threshold: A
+    on_reject_restart_at: 2
+    gate_doc: gates/security-review.md
   4:
     artifact: PM-VERIFY.md
     role: pm-verify
-    model: claude-opus-4-6
+    model: claude-opus-4-8
     thinking: adaptive
     effort: max
     gate_doc: gates/verify.md
@@ -77,7 +73,7 @@ scout:
 
 # SFLO orchestrator
 sflo:
-  model: claude-opus-4-6
+  model: claude-opus-4-8
   thinking: adaptive
   effort: max
 

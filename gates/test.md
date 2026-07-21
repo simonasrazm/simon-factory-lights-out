@@ -38,6 +38,7 @@ GATE_RESULT: PASS or FAIL
 **Robustness** — Error handling graceful? Inputs validated at boundary? Failure modes diagnosable? No leaked secrets?
 **Performance** — Acceptable for expected data/load? No wasted resources? No O(n²) surprises?
 **Tests** — Core paths covered? Edge cases tested? Bug fixes have regression tests? If no tests visible: list which paths need coverage.
+**Deliverables** — Read SCOPE.md `## Deliverables` and verify every declared file exists at its exact path relative to the User Deliverables Directory. A copy under `.sflo/` does not satisfy the requirement.
 
 ### Dependency Governance (skip if no new deps)
 - New deps added? Justified? Risky or unmaintained? Flag it.
@@ -77,3 +78,4 @@ The `### Grade:` line is parsed by the validator. It MUST appear as its own head
 - [ ] `### Grade: X` heading present with valid grade letter
 - [ ] Grade meets threshold
 - [ ] No auto-fail triggers present
+- [ ] Every declared user deliverable exists in the project directory

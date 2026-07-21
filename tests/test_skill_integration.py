@@ -27,8 +27,7 @@ from src.runner import build_agent_prompt, _resolve_skill_references
 # ---------------------------------------------------------------------------
 
 SFLO_ROOT = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
-VENDOR_SKILLS_DIR = os.path.join(SFLO_ROOT, "vendor", "agent-skills", "skills")
-VENDOR_REFS_DIR = os.path.join(SFLO_ROOT, "vendor", "agent-skills", "references")
+VENDOR_SKILLS_DIR = os.path.join(SFLO_ROOT, "vendor", "mattpocock-skills", "skills")
 
 
 class TestSkillIntegrationEndToEnd(unittest.TestCase):
@@ -54,11 +53,11 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
     def test_skill_with_references_produces_methodology_and_refs(self):
         """Given skills: ['test-driven-development'], prompt contains methodology + refs."""
         # Resolve skill path via machine.py
-        resolved = resolve_skill_paths(["test-driven-development"], SFLO_ROOT)
+        resolved = resolve_skill_paths(["mattpocock-skills/engineering/tdd"], SFLO_ROOT)
         self.assertEqual(len(resolved), 1, "Should resolve exactly one skill path")
 
         expected_skill = os.path.join(
-            VENDOR_SKILLS_DIR, "test-driven-development", "SKILL.md"
+            VENDOR_SKILLS_DIR, "engineering", "tdd", "SKILL.md"
         )
         self.assertEqual(resolved[0], expected_skill)
         self.assertTrue(os.path.isfile(resolved[0]))
@@ -78,7 +77,7 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
 
         # Verify methodology section header
         self.assertIn(
-            "## Methodology: test-driven-development",
+            "## Methodology: tdd",
             system_prompt,
             "Prompt must contain methodology section for TDD skill",
         )
@@ -90,8 +89,7 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
             "Prompt must contain reference subsection when skill has refs",
         )
 
-        # Verify absolute path to testing-patterns.md
-        testing_patterns_path = os.path.join(VENDOR_REFS_DIR, "testing-patterns.md")
+        testing_patterns_path = os.path.join(VENDOR_SKILLS_DIR, "engineering", "tdd", "tests.md")
         self.assertIn(
             testing_patterns_path,
             system_prompt,
@@ -163,7 +161,7 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
         """Multiple skills → each gets its own ## Methodology: section."""
         # Use two real vendor skills
         resolved = resolve_skill_paths(
-            ["test-driven-development", "incremental-implementation"], SFLO_ROOT
+            ["mattpocock-skills/engineering/tdd", "mattpocock-skills/engineering/codebase-design"], SFLO_ROOT
         )
         self.assertEqual(len(resolved), 2, "Should resolve two skill paths")
 
@@ -180,12 +178,12 @@ class TestSkillIntegrationEndToEnd(unittest.TestCase):
         )
 
         self.assertIn(
-            "## Methodology: test-driven-development",
+            "## Methodology: tdd",
             system_prompt,
             "Prompt must contain TDD methodology section",
         )
         self.assertIn(
-            "## Methodology: incremental-implementation",
+            "## Methodology: codebase-design",
             system_prompt,
             "Prompt must contain incremental-implementation methodology section",
         )
@@ -197,7 +195,7 @@ class TestResolveSkillReferences(unittest.TestCase):
     def test_resolves_backtick_md_references(self):
         """Backtick-wrapped .md paths in skill content resolve to absolute paths."""
         skill_path = os.path.join(
-            VENDOR_SKILLS_DIR, "test-driven-development", "SKILL.md"
+            VENDOR_SKILLS_DIR, "engineering", "tdd", "SKILL.md"
         )
         with open(skill_path, encoding="utf-8") as f:
             content = f.read()
@@ -207,7 +205,7 @@ class TestResolveSkillReferences(unittest.TestCase):
         # testing-patterns.md should be among resolved refs
         ref_names = [name for name, _ in refs]
         self.assertIn(
-            "references/testing-patterns.md",
+            "tests.md",
             ref_names,
             "Should resolve references/testing-patterns.md from TDD skill",
         )
@@ -240,17 +238,17 @@ class TestResolveSkillPaths(unittest.TestCase):
 
     def test_unqualified_name_resolves(self):
         """Unqualified skill name scans vendor dirs and resolves."""
-        paths = resolve_skill_paths(["test-driven-development"], SFLO_ROOT)
+        paths = resolve_skill_paths(["tdd"], SFLO_ROOT)
         self.assertEqual(len(paths), 1)
         self.assertTrue(paths[0].endswith("SKILL.md"))
-        self.assertIn("test-driven-development", paths[0])
+        self.assertIn("tdd", paths[0])
 
     def test_qualified_name_resolves(self):
         """Qualified 'vendor/skill' format resolves correctly."""
-        paths = resolve_skill_paths(["agent-skills/test-driven-development"], SFLO_ROOT)
+        paths = resolve_skill_paths(["mattpocock-skills/engineering/tdd"], SFLO_ROOT)
         self.assertEqual(len(paths), 1)
-        self.assertIn("agent-skills", paths[0])
-        self.assertIn("test-driven-development", paths[0])
+        self.assertIn("mattpocock-skills", paths[0])
+        self.assertIn("tdd", paths[0])
 
     def test_nonexistent_skill_raises(self):
         """Non-existent skill name → SkillResolutionError (pipeline fails)."""

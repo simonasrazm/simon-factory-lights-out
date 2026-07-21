@@ -1,6 +1,6 @@
 # SFLO — Simon Factory Lights Out
 
-A gated pipeline protocol for building software with AI agents. Five gates — each producing a required artifact. No artifact, no progress. No skipping.
+A gated pipeline protocol for building software with AI agents. Six sequential stages — each producing a required artifact. No artifact, no progress. No skipping.
 
 ```mermaid
 flowchart LR
@@ -8,11 +8,13 @@ flowchart LR
 
     subgraph DEV_QA ["Inner Loop — max 10 rounds"]
         direction TB
-        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>PARALLEL REVIEW<br/><br/>QA Agent + Security Agent<br/>QA-REPORT.md + SECURITY-REPORT.md"]
-        G3 -- "below threshold or security fail" --> G2
+        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>QA<br/><br/>QA Agent<br/>QA-REPORT.md"]
+        G3 --> G35["Gate 3.5<br/>SECURITY<br/><br/>Security Agent<br/>SECURITY-REPORT.md"]
+        G3 -- "below threshold" --> G2
+        G35 -- "below threshold or critical finding" --> G2
     end
 
-    DEV_QA -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
+    G35 -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
     G4 -- "not A" --> DEV_QA
     G4 -- "A" --> G5["Gate 5<br/>SHIP<br/><br/>SFLO Agent<br/>SHIP-DECISION.md"]
 ```
@@ -27,9 +29,11 @@ Tell your AI agent:
 
 > Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project.
+The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a single global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project.
 
-Current SFLO defaults are tuned for Codex/OpenAI models. Claude defaults are preserved in `pipeline-claude.yaml`.
+SFLO vendors a pinned snapshot of [Matt Pocock's composable engineering skills](https://github.com/mattpocock/skills), including provenance in `vendor/mattpocock-skills/SFLO-VENDOR.md`. Skills are opt-in per gate through `skills:`. The Codex default attaches TDD plus code-review to Developer and code-review to QA because those treatments earned [professional comparative evidence](docs/evaluation.md); other roles remain skill-free. Add or change skills only when role-specific evaluation shows a measurable gain over that role's no-skill configuration. Role SOULs, gate documents, and artifact contracts remain authoritative when a supplemental skill describes an incompatible workflow. Custom runners own their prompts and are outside this automatic attachment boundary. Vendor updates are deliberate: replace the snapshot from a reviewed release commit, inspect the selected skill and companion-file diff, then run the full test suite and prompt-budget check.
+
+Current SFLO defaults are tuned for Codex/OpenAI models in `pipeline.yaml`. On a new Cursor project, setup installs `pipeline-cursor.yaml` as the project `pipeline.yaml`; when a custom pipeline already exists, setup preserves it and writes the proposed defaults to `pipeline.yaml.sflo-default`. Claude defaults are preserved in `pipeline-claude.yaml`.
 
 ## Usage
 
@@ -44,6 +48,8 @@ The pipeline runs automatically. Scout picks the right agents, gates enforce qua
 ### Factories
 
 Each CLI run gets its own factory directory under `.sflo/`, named from the prompt or from `--factory NAME`. This lets multiple factories run in parallel against the same project without sharing `state.json`, locks, logs, or gate artifacts.
+
+User-facing files are separate from factory state. By default they are written under the directory where SFLO was invoked; pass `--output-dir PATH` to target another existing project directory. The selected directory is persisted for resume, while `SCOPE.md` declares the required project-relative deliverable files that Gate 2, QA/Security, and the final ship check verify deterministically.
 
 Useful commands from the SFLO checkout:
 
@@ -93,13 +99,13 @@ Scout will discover your agent automatically on the next pipeline run — no con
 
 ## Configuration
 
-SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, but you can override it by placing your own `pipeline.yaml` in your project root.
+SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, Cursor has a runtime-specific `pipeline-cursor.yaml`, and Claude has `pipeline-claude.yaml`. You can override any runtime by placing your own `pipeline.yaml` in your project root.
 
 `pipeline.yaml` is the source of truth for models, reasoning effort, thresholds, agents, vendor skills, custom gates, and runtime policy. See `pipeline.yaml` for the full default configuration with all options documented.
 
-### Parallel QA and security
+### Sequential QA and security
 
-Gate 3 is a parallel fan-out by default. QA and security review the same build output at the same stage, write their own reports, and SFLO advances only when both artifacts satisfy their validators and thresholds.
+QA completes before the security review in the default pipeline. Each role writes its own report, and SFLO advances only when both artifacts satisfy their validators and thresholds. A full run invokes up to six sequential model roles and can take several minutes; the defaults prioritize professional reliability over minimum latency.
 
 ## Contributing
 

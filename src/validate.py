@@ -1,5 +1,6 @@
 """SFLO gate validation — artifact checks for each gate."""
 
+import ntpath
 import os
 import re
 
@@ -8,7 +9,6 @@ from .constants import (
     SFLO_ROOT,
     GRADE_MAP,
     GRADE_THRESHOLD,
-    inner_loop_gate_key,
     outer_loop_gate_key,
 )
 
@@ -20,6 +20,59 @@ def read_artifact(sflo_dir, filename):
         return None, f"File not found: {p}"
     with open(p, "r", encoding="utf-8") as f:
         return f.read(), None
+
+
+def feedback_name_for_artifact(artifact):
+    """Return the feedback filename derived from a pipeline artifact name."""
+    base = os.path.basename(artifact or "")
+    stem, ext = os.path.splitext(base)
+    if not stem:
+        return None
+    return f"{stem}-FEEDBACK{ext or '.md'}"
+
+
+def feedback_path_for_artifact(sflo_dir, artifact):
+    """Return the feedback path derived from a pipeline artifact name."""
+    name = feedback_name_for_artifact(artifact)
+    return os.path.join(sflo_dir, name) if name else None
+
+
+def _gate_entries(gate_info):
+    return gate_info if isinstance(gate_info, list) else [gate_info]
+
+
+def feedback_paths_for_gate(sflo_dir, gate_key, gates=None):
+    """Existing feedback files for every artifact produced by a gate."""
+    _gates = gates if gates is not None else GATES
+    gate_info = _gates.get(gate_key, {})
+    paths = []
+    for entry in _gate_entries(gate_info):
+        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+        path = feedback_path_for_artifact(sflo_dir, artifact)
+        if path and os.path.isfile(path):
+            paths.append(path)
+    return paths
+
+
+def _append_artifact_feedback(sflo_dir, artifact, feedback, label):
+    """Append extracted judge feedback to the artifact-specific feedback file."""
+    path = feedback_path_for_artifact(sflo_dir, artifact)
+    if not path or not feedback:
+        return
+
+    existing = ""
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            existing = f.read()
+
+    round_count = existing.count("## Feedback Round")
+    header = f"## Feedback Round {round_count + 1}"
+    if label:
+        header += f" — {label}"
+    header += "\n\n"
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(existing + header + feedback + "\n\n")
 
 
 def extract_field(content, pattern):
@@ -46,6 +99,94 @@ def section_body(content, heading_pattern):
     next_heading = re.search(r"\n##", rest)
     body = rest[: next_heading.start()] if next_heading else rest
     return body.strip()
+
+
+def extract_deliverable_paths(scope_content):
+    """Return declared relative deliverable files and contract errors."""
+    body = section_body(scope_content, r"Deliverables")
+    paths = re.findall(r"(?m)^\s*[-*]\s+`([^`\r\n]+)`", body)
+    errors = []
+    for path in paths:
+        parts = path.split("/")
+        if (
+            os.path.isabs(path)
+            or ntpath.isabs(path)
+            or "\\" in path
+            or any(part in ("", ".", "..") for part in parts)
+            or parts[0].lower() == ".sflo"
+            or ":" in path
+            or any(char in path for char in "*?[]{}")
+        ):
+            errors.append(path)
+    if len(paths) != len(set(paths)):
+        errors.append("duplicate paths")
+    return paths, errors
+
+
+def validate_deliverable_files(scope_content, output_dir, sflo_dir=None):
+    """Verify every declared deliverable is a real file inside output_dir."""
+    paths, contract_errors = extract_deliverable_paths(scope_content)
+    checks = []
+    if not paths:
+        return [
+            {
+                "name": "deliverables_declared",
+                "pass": False,
+                "detail": "SCOPE.md has no declared deliverable files",
+            }
+        ]
+
+    root = os.path.realpath(os.path.abspath(output_dir))
+    state_root = os.path.realpath(os.path.abspath(sflo_dir)) if sflo_dir else None
+    root_is_directory = os.path.isdir(root)
+    checks.append(
+        {
+            "name": "output_directory_exists",
+            "pass": root_is_directory,
+            "detail": root,
+        }
+    )
+    unsafe = set(contract_errors)
+    for path in paths:
+        target = os.path.realpath(os.path.join(root, *path.split("/")))
+        try:
+            inside_root = os.path.commonpath((root, target)) == root
+        except ValueError:
+            inside_root = False
+        try:
+            inside_state = bool(state_root) and (
+                os.path.commonpath((state_root, target)) == state_root
+            )
+        except ValueError:
+            inside_state = False
+        safe = path not in unsafe and inside_root and not inside_state
+        exists = safe and root_is_directory and os.path.isfile(target)
+        checks.append(
+            {
+                "name": f"deliverable_exists:{path}",
+                "pass": exists,
+                "detail": (
+                    target
+                    if exists
+                    else f"required project file missing or unsafe: {target}"
+                ),
+            }
+        )
+    return checks
+
+
+def validate_scope_deliverables(sflo_dir, output_dir):
+    """Load SCOPE.md and validate its deliverables against the project root."""
+    scope_content, _ = read_artifact(sflo_dir, "SCOPE.md")
+    if not scope_content:
+        return [
+            {
+                "name": "deliverables_declared",
+                "pass": False,
+                "detail": "SCOPE.md missing or has no deliverable manifest",
+            }
+        ]
+    return validate_deliverable_files(scope_content, output_dir, sflo_dir=sflo_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -322,21 +463,12 @@ def extract_agent_feedback(sflo_dir, artifact, role):
     return "\n\n".join(parts)
 
 
-def save_qa_feedback(sflo_dir):
-    """Save feedback from ALL parallel inner-loop gate agents to QA-FEEDBACK.md.
-
-    Iterates every agent defined in the inner-loop gate, extracts
-    findings from each report artifact, and writes combined feedback.
-    Dev sees all issues regardless of which agent found them.
-
-    OCP: adding a new parallel agent in pipeline.yaml automatically
-    includes its feedback — no code change needed.
-    """
-    gate_key = inner_loop_gate_key()
-    gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
+def save_gate_feedback(sflo_dir, gate_key, gates=None):
+    """Save feedback from every artifact configured at ``gate_key``."""
+    _gates = gates if gates is not None else GATES
+    gate_info = _gates.get(gate_key, {}) if gate_key is not None else {}
     agents = gate_info if isinstance(gate_info, list) else [gate_info]
 
-    sections = []
     for agent in agents:
         artifact = agent.get("artifact")
         role = agent.get("role", "unknown")
@@ -344,23 +476,22 @@ def save_qa_feedback(sflo_dir):
             continue
         feedback = extract_agent_feedback(sflo_dir, artifact, role)
         if feedback:
-            sections.append(feedback)
+            _append_artifact_feedback(sflo_dir, artifact, feedback, role)
 
-    if not sections:
-        return
 
-    feedback_path = os.path.join(sflo_dir, "QA-FEEDBACK.md")
-    existing = ""
-    if os.path.isfile(feedback_path):
-        with open(feedback_path, "r", encoding="utf-8") as f:
-            existing = f.read()
+def _first_gate_for_role(role, gates=None):
+    """Return the first configured gate containing ``role``."""
+    _gates = gates if gates is not None else GATES
+    for gate_key in sorted(_gates):
+        for entry in _gate_entries(_gates[gate_key]):
+            if isinstance(entry, dict) and entry.get("role") == role:
+                return gate_key
+    return None
 
-    round_count = existing.count("## QA Round")
-    header = f"## QA Round {round_count + 1}\n\n"
 
-    with open(feedback_path, "w", encoding="utf-8") as f:
-        content = existing + header + "\n\n".join(sections) + "\n\n"
-        f.write(content)
+def save_qa_feedback(sflo_dir):
+    """Backward-compatible helper that saves the configured QA feedback."""
+    save_gate_feedback(sflo_dir, _first_gate_for_role("qa"))
 
 
 def extract_qa_feedback(sflo_dir):
@@ -369,7 +500,7 @@ def extract_qa_feedback(sflo_dir):
     Prefer extract_agent_feedback() for new code. This exists for tests
     and any external callers that expect the old interface.
     """
-    gate_key = inner_loop_gate_key()
+    gate_key = _first_gate_for_role("qa")
     gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
     if isinstance(gate_info, list):
         qa_artifact = next(
@@ -382,39 +513,33 @@ def extract_qa_feedback(sflo_dir):
 
 
 def save_pm_feedback(sflo_dir):
-    """Copy PM verification artifact to PM-FEEDBACK.md before cleanup.
+    """Copy outer-loop verification artifacts to artifact feedback files.
 
     Same pattern as save_qa_feedback: gate artifact is deleted for
     auto_transition, but a feedback copy persists for dev's context map.
     """
     gate_key = outer_loop_gate_key()
     gate_info = GATES.get(gate_key, {}) if gate_key is not None else {}
-    if isinstance(gate_info, list):
-        pm_artifact = next(
-            (e.get("artifact") for e in gate_info if e.get("role") == "pm"),
-            "PM-VERIFY.md",
-        )
-    else:
-        pm_artifact = gate_info.get("artifact", "PM-VERIFY.md")
-    content, err = read_artifact(sflo_dir, pm_artifact)
-    if content is None:
-        return
-
-    feedback_path = os.path.join(sflo_dir, "PM-FEEDBACK.md")
-    with open(feedback_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    for entry in _gate_entries(gate_info):
+        artifact = entry.get("artifact") if isinstance(entry, dict) else None
+        role = entry.get("role", "unknown") if isinstance(entry, dict) else "unknown"
+        if not artifact:
+            continue
+        content, _ = read_artifact(sflo_dir, artifact)
+        if content is not None:
+            _append_artifact_feedback(sflo_dir, artifact, content, role)
 
 
 def clean_artifacts_from(start_gate, sflo_dir, preserve=None):
     """Archive gate OUTPUT artifacts >= start_gate to logs/ so auto-transition rebuilds them.
 
-    Feedback files (QA-FEEDBACK.md, PM-FEEDBACK.md) are preserved in place —
-    they're context for the next agent, not gate outputs to regenerate.
+    Feedback files (`*-FEEDBACK.md`) are preserved in place — they're context
+    for the next agent, not gate outputs to regenerate.
     Gate artifacts (including PM-VERIFY.md) are moved to logs/ for debugging.
     """
     from .archive import archive_to_logs
 
-    preserve_names = {"QA-FEEDBACK.md", "PM-FEEDBACK.md"}
+    preserve_names = set()
     if preserve:
         preserve_names.update(preserve)
 
@@ -490,7 +615,7 @@ def _load_validator_module(validator_path):
     return module, None
 
 
-def validate_gate(gate_num, sflo_dir, gates=None):
+def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
     """Validate a gate's artifact. Returns (passed, checks_list).
 
     For unknown gates (not in built-in gates 1-5), falls back to
@@ -596,6 +721,15 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                 if not pm_passed:
                     all_passed = False
 
+        review_roles = {
+            entry.get("role") for entry in info if isinstance(entry, dict)
+        }
+        if output_dir is not None and review_roles.intersection({"qa", "security"}):
+            deliverable_checks = validate_scope_deliverables(sflo_dir, output_dir)
+            all_checks.extend(deliverable_checks)
+            if not all(check["pass"] for check in deliverable_checks):
+                all_passed = False
+
         return all_passed, all_checks
 
     checks = []
@@ -628,11 +762,6 @@ def validate_gate(gate_num, sflo_dir, gates=None):
         )
         return False, checks
 
-    # Check for custom validator from extension registry (if available)
-    custom_validator = get_validator(gate_num)
-    if custom_validator is not None:
-        return custom_validator(gate_num, content, sflo_dir, checks)
-
     # Resolve per-gate threshold: gate entry threshold -> global GRADE_THRESHOLD
     gate_threshold_str = info.get("threshold") if isinstance(info, dict) else None
     effective_threshold = (
@@ -640,6 +769,32 @@ def validate_gate(gate_num, sflo_dir, gates=None):
         if gate_threshold_str
         else GRADE_THRESHOLD
     )
+
+    # Single-entry review gates validate by role, not by numeric position.
+    # This keeps QA and Security contracts intact when they are sequenced at
+    # integer or float gate keys instead of grouped in a parallel list.
+    entry_role = info.get("role") if isinstance(info, dict) else None
+    if entry_role == "qa":
+        role_passed, role_checks = _validate_qa_content(content, effective_threshold)
+        checks.extend(role_checks)
+        if output_dir is not None:
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
+        return role_passed and all(c["pass"] for c in checks), checks
+    if entry_role == "security":
+        role_passed, role_checks = _validate_security_content(
+            content, effective_threshold
+        )
+        checks.extend(role_checks)
+        if output_dir is not None:
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
+        return role_passed and all(c["pass"] for c in checks), checks
+
+    # Check for custom validator from extension registry (if available).
+    # Role-aware review gates above must not fall through to the custom-gate
+    # file-existence default merely because they use a float key.
+    custom_validator = get_validator(gate_num)
+    if custom_validator is not None:
+        return custom_validator(gate_num, content, sflo_dir, checks)
 
     if gate_num == 1:
         # SCOPE.md must have acceptance criteria — the contract for downstream agents.
@@ -664,6 +819,50 @@ def validate_gate(gate_num, sflo_dir, gates=None):
             }
         )
 
+        # External sources are an ingestion gate, not a prose claim. A scope
+        # must either declare that none are needed or retain concrete probe
+        # evidence (method plus an observed result) for the sources it uses.
+        data_sources = section_body(content, r"Data Sources")
+        no_external_sources = bool(
+            re.search(
+                r"\bno external (?:data sources?|data|sources?) (?:are )?required\b",
+                data_sources,
+                re.IGNORECASE,
+            )
+        )
+        has_probe_method = bool(
+            re.search(
+                r"\b(?:curl|fetch|http request|queried|opened|read)\b",
+                data_sources,
+                re.IGNORECASE,
+            )
+        )
+        has_probe_result = bool(
+            re.search(
+                r"(?:\bHTTP\s*\d{3}\b|\bstatus(?:\s+code)?[:\s]+\d{3}\b|"
+                r"\breturned\s+\d+\b|\b\d+\s+records?\b|"
+                r"\bresponse\s+time[:\s]+\d+)",
+                data_sources,
+                re.IGNORECASE,
+            )
+        )
+        sources_verified = no_external_sources or (
+            has_probe_method and has_probe_result
+        )
+        checks.append(
+            {
+                "name": "data_sources_verified",
+                "pass": sources_verified,
+                "detail": (
+                    "no external source required"
+                    if no_external_sources
+                    else "retained probe method and result"
+                    if sources_verified
+                    else "missing no-source declaration or concrete probe evidence"
+                ),
+            }
+        )
+
         # Must have substantive content (not a near-empty file)
         word_count = len(content.split())
         checks.append(
@@ -683,6 +882,34 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                 "detail": "placeholder detected" if has_placeholder else "OK",
             }
         )
+
+        if output_dir is not None:
+            deliverable_paths, deliverable_errors = extract_deliverable_paths(content)
+            checks.append(
+                {
+                    "name": "deliverables_declared",
+                    "pass": bool(deliverable_paths),
+                    "paths": deliverable_paths,
+                    "detail": (
+                        f"{len(deliverable_paths)} required file(s) declared"
+                        if deliverable_paths
+                        else "missing ## Deliverables entries formatted as - `relative/path`"
+                    ),
+                }
+            )
+            checks.append(
+                {
+                    "name": "deliverables_safe",
+                    "pass": bool(deliverable_paths) and not deliverable_errors,
+                    "detail": (
+                        "OK"
+                        if deliverable_paths and not deliverable_errors
+                        else f"unsafe deliverable declarations: {', '.join(deliverable_errors)}"
+                        if deliverable_errors
+                        else "no deliverables to validate"
+                    ),
+                }
+            )
 
     elif gate_num == 2:
         # Build success marker
@@ -734,6 +961,8 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                         "detail": f"{addressed}/{len(scope_acs)} ACs referenced",
                     }
                 )
+            if output_dir is not None:
+                checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
 
     elif gate_num == 3:
         qa_passed, qa_checks = _validate_qa_content(content, effective_threshold)
@@ -755,6 +984,8 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                 "value": decision,
             }
         )
+        if output_dir is not None and decision and decision.upper() == "SHIP":
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
         checks.append(
             {
                 "name": "decision_valid",

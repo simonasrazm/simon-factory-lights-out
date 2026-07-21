@@ -80,7 +80,8 @@ class TestEnvDict:
         d = _make_sflo_dir(with_venv=True)
         try:
             env = _get_factory_env(d)
-            assert env["PATH"].startswith(os.path.join(d, ".venv", "bin"))
+            scripts_dir = "Scripts" if os.name == "nt" else "bin"
+            assert env["PATH"].startswith(os.path.join(d, ".venv", scripts_dir))
         finally:
             shutil.rmtree(d)
 

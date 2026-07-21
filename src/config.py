@@ -97,6 +97,7 @@ def parse_pipeline_yaml(path):
     in_list_item = False
     # Track which gate-level sub-list we're currently reading (skills/agents)
     current_gate_sublist = None
+    current_simple_sublist = None
     # For simple top-level sections (scout, sflo, security)
     # (removed unused current_simple_section)
     errors = []
@@ -118,6 +119,7 @@ def parse_pipeline_yaml(path):
 
             if indent == 0:
                 current_gate_sublist = None
+                current_simple_sublist = None
                 if ":" in content:
                     key, _, val = content.partition(":")
                     key = key.strip()
@@ -157,7 +159,16 @@ def parse_pipeline_yaml(path):
                     key, _, val = content.partition(":")
                     key = key.strip()
                     val = _strip_inline_comment(val)
-                    result[current_section][key] = val
+                    if key == "skills" and not val:
+                        result[current_section][key] = []
+                        current_simple_sublist = key
+                    else:
+                        result[current_section][key] = val
+                        current_simple_sublist = None
+                elif indent == 4 and current_simple_sublist and content.startswith("- "):
+                    result[current_section][current_simple_sublist].append(
+                        _strip_inline_comment(content[2:])
+                    )
                 continue
 
             if current_section == "gates":
@@ -371,7 +382,7 @@ def derive_roles_from_pipeline(config=None):
             if not role or role in roles:
                 continue
             role_cfg = {}
-            for field in ("model", "thinking", "effort", "tools", "agent"):
+            for field in ("model", "thinking", "effort", "tools", "agent", "skills"):
                 if entry.get(field):
                     role_cfg[field] = entry[field]
             if role_cfg:

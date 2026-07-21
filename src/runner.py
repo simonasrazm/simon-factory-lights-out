@@ -14,10 +14,11 @@ Usage (called by runtime hook/skill, not directly):
     )
 
 CLI (for testing):
-    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--quiet]
+    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--output-dir .] [--quiet]
 
     --runtime NAME    Required for pipeline starts. Runtime adapter to use.
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
+    --output-dir PATH User-facing project directory (default: invocation cwd).
     --quiet           Suppress verbose logging to stderr.
 """
 
@@ -152,6 +153,8 @@ if __name__ == "__main__":
         compute_next,
         apply_transition,
         build_context_map,
+        resolve_skill_paths,
+        resolve_sflo_base,
     )
     from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
     from src.config import (
@@ -159,6 +162,7 @@ if __name__ == "__main__":
         load_pipeline_config as _load_pipeline_config,
     )
     from src.archive import archive_to_logs
+    from src.validate import feedback_name_for_artifact
     from src.preflight import preflight_check, check_browser
     from src import evals as _evals
     from src.evals.integration import call_adapter_with_evals
@@ -189,6 +193,8 @@ else:
         compute_next,
         apply_transition,
         build_context_map,
+        resolve_skill_paths,
+        resolve_sflo_base,
     )
     from .constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
     from .config import (
@@ -196,6 +202,7 @@ else:
         load_pipeline_config as _load_pipeline_config,
     )
     from .archive import archive_to_logs
+    from .validate import feedback_name_for_artifact
     from .preflight import preflight_check, check_browser
     from . import evals as _evals
     from .evals.integration import call_adapter_with_evals
@@ -275,6 +282,51 @@ def read_file(path):
             return f.read()
     except (OSError, FileNotFoundError) as e:
         return f"[ERROR reading {path}: {e}]"
+
+
+def read_file_limited(path, max_chars):
+    """Read at most `max_chars` from a file for prompt assembly."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(max_chars + 1)
+    except (OSError, FileNotFoundError) as e:
+        return f"[ERROR reading {path}: {e}]"
+    if len(content) <= max_chars:
+        return content
+    size_hint = ""
+    try:
+        size_hint = f" ({os.path.getsize(path)} bytes)"
+    except OSError:
+        pass
+    return (
+        content[:max_chars]
+        + f"\n\n[TRUNCATED: {os.path.basename(path)} exceeds "
+        f"{max_chars} prompt characters{size_hint}]"
+    )
+
+
+def format_prior_artifacts_for_prompt(
+    reads,
+    *,
+    per_file_max_chars=80_000,
+    total_max_chars=500_000,
+):
+    """Format prior gate artifacts without letting one artifact exceed budget."""
+    chunks = []
+    used = 0
+    for path in reads:
+        remaining = total_max_chars - used
+        if remaining <= 0:
+            chunks.append(
+                "[TRUNCATED: additional prior artifacts omitted from prompt budget]"
+            )
+            break
+        budget = min(per_file_max_chars, remaining)
+        body = read_file_limited(path, budget)
+        chunk = f"## {os.path.basename(path)}\n\n{body}"
+        chunks.append(chunk)
+        used += len(chunk)
+    return "\n\n---\n\n".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +478,7 @@ def _get_factory_env(sflo_dir):
     }
 
 
-def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime):
+def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir=None):
     """Add runtime-specific kwargs to a gate-agent spawn call.
 
     cursor-agent takes --workspace to discover project-level .cursor/ rules
@@ -434,7 +486,7 @@ def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime):
     absorb extras), so workspace is passed only for the cursor runtime.
     """
     if runtime == "cursor":
-        spawn_kwargs["workspace"] = SFLO_ROOT
+        spawn_kwargs["workspace"] = os.path.abspath(output_dir or os.getcwd())
 
 
 async def default_agent_runner(
@@ -497,7 +549,7 @@ async def default_agent_runner(
                 spawn_kwargs["cwd"] = output_dir
             if agent_env is not None:
                 spawn_kwargs["env"] = agent_env
-            _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
+            _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir)
             response = await call_adapter_with_evals(
                 adapter,
                 **spawn_kwargs,
@@ -639,7 +691,9 @@ def write_validation_feedback(sflo_dir, gate_num, checks):
     artifact = (gate_info or {}).get("artifact")
     if not artifact:
         return None
-    feedback_name = artifact.replace(".md", "-FEEDBACK.md")
+    feedback_name = feedback_name_for_artifact(artifact)
+    if not feedback_name:
+        return None
     path = os.path.join(sflo_dir, feedback_name)
     with open(path, "w", encoding="utf-8") as f:
         f.write(feedback)
@@ -660,22 +714,53 @@ def _resolve_skill_references(skill_path, skill_content):
     if not skill_content:
         return []
 
-    # Vendor root is 3 levels up from SKILL.md:
-    # vendor/<vendor>/skills/<skill>/SKILL.md → vendor/<vendor>/
     skill_dir = os.path.dirname(skill_path)
-    vendor_root = os.path.dirname(os.path.dirname(skill_dir))
+    cursor = skill_dir
+    while os.path.basename(cursor) != "skills" and cursor != os.path.dirname(cursor):
+        cursor = os.path.dirname(cursor)
+    vendor_root = os.path.abspath(os.path.dirname(cursor))
+    real_vendor_root = os.path.realpath(vendor_root)
 
     refs = []
     seen = set()
-    for match in re.findall(r"`([^`]+\.md)`", skill_content):
-        if match in seen or ".." in match:
+    matches = [(m, skill_dir) for m in re.findall(r"\[[^\]]*\]\(([^)]+\.md(?:#[^)]+)?)\)", skill_content)]
+    matches += [(m, vendor_root) for m in re.findall(r"`([^`]+\.md)`", skill_content)]
+    for original, base_dir in matches:
+        match = original.split("#", 1)[0]
+        if match in seen or not match or "\\" in match or "\x00" in match:
+            continue
+        if os.path.isabs(match) or "://" in match or any(p in ("", ".", "..") for p in match.split("/")):
             continue
         seen.add(match)
-        # split on "/" so os.path.join builds a native path on Windows too
-        abs_path = os.path.normpath(os.path.join(vendor_root, *match.split("/")))
-        if os.path.isfile(abs_path):
+        abs_path = os.path.abspath(os.path.join(base_dir, *match.split("/")))
+        real_path = os.path.realpath(abs_path)
+        if os.path.commonpath((real_vendor_root, real_path)) == real_vendor_root and os.path.isfile(real_path):
             refs.append((match, abs_path))
     return refs
+
+
+def render_skill_methodologies(skill_paths):
+    """Render resolved skill bodies consistently for every core LLM path."""
+    sections = []
+    seen = set()
+    for skill_path in skill_paths or []:
+        real_path = os.path.realpath(skill_path)
+        if real_path in seen or not os.path.isfile(real_path):
+            continue
+        seen.add(real_path)
+        skill_content = read_file(real_path)
+        skill_name = os.path.basename(os.path.dirname(real_path))
+        refs = _resolve_skill_references(real_path, skill_content)
+        ref_section = ""
+        if refs:
+            ref_lines = [f"  - `{abs_p}` ({name})" for name, abs_p in refs]
+            ref_section = "\n\n### Reference files (read on demand)\n" + "\n".join(
+                ref_lines
+            )
+        sections.append(
+            f"## Methodology: {skill_name}\n\n{skill_content}{ref_section}"
+        )
+    return sections
 
 
 def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_dir=None):
@@ -713,25 +798,17 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_d
             system_parts.append(f"## Agent: {agent_name}\n\n{agent_content}")
 
     # Vendor methodology skills (loaded from per-gate skills: list in pipeline.yaml)
-    for skill_path in agent_info.get("skills", []):
-        if os.path.isfile(skill_path):
-            skill_content = read_file(skill_path)
-            skill_name = os.path.basename(os.path.dirname(skill_path))
-            # Resolve references mentioned in skill content → absolute paths
-            refs = _resolve_skill_references(skill_path, skill_content)
-            ref_section = ""
-            if refs:
-                ref_lines = [f"  - `{abs_p}` ({name})" for name, abs_p in refs]
-                ref_section = "\n\n### Reference files (read on demand)\n" + "\n".join(
-                    ref_lines
-                )
-            system_parts.append(
-                f"## Methodology: {skill_name}\n\n{skill_content}{ref_section}"
-            )
+    system_parts.extend(render_skill_methodologies(agent_info.get("skills", [])))
 
     if len(reads) >= 1:
         gate_content = read_file(reads[0])
         system_parts.append(f"## Gate Document\n\n{gate_content}")
+
+    if agent_info.get("skills"):
+        system_parts.append(
+            "## Authority\n\nThe role SOUL, gate document, and artifact contract "
+            "override incompatible workflow mechanics in supplemental methodologies."
+        )
 
     # Task subagent restriction — inject when gate disallows Task spawning.
     # Advisory: model follows the instruction; violations are logged as warnings.
@@ -769,62 +846,10 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_d
         abs_produces = os.path.abspath(produces)
         artifact_name = os.path.basename(produces)
         role = agent_info.get("role", "")
-        if runtime == "ollama":
-            write_instruction = (
-                f"You MUST write the file using bash:\n"
-                f"  mkdir -p {os.path.dirname(abs_produces)}\n"
-                f"  cat <<'ARTIFACT_EOF' > {abs_produces}\n"
-                f"  <your content here>\n"
-                f"  ARTIFACT_EOF\n"
-                f"Do NOT put the artifact content in your response — write it to the file."
-            )
-            # PM: acceptance criteria MUST use checkbox format
-            if role == "pm" and artifact_name == "SCOPE.md":
-                write_instruction += (
-                    "\n\nAcceptance criteria MUST use this exact format:\n"
-                    "- [ ] AC1: description\n"
-                    "- [ ] AC2: description\n"
-                    "Do NOT use numbered lists or plain dashes for ACs."
-                )
-            # Dev: read SCOPE ACs, build deliverable, verify, write status
-            if role == "dev":
-                scope_path = os.path.join(sflo_dir, "SCOPE.md")
-                write_instruction = (
-                    f"Follow this order:\n"
-                    f"1. Read {scope_path} to see the acceptance criteria.\n"
-                    f"2. Build the deliverable the user asked for. "
-                    f"Use `write` for the first part, `append` for subsequent parts "
-                    f"if the file is large. Write COMPLETE code, no placeholders.\n"
-                    f"3. Verify it works — run it, check output, confirm no errors.\n"
-                    f"4. Write {artifact_name} to {abs_produces}. "
-                    f"List each AC from SCOPE.md with [x] and how it was addressed."
-                )
-            # QA must actually test the deliverable, not just read BUILD-STATUS
-            elif role == "qa":
-                write_instruction = (
-                    f"IMPORTANT: You are QA. Do NOT just read BUILD-STATUS.md and grade it.\n"
-                    f"You MUST use tools to verify the actual deliverable:\n"
-                    f"1. Find the output file the developer created (check BUILD-STATUS.md for path).\n"
-                    f"2. Read the source code — check for syntax errors, missing logic.\n"
-                    f"3. If executable — run it and check output.\n"
-                    f"4. If browser tools are available — use them to open and test web deliverables.\n"
-                    f"5. THEN write {artifact_name} to {abs_produces} with SPECIFIC evidence from your tests.\n"
-                    f"Grade F if deliverable missing. Grade D if errors found. Generic 'PASS' without "
-                    f"evidence = not acceptable."
-                )
-        else:
-            write_instruction = (
-                "Use the available tools to create the file (Write tool, or bash: "
-                "cat <<'EOF' > path)."
-            )
         task_text = (
-            f"\n## Your Task\n\n"
-            f"Write the artifact `{artifact_name}` to this EXACT path: {abs_produces}\n"
-            f"{write_instruction}\n"
-            f"Follow the gate document template EXACTLY.\n"
-            f"Every section in the template is REQUIRED — do not skip any.\n"
-            f"The scaffold validates the artifact automatically. Missing sections cause gate failure.\n"
-            f"Create the parent directory if it doesn't exist."
+            f"\n## Artifact Contract\n\n"
+            f"Artifact: `{artifact_name}`\n"
+            f"Exact path: `{abs_produces}`"
         )
         # Tell dev/qa where user-facing deliverables (built app code, HTML, data) belong.
         # Pipeline artifacts (SCOPE.md, BUILD-STATUS.md) still go to sflo_dir via abs paths above.
@@ -855,12 +880,26 @@ _ARCHIVABLE_ARTIFACTS = [
     "SCOPE.md",
     "BUILD-STATUS.md",
     "QA-REPORT.md",
+    "SECURITY-REPORT.md",
     "PM-VERIFY.md",
     "SHIP-DECISION.md",
-    "QA-FEEDBACK.md",
-    "PM-FEEDBACK.md",
     "pipeline.log",
 ]
+
+
+def _archivable_paths(sflo_dir, include_state=False):
+    names = list(_ARCHIVABLE_ARTIFACTS)
+    if include_state:
+        names.insert(0, "state.json")
+    try:
+        names.extend(
+            name
+            for name in sorted(os.listdir(sflo_dir))
+            if name.endswith("-FEEDBACK.md")
+        )
+    except OSError:
+        pass
+    return [os.path.join(sflo_dir, name) for name in dict.fromkeys(names)]
 
 
 async def run_pipeline(
@@ -870,6 +909,7 @@ async def run_pipeline(
     runtime=None,
     verbose=True,
     assignments=None,
+    resume=False,
 ):
     """Run the full SFLO pipeline.
 
@@ -887,6 +927,8 @@ async def run_pipeline(
             scout would be pure overhead. Stale-detect still runs against
             the real on-disk state.json — prior-run artifacts get wiped or
             reused based on prompt match, independent of this kwarg.
+        resume: Explicit resume request. Preserves existing state even when
+            it is older than the stale-state safety window.
 
     Returns:
         dict with final state, artifacts, and pipeline summary.
@@ -981,20 +1023,23 @@ async def run_pipeline(
 
     if os.path.isfile(prior_state_path):
         try:
-            # Check file age (safety net for stale state)
-            file_stat = os.stat(prior_state_path)
-            file_age_days = (_time.time() - file_stat.st_mtime) / 86400.0
+            # Check file age (safety net for stale state). Explicit --resume
+            # means the operator chose this state directory intentionally, so
+            # do not archive it just because the interrupted run is old.
+            file_age_days = 0
+            if not resume:
+                file_stat = os.stat(prior_state_path)
+                file_age_days = (_time.time() - file_stat.st_mtime) / 86400.0
             STATE_MAX_AGE_DAYS = 7
 
-            if file_age_days > STATE_MAX_AGE_DAYS:
+            if not resume and file_age_days > STATE_MAX_AGE_DAYS:
                 # State too old — archive and start fresh
                 if verbose:
                     _safe_stderr(
                         f"  Stale state — state.json is {file_age_days:.1f} days old (max {STATE_MAX_AGE_DAYS}), archiving"
                     )
-                _stale_names = ["state.json"] + _ARCHIVABLE_ARTIFACTS
                 archive_to_logs(
-                    sflo_dir, [os.path.join(sflo_dir, n) for n in _stale_names]
+                    sflo_dir, _archivable_paths(sflo_dir, include_state=True)
                 )
             else:
                 # State recent enough — check prompt
@@ -1003,7 +1048,11 @@ async def run_pipeline(
                 prior_prompt = prior_state.get("prompt")
                 prior_assignments = prior_state.get("assignments") or {}
 
-                if prior_prompt is not None and _norm_prompt(
+                if resume:
+                    resumed_state = prior_state
+                    if prior_assignments:
+                        cached_assignments = prior_assignments
+                elif prior_prompt is not None and _norm_prompt(
                     prior_prompt
                 ) == _norm_prompt(user_prompt):
                     # Same task — full resume
@@ -1012,9 +1061,7 @@ async def run_pipeline(
                         cached_assignments = prior_assignments
                 elif prior_prompt is not None:
                     # Prompt changed — archive stale gate artifacts
-                    _stale_paths = [
-                        os.path.join(sflo_dir, n) for n in _ARCHIVABLE_ARTIFACTS
-                    ]
+                    _stale_paths = _archivable_paths(sflo_dir)
                     _archived = archive_to_logs(sflo_dir, _stale_paths)
                     if _archived and verbose:
                         _safe_stderr(
@@ -1057,6 +1104,10 @@ async def run_pipeline(
     else:
         state = make_initial_state(roles)
         state["prompt"] = user_prompt
+    output_dir = os.path.abspath(output_dir or state.get("output_dir") or os.getcwd())
+    if not os.path.isdir(output_dir):
+        raise ValueError(f"User deliverables directory does not exist: {output_dir}")
+    state["output_dir"] = output_dir
     _locked_write_state(sflo_dir, state)
 
     log(f"SFLO Pipeline — {user_prompt[:60]}")
@@ -1076,6 +1127,16 @@ async def run_pipeline(
         "agent", os.path.join(SFLO_ROOT, "agents", "scout")
     )
     scout_soul = read_file(os.path.join(scout_agent_path, "SOUL.md"))
+    scout_skill_paths = resolve_skill_paths(
+        scout_config.get("skills", []), resolve_sflo_base()
+    )
+    scout_system_parts = [scout_soul]
+    scout_system_parts.extend(render_skill_methodologies(scout_skill_paths))
+    scout_system_parts.append(
+        "## Authority\n\nThe Scout SOUL and JSON-only assignment contract override "
+        "any incompatible workflow mechanics in supplemental methodologies."
+    )
+    scout_system_prompt = "\n\n---\n\n".join(scout_system_parts)
 
     # Find available agent directories (respecting exclude_agent_dirs from
     # pipeline.yaml — configured dirs are filtered out so scout never sees
@@ -1172,7 +1233,7 @@ async def run_pipeline(
             scout_response = await call_adapter_with_evals(
                 adapter,
                 model=scout_model,
-                system_prompt=scout_soul,
+                system_prompt=scout_system_prompt,
                 user_prompt=(
                     f"User prompt: {user_prompt}\n\n"
                     f"Available agents:\n{agent_listing}\n\n"
@@ -1411,30 +1472,21 @@ async def run_pipeline(
             artifact_path = os.path.join(sflo_dir, artifact_name)
             abs_artifact = os.path.abspath(artifact_path)
 
-            system_prompt = read_file(gate_doc) if gate_doc else ""
-            prior = "\n\n---\n\n".join(
-                f"## {os.path.basename(r)}\n\n{read_file(r)}" for r in reads
+            system_parts = [read_file(gate_doc)] if gate_doc else []
+            system_parts.extend(render_skill_methodologies(result.get("skills", [])))
+            system_parts.append(
+                "## Authority\n\nThe ship-decision gate and artifact contract override "
+                "any incompatible workflow mechanics in supplemental methodologies."
             )
+            system_prompt = "\n\n---\n\n".join(system_parts)
+            prior = format_prior_artifacts_for_prompt(reads)
 
             spawn_start = _time.time()
-            if runtime == "ollama":
-                write_instr = (
-                    f"You MUST write the file using bash:\n"
-                    f"  mkdir -p {os.path.dirname(abs_artifact)}\n"
-                    f"  cat <<'ARTIFACT_EOF' > {abs_artifact}\n"
-                    f"  <your content>\n"
-                    f"  ARTIFACT_EOF\n"
-                    f"Do NOT put artifact content in your response — write it to the file."
-                )
-            else:
-                write_instr = (
-                    "Use the Write tool. Create the parent directory if needed."
-                )
             gate5_prompt = (
                 f"## User Request\n\n{user_prompt}\n\n{prior}\n\n"
-                f"Write {artifact_name} to this EXACT path: {abs_artifact}\n"
-                f"{write_instr}\n"
-                f"Follow the template EXACTLY."
+                f"## Artifact Contract\n\n"
+                f"Artifact: `{artifact_name}`\n"
+                f"Exact path: `{abs_artifact}`"
             )
             try:
                 response = await call_adapter_with_evals(
@@ -1602,7 +1654,7 @@ async def run_pipeline(
                         spawn_kwargs["cwd"] = output_dir
                     if par_factory_env is not None:
                         spawn_kwargs["env"] = par_factory_env
-                    _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
+                    _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir)
                     ag_spawn_start = _time.time()
                     resp = await call_adapter_with_evals(
                         adapter,
@@ -1808,6 +1860,15 @@ def main():
         default=None,
         help="Runtime adapter for pipeline starts.",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Directory for user-facing deliverables. "
+            "Defaults to the invocation working directory."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
@@ -1891,6 +1952,28 @@ def main():
         sys.exit(3)
     sflo_dir = os.path.join(sflo_parent, factory_name)
 
+    saved_output_dir = None
+    if args.resume and args.output_dir is None:
+        prior_state = read_state(sflo_dir) or {}
+        saved_output_dir = prior_state.get("output_dir")
+    output_dir = os.path.abspath(args.output_dir or saved_output_dir or os.getcwd())
+    if not os.path.isdir(output_dir):
+        parser.error(f"--output-dir must be an existing directory: {output_dir}")
+    try:
+        output_inside_state = (
+            os.path.commonpath(
+                (os.path.realpath(sflo_parent), os.path.realpath(output_dir))
+            )
+            == os.path.realpath(sflo_parent)
+        )
+    except ValueError:
+        output_inside_state = False
+    if output_inside_state:
+        parser.error(
+            "--output-dir must be outside the SFLO state directory: "
+            f"{sflo_parent}"
+        )
+
     def _record_signal_exit(signum, sig_name):
         registry.register_end(
             factory_name,
@@ -1944,6 +2027,8 @@ def main():
                 sflo_dir=sflo_dir,
                 runtime=args.runtime,
                 verbose=not args.quiet,
+                resume=bool(args.resume),
+                output_dir=output_dir,
             )
         )
         if factory_name:

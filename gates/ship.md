@@ -16,6 +16,7 @@
 - BUILD-STATUS.md: build passes, real data
 - QA-REPORT.md: grade [X], [N] issues resolved
 - PM-VERIFY.md: all ACs met, approved
+- Deliverables: every file declared in SCOPE.md exists under the project root
 
 ### Iterations
 - Discovery: [N] rounds
@@ -35,6 +36,9 @@
 ## Decision Criteria
 
 **SHIP** — All gates passed with evidence. Product is useful.
+
+Before accepting `SHIP`, SFLO deterministically rechecks each file declared under
+SCOPE.md `## Deliverables` against the persisted User Deliverables Directory.
 
 **HOLD** — Gates passed but external blocker (deployment issue, dependency, timing).
 

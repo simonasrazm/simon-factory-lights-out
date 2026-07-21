@@ -19,6 +19,7 @@
 - [ ] Core use case works end-to-end
 - [ ] Error states handled gracefully
 - [ ] Each acceptance criterion from SCOPE.md addressed
+- [ ] Every file declared under SCOPE.md `## Deliverables` exists at that exact project-relative path
 - [ ] [Add project-specific checks based on SCOPE.md]
 ```
 
@@ -27,5 +28,6 @@
 - [ ] Build produces zero errors
 - [ ] BUILD-STATUS.md exists with all checks marked
 - [ ] App actually starts and shows real data
+- [ ] Declared user deliverables exist as files under the project root, not under `.sflo/`
 
 The scaffold validates these checks before advancing to Gate 3.

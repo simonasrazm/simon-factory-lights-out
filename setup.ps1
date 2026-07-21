@@ -54,22 +54,13 @@ function Assert-SfloCheckout {
     }
 }
 
-function Initialize-SfloSubmodules {
+function Assert-SfloVendoredSkills {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$SfloHome)
 
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Warning "git not found; skipping submodule initialization."
-        return
-    }
-
-    Write-Host "==> Initializing git submodules" -ForegroundColor Cyan
-    try {
-        git -C $SfloHome submodule update --init --recursive
-        if ($LASTEXITCODE -ne 0) { throw "git exited $LASTEXITCODE" }
-        Write-Host "    Submodules initialized" -ForegroundColor Green
-    } catch {
-        Write-Warning "git submodule init skipped or failed: $($_.Exception.Message)"
+    $requiredSkill = Join-Path $SfloHome 'vendor\mattpocock-skills\skills\engineering\tdd\SKILL.md'
+    if (-not (Test-Path $requiredSkill -PathType Leaf)) {
+        throw "required vendored Matt skill is missing: $requiredSkill"
     }
 }
 
@@ -84,10 +75,8 @@ function Get-SfloPythonCommand {
 }
 
 function Get-CursorSkillsRoot {
-    if ($env:CURSOR_HOME) {
-        return (Join-Path $env:CURSOR_HOME 'skills')
-    }
-    return (Join-Path $HOME '.cursor\skills')
+    $cursorHome = if ($env:CURSOR_HOME) { $env:CURSOR_HOME } else { Join-Path $HOME '.cursor' }
+    return (Join-Path $cursorHome 'skills')
 }
 
 function ConvertTo-ShSingleQuoted {
@@ -154,14 +143,20 @@ function Write-SetupStatus {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$InstallDir,
-        [Parameter(Mandatory)][string]$Runtime
+        [Parameter(Mandatory)][string]$Status
     )
 
     $sfloDir = Join-Path $InstallDir '.sflo'
     New-Item -ItemType Directory -Path $sfloDir -Force | Out-Null
-    $status = 'ready'
-    Set-Content -Path (Join-Path $sfloDir '.setup-status') -Value $status -Encoding UTF8
-    return $status
+    $statusPath = Join-Path $sfloDir '.setup-status'
+    $tempPath = Join-Path $sfloDir ('.setup-status.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        Set-Content -Path $tempPath -Value $Status -Encoding UTF8
+        Move-Item -Path $tempPath -Destination $statusPath -Force
+    } finally {
+        Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
+    }
+    return $Status
 }
 
 function Write-SetupResult {
@@ -170,16 +165,19 @@ function Write-SetupResult {
         [Parameter(Mandatory)][string]$Runtime,
         [Parameter(Mandatory)][string]$InstallDir,
         [Parameter(Mandatory)][string]$SfloHome,
-        [Parameter(Mandatory)][string]$Status
+        [Parameter(Mandatory)][string]$Status,
+        [Parameter(Mandatory)][bool]$Ok,
+        [string]$ErrorMessage
     )
 
     $result = [ordered]@{
-        ok = $true
+        ok = $Ok
         runtime = $Runtime
         install_dir = $InstallDir
         sflo_path = $SfloHome
         status = $Status
     }
+    if ($ErrorMessage) { $result['error'] = $ErrorMessage }
     Write-Host ('SFLO_SETUP_RESULT:' + ($result | ConvertTo-Json -Compress))
 }
 
@@ -305,7 +303,7 @@ function Install-SfloOwnedSkillDirectory {
 
     if (Test-Path $DestinationDir) {
         if (-not (Test-SfloOwnedSkillDirectory -Path $DestinationDir)) {
-            throw "Cursor skill already exists at $DestinationDir and is not SFLO-owned."
+            throw "Skill already exists at $DestinationDir and is not SFLO-owned."
         }
         Remove-Item -Path $DestinationDir -Recurse -Force
     }
@@ -324,6 +322,47 @@ function Remove-SfloOwnedSkillDirectory {
         Remove-Item -Path $Path -Recurse -Force
     } else {
         Write-Host "    Leaving non-SFLO skill directory untouched: $Path" -ForegroundColor Yellow
+    }
+}
+
+function Install-SfloRuntimePipeline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceFile,
+        [Parameter(Mandatory)][string]$InstallDir,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    if (-not (Test-Path $SourceFile)) {
+        throw "$Label pipeline source not found at $SourceFile."
+    }
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    $destination = Join-Path $InstallDir 'pipeline.yaml'
+    $markerDirectory = Join-Path $InstallDir '.sflo'
+    $marker = Join-Path $markerDirectory 'pipeline.yaml.managed'
+    $proposed = Join-Path $InstallDir 'pipeline.yaml.sflo-default'
+    New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+    $incoming = Get-Content -Path $SourceFile -Raw
+
+    if (-not (Test-Path $destination)) {
+        Copy-Item -Path $SourceFile -Destination $destination -Force
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label pipeline installed at $destination" -ForegroundColor Green
+    } elseif ((Get-Content -Path $destination -Raw) -eq $incoming) {
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label pipeline already current at $destination" -ForegroundColor Green
+    } elseif ((Test-Path $marker) -and
+              ((Get-Content -Path $destination -Raw) -eq (Get-Content -Path $marker -Raw))) {
+        Copy-Item -Path $SourceFile -Destination $destination -Force
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label managed pipeline updated at $destination" -ForegroundColor Green
+    } else {
+        Copy-Item -Path $SourceFile -Destination $proposed -Force
+        Write-Host "    Existing project pipeline preserved at $destination; new SFLO defaults written to $proposed" -ForegroundColor Yellow
     }
 }
 
@@ -360,16 +399,16 @@ function Install-SfloCodex {
     )
 
     Assert-SfloCheckout -SfloHome $SfloHome
-    Initialize-SfloSubmodules -SfloHome $SfloHome
 
     Write-Host "==> Installing SFLO Codex integration" -ForegroundColor Cyan
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    $skillSrc = Join-Path $SfloHome 'src\hooks\codex\skills\sflo-factory-triggering'
-    $skillDst = Join-Path $InstallDir '.agents\skills\sflo-factory-triggering'
-    Install-SfloSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
+    $skillSrc = Join-Path $SfloHome 'src\hooks\codex\skills\sflo'
+    $skillDst = Join-Path $InstallDir '.agents\skills\sflo'
+    Install-SfloOwnedSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
+    Remove-SfloOwnedSkillDirectory -Path (Join-Path $InstallDir '.agents\skills\sflo-factory-triggering')
     Remove-SfloOldAgentsBlock -AgentsFile (Join-Path $InstallDir 'AGENTS.md')
-    Write-Host "    Codex factory-triggering skill installed" -ForegroundColor Green
+    Write-Host "    Codex sflo skill installed" -ForegroundColor Green
 
     if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
         Write-Host "    NOTE: codex CLI not on PATH. Install/login before triggering SFLO." -ForegroundColor Yellow
@@ -386,7 +425,6 @@ function Install-SfloCursor {
     )
 
     Assert-SfloCheckout -SfloHome $SfloHome
-    Initialize-SfloSubmodules -SfloHome $SfloHome
 
     $stopHook = Join-Path $SfloHome 'src\hooks\cursor\stop_hook.py'
     $skillSrc = Join-Path $SfloHome 'src\hooks\cursor\skills\sflo'
@@ -398,13 +436,21 @@ function Install-SfloCursor {
     $hooksFile = Join-Path $cursorDir 'hooks.json'
     $rulesDir = Join-Path $cursorDir 'rules'
     $skillsRoot = Get-CursorSkillsRoot
-    $skillDst = Join-Path $skillsRoot 'sflo'
+    $cursorHome = if ($env:CURSOR_HOME) { $env:CURSOR_HOME } else { Join-Path $HOME '.cursor' }
+    $compatRoot = Join-Path $cursorHome 'skills-cursor'
 
     $python = Get-SfloPythonCommand
     Set-CursorStopHook -HooksFile $hooksFile -HookCommand "$python $(ConvertTo-PowerShellSingleQuoted -Value $stopHook)"
+    $skillDst = Join-Path $skillsRoot 'sflo'
     Install-SfloOwnedSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
     $oldSkillDst = Join-Path $skillsRoot 'sflo-factory-triggering'
     Remove-SfloOwnedSkillDirectory -Path $oldSkillDst
+    Remove-SfloOwnedSkillDirectory -Path (Join-Path $compatRoot 'sflo')
+    Remove-SfloOwnedSkillDirectory -Path (Join-Path $compatRoot 'sflo-factory-triggering')
+    Install-SfloRuntimePipeline `
+        -SourceFile (Join-Path $SfloHome 'pipeline-cursor.yaml') `
+        -InstallDir $InstallDir `
+        -Label 'Cursor'
     foreach ($staleRule in @(
         (Join-Path $rulesDir 'sflo.mdc'),
         (Join-Path $rulesDir 'sflo-factory-triggering.mdc')
@@ -431,7 +477,6 @@ function Install-SfloClaudeCode {
     )
 
     Assert-SfloCheckout -SfloHome $SfloHome
-    Initialize-SfloSubmodules -SfloHome $SfloHome
 
     $stopHook = Join-Path $SfloHome 'src\hooks\claude-code\stop_hook.py'
     if (-not (Test-Path $stopHook)) {
@@ -466,13 +511,25 @@ if (-not $InstallDir) {
 $SfloHome = Resolve-SfloPath -Path $SfloHome
 $InstallDir = Resolve-SfloPath -Path $InstallDir
 
-if ($Runtime -eq 'codex') {
-    Install-SfloCodex -SfloHome $SfloHome -InstallDir $InstallDir
-} elseif ($Runtime -eq 'cursor') {
-    Install-SfloCursor -SfloHome $SfloHome -InstallDir $InstallDir
-} else {
-    Install-SfloClaudeCode -SfloHome $SfloHome -InstallDir $InstallDir
-}
+try {
+    Write-SetupStatus -InstallDir $InstallDir -Status 'failed' | Out-Null
+    Assert-SfloCheckout -SfloHome $SfloHome
+    Assert-SfloVendoredSkills -SfloHome $SfloHome
 
-$status = Write-SetupStatus -InstallDir $InstallDir -Runtime $Runtime
-Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir -SfloHome $SfloHome -Status $status
+    if ($Runtime -eq 'codex') {
+        Install-SfloCodex -SfloHome $SfloHome -InstallDir $InstallDir
+    } elseif ($Runtime -eq 'cursor') {
+        Install-SfloCursor -SfloHome $SfloHome -InstallDir $InstallDir
+    } else {
+        Install-SfloClaudeCode -SfloHome $SfloHome -InstallDir $InstallDir
+    }
+
+    $status = Write-SetupStatus -InstallDir $InstallDir -Status 'ready'
+    Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir -SfloHome $SfloHome -Status $status -Ok $true
+} catch {
+    $message = $_.Exception.Message
+    try { Write-SetupStatus -InstallDir $InstallDir -Status 'failed' | Out-Null } catch {}
+    Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir -SfloHome $SfloHome -Status 'failed' -Ok $false -ErrorMessage $message
+    [Console]::Error.WriteLine("ERROR: $message")
+    exit 1
+}

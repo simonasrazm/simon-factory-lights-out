@@ -1,0 +1,87 @@
+# SFLO Cursor Runtime Pipeline
+# Installed as pipeline.yaml for Cursor runtime projects.
+#
+# Model choices mirror the main pipeline.yaml. Cursor-specific model aliases
+# are handled by CursorAdapter only when a logical alias such as `opus` or
+# `sonnet` is used; exact model ids pass through unchanged.
+
+threshold: A
+
+gates:
+  1:
+    artifact: SCOPE.md
+    role: pm
+    model: gpt-5.6-sol
+    effort: low
+    gate_doc: gates/discovery.md
+  2:
+    artifact: BUILD-STATUS.md
+    role: dev
+    agent: agents/dev
+    model: gpt-5.6-sol
+    effort: low
+    skills:
+      - mattpocock-skills/engineering/tdd
+      - mattpocock-skills/engineering/code-review
+    gate_doc: gates/build.md
+  # Insert custom float-keyed gates (e.g. 2.5 for static analysis, 3.5 for
+  # security audit) by extending this map in your project's pipeline.yaml.
+  # Use `runner:` to point at a custom Python module (must expose run_gate()
+  # or run()), and `validator:` for a custom validation script. See
+  # src/runner.py _load_custom_runner() for the integration contract.
+  3:
+    artifact: QA-REPORT.md
+    role: qa
+    model: gpt-5.6-sol
+    effort: low
+    threshold: A
+    skills:
+      - mattpocock-skills/engineering/code-review
+    on_reject_restart_at: 2
+    gate_doc: gates/test.md
+  # Security reviews the post-QA tree. Keep this sequential: QA may repair
+  # production code, which would make a parallel security verdict stale.
+  3.5:
+    artifact: SECURITY-REPORT.md
+    role: security
+    agent: agents/security
+    model: gpt-5.6-sol
+    effort: low
+    threshold: A
+    on_reject_restart_at: 2
+    gate_doc: gates/security-review.md
+  4:
+    artifact: PM-VERIFY.md
+    role: pm-verify
+    model: gpt-5.6-sol
+    effort: low
+    gate_doc: gates/verify.md
+  5:
+    artifact: SHIP-DECISION.md
+    role: sflo
+    gate_doc: gates/ship.md
+
+# Scout configuration
+scout:
+  agent: agents/scout
+  model: gpt-5.6-luna
+  effort: low
+  tools: readonly
+
+# SFLO orchestrator
+sflo:
+  model: gpt-5.6-luna
+  effort: low
+
+# Scout filtering (optional)
+# exclude_agents: pm-website, foo
+# exclude_agent_dirs: vendor/agents
+
+# Security toggles (optional, all default false)
+# security:
+#   isolate_user_settings: false
+#   isolate_all_settings: false
+#   no_session_persistence: false
+#   sandbox_config_dir: false
+#   require_permission: false
+#   wipe_sandbox: false

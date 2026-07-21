@@ -261,9 +261,8 @@ def cmd_status(args):
 def cmd_clean(args):
     """Wipe pipeline state and gate artifacts for a fresh run.
 
-    Removes: state.json, all gate artifacts (SCOPE.md, BUILD-STATUS.md,
-    QA-REPORT.md, PM-VERIFY.md, SHIP-DECISION.md), feedback files
-    (QA-FEEDBACK.md, PM-FEEDBACK.md), and pipeline.log.
+    Removes: state.json, all configured gate artifacts, `*-FEEDBACK.md`
+    feedback files, and pipeline.log.
 
     Preserves: anything else in sflo_dir (e.g. .venv, user-provided files).
 
@@ -286,8 +285,6 @@ def cmd_clean(args):
         "pipeline.log",
         "state.lock",
         ".last_hook_state",
-        "QA-FEEDBACK.md",
-        "PM-FEEDBACK.md",
     }
     for _g, _ginfo in _SCAFFOLD_GATES.items():
         if isinstance(_ginfo, list):
@@ -302,7 +299,9 @@ def cmd_clean(args):
     try:
         for entry in sorted(os.listdir(sflo_dir)):
             full = os.path.join(sflo_dir, entry)
-            if entry in known_files and os.path.isfile(full):
+            if (
+                entry in known_files or entry.endswith("-FEEDBACK.md")
+            ) and os.path.isfile(full):
                 to_remove.append(full)
             elif entry in known_dirs and os.path.isdir(full):
                 to_remove.append(full)
