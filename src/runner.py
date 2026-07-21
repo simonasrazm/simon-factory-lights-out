@@ -14,10 +14,11 @@ Usage (called by runtime hook/skill, not directly):
     )
 
 CLI (for testing):
-    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--quiet]
+    python3 src/runner.py "Build a click counter" --runtime <runtime> [--sflo-dir .sflo] [--output-dir .] [--quiet]
 
     --runtime NAME    Required for pipeline starts. Runtime adapter to use.
     --sflo-dir PATH   Path to .sflo state directory (default: .sflo).
+    --output-dir PATH User-facing project directory (default: invocation cwd).
     --quiet           Suppress verbose logging to stderr.
 """
 
@@ -1103,6 +1104,10 @@ async def run_pipeline(
     else:
         state = make_initial_state(roles)
         state["prompt"] = user_prompt
+    output_dir = os.path.abspath(output_dir or state.get("output_dir") or os.getcwd())
+    if not os.path.isdir(output_dir):
+        raise ValueError(f"User deliverables directory does not exist: {output_dir}")
+    state["output_dir"] = output_dir
     _locked_write_state(sflo_dir, state)
 
     log(f"SFLO Pipeline — {user_prompt[:60]}")
@@ -1855,6 +1860,15 @@ def main():
         default=None,
         help="Runtime adapter for pipeline starts.",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Directory for user-facing deliverables. "
+            "Defaults to the invocation working directory."
+        ),
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
     args = parser.parse_args()
 
@@ -1938,6 +1952,28 @@ def main():
         sys.exit(3)
     sflo_dir = os.path.join(sflo_parent, factory_name)
 
+    saved_output_dir = None
+    if args.resume and args.output_dir is None:
+        prior_state = read_state(sflo_dir) or {}
+        saved_output_dir = prior_state.get("output_dir")
+    output_dir = os.path.abspath(args.output_dir or saved_output_dir or os.getcwd())
+    if not os.path.isdir(output_dir):
+        parser.error(f"--output-dir must be an existing directory: {output_dir}")
+    try:
+        output_inside_state = (
+            os.path.commonpath(
+                (os.path.realpath(sflo_parent), os.path.realpath(output_dir))
+            )
+            == os.path.realpath(sflo_parent)
+        )
+    except ValueError:
+        output_inside_state = False
+    if output_inside_state:
+        parser.error(
+            "--output-dir must be outside the SFLO state directory: "
+            f"{sflo_parent}"
+        )
+
     def _record_signal_exit(signum, sig_name):
         registry.register_end(
             factory_name,
@@ -1992,6 +2028,7 @@ def main():
                 runtime=args.runtime,
                 verbose=not args.quiet,
                 resume=bool(args.resume),
+                output_dir=output_dir,
             )
         )
         if factory_name:

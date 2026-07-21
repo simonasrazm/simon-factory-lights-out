@@ -14,6 +14,7 @@ if str(_SFLO_DIR) not in sys.path:
 from src.runner import (  # noqa: E402
     _apply_runtime_spawn_kwargs,
     _archivable_paths,
+    build_agent_prompt,
     format_prior_artifacts_for_prompt,
 )
 
@@ -44,6 +45,31 @@ def test_security_report_is_rotated_with_other_stale_artifacts(tmp_path):
     paths = _archivable_paths(str(sflo_dir))
 
     assert str(sflo_dir / "SECURITY-REPORT.md") in paths
+
+
+def test_developer_prompt_separates_deliverables_from_factory_artifact(tmp_path):
+    project = tmp_path / "project"
+    factory = project / ".sflo" / "smoke-test"
+    factory.mkdir(parents=True)
+    artifact = factory / "BUILD-STATUS.md"
+    agent = {
+        "role": "dev",
+        "reads": [],
+        "produces": str(artifact),
+        "skills": [],
+    }
+
+    _, prompt = build_agent_prompt(
+        agent,
+        "create hello.txt",
+        str(factory),
+        runtime="cursor",
+        output_dir=str(project),
+    )
+
+    assert f"Exact path: `{artifact}`" in prompt
+    assert f"under: `{project}`" in prompt
+    assert "This is a SEPARATE location from the pipeline artifact" in prompt
 
 
 def test_prior_artifact_prompt_is_capped_per_file(tmp_path):
