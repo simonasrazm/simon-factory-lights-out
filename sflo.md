@@ -26,14 +26,14 @@ If `python3` is not found, try `python`. The runner handles everything else.
 
 ## Overview
 
-SFLO is a five-gate pipeline for building software with AI agents. The runner (`src/runner.py`) executes the pipeline. The scaffold (`src/scaffold.py`) is the state machine — it manages state, validates artifacts, enforces gate sequence, and controls loop limits. No agent can skip, override, or shortcut the pipeline.
+SFLO is a six-stage pipeline for building software with AI agents. The runner (`src/runner.py`) executes the pipeline. The scaffold (`src/scaffold.py`) is the state machine — it manages state, validates artifacts, enforces gate sequence, and controls loop limits. No agent can skip, override, or shortcut the pipeline.
 
 ## Roles
 
 - **PM:** Gates 1 (Discovery) and 4 (Verification)
 - **Developer:** Gate 2 (Build)
-- **QA:** Gate 3 (Test, parallel)
-- **Security:** Gate 3 (Security review, parallel)
+- **QA:** Gate 3 (Test)
+- **Security:** Gate 3.5 (post-QA security review)
 - **SFLO:** Gate 5 (Ship) + pipeline coordination
 
 Custom agents can extend any role. Core gate checks are always enforced by the scaffold regardless of which agent runs.
@@ -44,7 +44,8 @@ Custom agents can extend any role. Core gate checks are always enforced by the s
 |------|----------|----------------------|
 | 1. Discovery | `SCOPE.md` | Data sources section, acceptance criteria |
 | 2. Build | `BUILD-STATUS.md` | Build success marker, all checks marked |
-| 3. Test + Security | `QA-REPORT.md`, `SECURITY-REPORT.md` | QA grade present and meets threshold; security verdict present and meets threshold; auto-fail patterns |
+| 3. Test | `QA-REPORT.md` | QA grade present and meets threshold; auto-fail patterns |
+| 3.5 Security | `SECURITY-REPORT.md` | Security grade present and meets threshold; Critical findings auto-fail |
 | 4. Verify | `PM-VERIFY.md` | Verdict present, verdict = APPROVED |
 | 5. Ship | `SHIP-DECISION.md` | Decision present, decision ∈ {SHIP, HOLD, KILL} |
 
@@ -54,7 +55,7 @@ All artifacts are produced in `.sflo/<factory>/` — runtime outputs, not source
 
 Enforced by the scaffold state machine:
 
-- **QA grade below threshold:** Inner loop — Dev rebuilds, QA retests. Max 10 cycles. (Threshold configured in `pipeline.yaml`, default A.)
+- **QA or Security rejection:** Review loop — Dev rebuilds, QA retests, then Security reassesses the post-QA tree. Max 10 retries per rejecting gate. (Threshold configured in `pipeline.yaml`, default A.)
 - **PM rejects:** Outer loop — back to Dev→QA with PM's deviation list. Inner counter resets. Max 10 outer loops.
 - **Limits exhausted:** Scaffold escalates to human. No agent can continue.
 

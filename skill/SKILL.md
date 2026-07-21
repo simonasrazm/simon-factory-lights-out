@@ -45,8 +45,8 @@ SFLO_TASK
 The runner handles everything automatically:
 1. Parses `pipeline.yaml` for gate definitions, threshold, and guardian config
 2. Spawns Scout to match agents to roles
-3. Runs each gate in sequence (PM → Dev → QA → PM-Verify → Ship)
-4. Enforces validation — loops Dev↔QA if quality is below threshold
+3. Runs each gate in sequence (PM → Dev → QA → Security → PM-Verify → Ship)
+4. Enforces validation — QA or Security rejection restarts Developer
 5. Guardian monitors for runaway loops, time budget, spawn budget
 
 No manual scaffold calls needed. The runner is the single entry point.
@@ -79,6 +79,10 @@ gates:
     artifact: QA-REPORT.md
     role: qa
     gate_doc: gates/test.md
+  3.5:
+    artifact: SECURITY-REPORT.md
+    role: security
+    gate_doc: gates/security-review.md
   4:
     artifact: PM-VERIFY.md
     role: pm

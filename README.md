@@ -1,6 +1,6 @@
 # SFLO — Simon Factory Lights Out
 
-A gated pipeline protocol for building software with AI agents. Five gates — each producing a required artifact. No artifact, no progress. No skipping.
+A gated pipeline protocol for building software with AI agents. Six sequential stages — each producing a required artifact. No artifact, no progress. No skipping.
 
 ```mermaid
 flowchart LR
@@ -8,11 +8,13 @@ flowchart LR
 
     subgraph DEV_QA ["Inner Loop — max 10 rounds"]
         direction TB
-        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>PARALLEL REVIEW<br/><br/>QA Agent + Security Agent<br/>QA-REPORT.md + SECURITY-REPORT.md"]
-        G3 -- "below threshold or security fail" --> G2
+        G2["Gate 2<br/>BUILD<br/><br/>Dev Agent<br/>BUILD-STATUS.md"] --> G3["Gate 3<br/>QA<br/><br/>QA Agent<br/>QA-REPORT.md"]
+        G3 --> G35["Gate 3.5<br/>SECURITY<br/><br/>Security Agent<br/>SECURITY-REPORT.md"]
+        G3 -- "below threshold" --> G2
+        G35 -- "below threshold or critical finding" --> G2
     end
 
-    DEV_QA -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
+    G35 -- "meets threshold" --> G4["Gate 4<br/>VERIFY<br/><br/>PM Agent<br/>PM-VERIFY.md"]
     G4 -- "not A" --> DEV_QA
     G4 -- "A" --> G5["Gate 5<br/>SHIP<br/><br/>SFLO Agent<br/>SHIP-DECISION.md"]
 ```
@@ -27,9 +29,11 @@ Tell your AI agent:
 
 > Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project.
+The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project. If a Cursor build exposes `~/.cursor/skills-cursor/` as its active skill root, setup also installs an SFLO-owned compatibility copy there.
 
-Current SFLO defaults are tuned for Codex/OpenAI models. Claude defaults are preserved in `pipeline-claude.yaml`.
+SFLO vendors a pinned snapshot of [Matt Pocock's composable engineering skills](https://github.com/mattpocock/skills), including provenance in `vendor/mattpocock-skills/SFLO-VENDOR.md`. Skills are opt-in per gate through `skills:`. The Codex default attaches TDD plus code-review to Developer and code-review to QA because those treatments earned professional comparative evidence; other roles remain skill-free. Add or change skills only when role-specific evaluation shows a measurable gain over that role's no-skill configuration. Role SOULs, gate documents, and artifact contracts remain authoritative when a supplemental skill describes an incompatible workflow. Custom runners own their prompts and are outside this automatic attachment boundary. Vendor updates are deliberate: replace the snapshot from a reviewed release commit, inspect the selected skill and companion-file diff, then run the full test suite and prompt-budget check.
+
+Current SFLO defaults are tuned for Codex/OpenAI models in `pipeline.yaml`. Cursor setup installs `pipeline-cursor.yaml` as the project `pipeline.yaml`; Claude defaults are preserved in `pipeline-claude.yaml`.
 
 ## Usage
 
@@ -93,7 +97,7 @@ Scout will discover your agent automatically on the next pipeline run — no con
 
 ## Configuration
 
-SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, but you can override it by placing your own `pipeline.yaml` in your project root.
+SFLO is config-driven via `pipeline.yaml`. The default pipeline is bundled with SFLO, Cursor has a runtime-specific `pipeline-cursor.yaml`, and Claude has `pipeline-claude.yaml`. You can override any runtime by placing your own `pipeline.yaml` in your project root.
 
 `pipeline.yaml` is the source of truth for models, reasoning effort, thresholds, agents, vendor skills, custom gates, and runtime policy. See `pipeline.yaml` for the full default configuration with all options documented.
 
