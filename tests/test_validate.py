@@ -274,7 +274,8 @@ class TestValidateGate(unittest.TestCase):
                 c for c in checks if c["name"] == "deliverable_exists:hello.txt"
             )
             self.assertFalse(deliverable["pass"])
-            self.assertIn(project, deliverable["detail"])
+            expected = os.path.realpath(os.path.join(project, "hello.txt"))
+            self.assertIn(expected, deliverable["detail"])
 
     def test_gate2_rejects_directory_declared_as_file(self):
         with tempfile.TemporaryDirectory() as project:
