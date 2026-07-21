@@ -477,7 +477,7 @@ def _get_factory_env(sflo_dir):
     }
 
 
-def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime):
+def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir=None):
     """Add runtime-specific kwargs to a gate-agent spawn call.
 
     cursor-agent takes --workspace to discover project-level .cursor/ rules
@@ -485,7 +485,7 @@ def _apply_runtime_spawn_kwargs(spawn_kwargs, runtime):
     absorb extras), so workspace is passed only for the cursor runtime.
     """
     if runtime == "cursor":
-        spawn_kwargs["workspace"] = SFLO_ROOT
+        spawn_kwargs["workspace"] = os.path.abspath(output_dir or os.getcwd())
 
 
 async def default_agent_runner(
@@ -548,7 +548,7 @@ async def default_agent_runner(
                 spawn_kwargs["cwd"] = output_dir
             if agent_env is not None:
                 spawn_kwargs["env"] = agent_env
-            _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
+            _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir)
             response = await call_adapter_with_evals(
                 adapter,
                 **spawn_kwargs,
@@ -879,6 +879,7 @@ _ARCHIVABLE_ARTIFACTS = [
     "SCOPE.md",
     "BUILD-STATUS.md",
     "QA-REPORT.md",
+    "SECURITY-REPORT.md",
     "PM-VERIFY.md",
     "SHIP-DECISION.md",
     "pipeline.log",
@@ -1648,7 +1649,7 @@ async def run_pipeline(
                         spawn_kwargs["cwd"] = output_dir
                     if par_factory_env is not None:
                         spawn_kwargs["env"] = par_factory_env
-                    _apply_runtime_spawn_kwargs(spawn_kwargs, runtime)
+                    _apply_runtime_spawn_kwargs(spawn_kwargs, runtime, output_dir)
                     ag_spawn_start = _time.time()
                     resp = await call_adapter_with_evals(
                         adapter,

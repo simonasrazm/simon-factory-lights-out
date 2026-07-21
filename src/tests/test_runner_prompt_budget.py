@@ -11,7 +11,39 @@ if str(_SFLO_DIR) not in sys.path:
     sys.path.insert(0, str(_SFLO_DIR))
 
 
-from src.runner import format_prior_artifacts_for_prompt  # noqa: E402
+from src.runner import (  # noqa: E402
+    _apply_runtime_spawn_kwargs,
+    _archivable_paths,
+    format_prior_artifacts_for_prompt,
+)
+
+
+def test_cursor_spawn_uses_target_project_as_workspace(tmp_path):
+    project = tmp_path / "target-project"
+    project.mkdir()
+    kwargs = {}
+
+    _apply_runtime_spawn_kwargs(kwargs, "cursor", output_dir=str(project))
+
+    assert kwargs["workspace"] == str(project.resolve())
+
+
+def test_cursor_spawn_falls_back_to_invocation_workspace(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    kwargs = {}
+
+    _apply_runtime_spawn_kwargs(kwargs, "cursor", output_dir=None)
+
+    assert kwargs["workspace"] == str(tmp_path.resolve())
+
+
+def test_security_report_is_rotated_with_other_stale_artifacts(tmp_path):
+    sflo_dir = tmp_path / ".sflo"
+    sflo_dir.mkdir()
+
+    paths = _archivable_paths(str(sflo_dir))
+
+    assert str(sflo_dir / "SECURITY-REPORT.md") in paths
 
 
 def test_prior_artifact_prompt_is_capped_per_file(tmp_path):
