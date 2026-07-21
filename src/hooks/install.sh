@@ -143,6 +143,38 @@ remove_owned_skill_dir() {
   fi
 }
 
+install_runtime_pipeline() {
+  local src="$1"
+  local label="$2"
+  local dst="$INSTALL_DIR/pipeline.yaml"
+
+  if [[ ! -f "$src" ]]; then
+    echo "  ERROR: $label pipeline source not found at $src" >&2
+    exit 1
+  fi
+
+  mkdir -p "$INSTALL_DIR"
+  if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then
+    cp "$dst" "$dst.bak"
+    echo "  Existing pipeline.yaml backed up to $dst.bak"
+  fi
+  cp "$src" "$dst"
+  echo "  $label pipeline installed at $dst"
+}
+
+cursor_skill_roots() {
+  if [[ -n "${CURSOR_SKILLS_DIR:-}" ]]; then
+    printf '%s\n' "$CURSOR_SKILLS_DIR"
+    return
+  fi
+
+  local cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
+  printf '%s\n' "$cursor_home/skills"
+  if [[ -d "$cursor_home/skills-cursor" ]]; then
+    printf '%s\n' "$cursor_home/skills-cursor"
+  fi
+}
+
 # --- OpenClaw ---
 
 install_openclaw() {
@@ -213,8 +245,6 @@ install_cursor() {
 
   local stop_hook="$SCRIPT_DIR/cursor/stop_hook.py"
   local skill_src="$SCRIPT_DIR/cursor/skills/sflo"
-  local skills_root="${CURSOR_HOME:-$HOME/.cursor}/skills"
-  local skill_dir="$skills_root/sflo"
   local cursor_dir="$INSTALL_DIR/.cursor"
   local rules_dir="$cursor_dir/rules"
   local hooks_file="$cursor_dir/hooks.json"
@@ -253,8 +283,12 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
 PYEOF
-  install_owned_skill_dir "$skill_src" "$skill_dir"
-  remove_owned_skill_dir "$skills_root/sflo-factory-triggering"
+  while IFS= read -r skills_root; do
+    [[ -n "$skills_root" ]] || continue
+    install_owned_skill_dir "$skill_src" "$skills_root/sflo"
+    remove_owned_skill_dir "$skills_root/sflo-factory-triggering"
+  done < <(cursor_skill_roots)
+  install_runtime_pipeline "$SFLO_ROOT/pipeline-cursor.yaml" "Cursor"
   rm -f "$rules_dir/sflo.mdc" "$rules_dir/sflo-factory-triggering.mdc"
   rmdir "$rules_dir" 2>/dev/null || true
   echo "  Cursor hook and global skill installed successfully."

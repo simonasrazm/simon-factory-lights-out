@@ -3,7 +3,7 @@
 Check types:
 1. Agent SOUL validation — required sections per role
 2. Browser check — Chrome extension connected (for web/UI projects)
-3. Vendor check — the vendor/agent-skills git submodule must be
+3. Vendor check — the vendor/mattpocock-skills git submodule must be
    initialized so pipeline skill resolution can find SKILL.md files.
 
 All checks run before any model calls are made.
@@ -26,8 +26,8 @@ from .constants import SFLO_ROOT
 ROLE_REQUIREMENTS = {
     "dev": [
         (
-            "rebuild/feedback handling section (QA or PM)",
-            r"(?:rebuild|loop.?back|qa.?feedback|pm.?reject|fix.?mode|when.*feedback.*exists|when.*reject)",
+            "generic context-listed feedback handling",
+            r"(?:feedback\s+files?\s+(?:listed\s+)?in\s+context|context.*feedback\s+files?|all\s+feedback\s+files)",
         ),
     ],
     "qa": [
@@ -89,10 +89,10 @@ def check_pipeline_yaml():
 
 
 def check_vendor():
-    """Verify the vendor/agent-skills git submodule is initialized.
+    """Verify the pinned Matt Pocock skills submodule is initialized.
 
-    SFLO resolves pipeline skills from vendor/agent-skills/skills/<name>/
-    SKILL.md. A fresh clone leaves that directory empty until
+    SFLO resolves pipeline skills from the nested Matt Pocock skills tree.
+    A fresh clone leaves that directory empty until
     `git submodule update --init --recursive` runs, and skill resolution
     then fails mid-pipeline. This catches that cheaply at preflight time.
 
@@ -101,21 +101,19 @@ def check_vendor():
 
     Returns an issue string if the submodule is not populated, else None.
     """
-    skills_dir = os.path.join(SFLO_ROOT, "vendor", "agent-skills", "skills")
-    try:
-        # Populated == at least one entry. A missing or empty skills/ dir is
-        # equally unusable: skill resolution has nothing to resolve against.
-        with os.scandir(skills_dir) as entries:
-            populated = any(entries)
-    except OSError:
-        populated = False
+    skills_dir = os.path.join(SFLO_ROOT, "vendor", "mattpocock-skills", "skills")
+    populated = any(
+        filename == "SKILL.md"
+        for _, _, filenames in os.walk(skills_dir)
+        for filename in filenames
+    )
 
     if populated:
         return None
 
     return (
-        "vendor/agent-skills submodule is not initialized. SFLO resolves "
-        "pipeline skills from vendor/agent-skills/skills/ and cannot run "
+        "vendor/mattpocock-skills submodule is not initialized. SFLO resolves "
+        "pipeline skills from vendor/mattpocock-skills/skills/ and cannot run "
         "without it. Initialize it with `git submodule update --init "
         "--recursive` (or run `bash setup.sh` on macOS/Linux, `.\\setup.ps1` "
         "on Windows)."
@@ -182,7 +180,7 @@ def preflight_check(assignments, sflo_dir=None):
     if yaml_issue:
         all_issues.append(yaml_issue)
 
-    # Check the vendor/agent-skills submodule is initialized (read-only).
+    # Check the vendored skills submodule is initialized (read-only).
     vendor_issue = check_vendor()
     if vendor_issue:
         all_issues.append(vendor_issue)

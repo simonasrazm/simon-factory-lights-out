@@ -272,7 +272,7 @@ class TestResolveNodeShim:
         js_script.write_text("// entry")
         shim = tmp_path / "cursor-agent.cmd"
         # npm-style shim: node "%~dp0cursor-agent.js" %*
-        shim.write_text(f'@echo off\nnode "%~dp0cursor-agent.js" %*\r\n')
+        shim.write_text('@echo off\nnode "%~dp0cursor-agent.js" %*\r\n')
         result = _resolve_node_shim(str(shim))
         assert len(result) == 2
         assert result[0].lower().endswith("node") or result[0].lower().endswith("node.exe")
@@ -474,7 +474,10 @@ class TestResolveNodeShim:
         outside = tmp_path / "outside.js"
         outside.write_text("")
         link = parent / "link.js"
-        os.symlink(outside, link)
+        try:
+            os.symlink(outside, link)
+        except OSError as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
         assert _path_within(str(link), str(parent)) is False
         # A genuine file inside parent is still accepted.
         real = parent / "real.js"

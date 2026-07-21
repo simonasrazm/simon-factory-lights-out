@@ -95,10 +95,10 @@ def resolve_skill_paths(skill_names, sflo_base):
     """Resolve skill names to absolute SKILL.md paths.
 
     Supports two formats:
-      - Unqualified: "tdd" → scans all vendors for skills/tdd/SKILL.md
-      - Qualified: "agent-skills/tdd" → resolves from specific vendor only
+      - Unqualified: "tdd" → resolves only when the leaf name is unique
+      - Qualified: "mattpocock-skills/engineering/tdd" → exact identity
 
-    Search order: SFLO_ROOT/vendor/* then sflo_base/vendor/* (first match wins).
+    Skills may be nested to arbitrary depth below each vendor's skills directory.
     Returns list of existing file paths.
 
     Raises SkillResolutionError if any declared skill cannot be resolved —
@@ -111,44 +111,46 @@ def resolve_skill_paths(skill_names, sflo_base):
         return []
 
     vendor_dirs = _discover_vendor_dirs(sflo_base)
+    index = {}
+    canonical = {}
+    for vdir in vendor_dirs:
+        skills_root = os.path.realpath(os.path.join(vdir, "skills"))
+        if not os.path.isdir(skills_root):
+            continue
+        vendor_name = os.path.basename(vdir)
+        for root, dirs, files in os.walk(skills_root, followlinks=False):
+            dirs.sort()
+            if "SKILL.md" not in files:
+                continue
+            path = os.path.realpath(os.path.join(root, "SKILL.md"))
+            if os.path.commonpath((skills_root, path)) != skills_root or not os.path.isfile(path):
+                continue
+            rel = os.path.relpath(root, skills_root).replace(os.sep, "/")
+            identity = f"{vendor_name}/{rel}"
+            canonical.setdefault(identity, []).append(path)
+            index.setdefault(rel.rsplit("/", 1)[-1], []).append((identity, path))
     paths = []
     unresolved = []
 
     for name in skill_names:
-        if ".." in name or "\\" in name:
-            unresolved.append(f"{name} (rejected: traversal sequence)")
+        if not isinstance(name, str) or not name or "\\" in name or "\x00" in name:
+            unresolved.append(f"{name} (malformed skill name)")
             continue
-
-        resolved = False
-
-        # Qualified: "vendor-name/skill-name"
-        if "/" in name:
-            parts = name.split("/", 1)
-            if len(parts) != 2 or not parts[0] or not parts[1]:
-                unresolved.append(f"{name} (malformed qualified name)")
-                continue
-            vendor_name, skill_name = parts
-            for vdir in vendor_dirs:
-                if os.path.basename(vdir) == vendor_name:
-                    p = os.path.join(vdir, "skills", skill_name, "SKILL.md")
-                    if os.path.isfile(p):
-                        paths.append(p)
-                        resolved = True
-                        break
-            if not resolved:
-                unresolved.append(f"{name} (vendor or skill not found)")
+        parts = name.split("/")
+        if any(part in ("", ".", "..") for part in parts) or os.path.isabs(name):
+            unresolved.append(f"{name} (malformed or unsafe skill name)")
             continue
-
-        # Unqualified: scan all vendors (first match wins)
-        for vdir in vendor_dirs:
-            p = os.path.join(vdir, "skills", name, "SKILL.md")
-            if os.path.isfile(p):
-                paths.append(p)
-                resolved = True
-                break
-
-        if not resolved:
-            unresolved.append(f"{name} (not found in any vendor)")
+        if len(parts) > 1:
+            matches = canonical.get(name, [])
+        else:
+            matches = [path for _, path in index.get(name, [])]
+        if len(matches) == 1:
+            paths.append(matches[0])
+        elif len(matches) > 1:
+            choices = sorted(identity for identity, _ in index.get(name, []))
+            unresolved.append(f"{name} (ambiguous; qualify as one of: {', '.join(choices)})")
+        else:
+            unresolved.append(f"{name} (not found)")
 
     if unresolved:
         raise SkillResolutionError(
@@ -419,6 +421,7 @@ def _compute_scout(state, sflo_base, roles, **_kw):
                 "tools", roles.get("scout", {}).get("tools", "readonly")
             ),
             "reads": [os.path.join(sflo_base, "agents", "scout", "SOUL.md")],
+            "skills": resolve_skill_paths(scout_cfg.get("skills", []), sflo_base),
             "instruction": "Read user prompt, scan agents/ for matches, return structured assignments.",
         },
     }
@@ -454,6 +457,9 @@ def _compute_gate(n, n_str, sflo_dir, sflo_base, roles, assignments, gates, **_k
             "gate_doc": os.path.join(sflo_base, last_info_dict.get("gate_doc", ""))
             if last_info_dict.get("gate_doc")
             else None,
+            "skills": resolve_skill_paths(
+                last_info_dict.get("skills", []), sflo_base
+            ),
         }
 
     gate_info = _gates[n]
@@ -741,6 +747,11 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     write_state(sflo_dir, state)
                     return compute_next(state, sflo_dir, gates=gates)
                 from .archive import archive_to_logs
+                from .validate import save_gate_feedback
+
+                # Preserve the rejecting review's evidence before its artifact
+                # is archived and Developer is restarted.
+                save_gate_feedback(sflo_dir, n, gates=_gates)
 
                 artifacts_to_archive = []
                 for gate_num in _sorted_gates(gates=_gates):

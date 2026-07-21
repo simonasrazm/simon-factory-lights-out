@@ -17,6 +17,7 @@ from typing import Optional
 
 
 _SLUG_MAX_LEN = 40
+_LEGACY_RESUME_SLUG_MAX_LEN = 128
 _VALID_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _STOPWORDS = {
     "a",
@@ -59,6 +60,15 @@ def validate_factory_name(name: str) -> bool:
     )
 
 
+def validate_legacy_resume_name(name: str) -> bool:
+    """Return True when `name` is safe to resolve as an existing state dir."""
+    return (
+        isinstance(name, str)
+        and 2 <= len(name) <= _LEGACY_RESUME_SLUG_MAX_LEN
+        and bool(_VALID_SLUG_RE.match(name))
+    )
+
+
 def slug_from_prompt(prompt: str) -> str:
     """Build a stable factory slug from the first non-empty prompt line."""
     first_line = next((line.strip() for line in (prompt or "").splitlines() if line.strip()), "")
@@ -96,8 +106,6 @@ class FactoryRegistry:
             "SECURITY-REPORT.md",
             "PM-VERIFY.md",
             "SHIP-DECISION.md",
-            "QA-FEEDBACK.md",
-            "PM-FEEDBACK.md",
         }
     )
     _LEGACY_DIRS = frozenset({"logs", "interrogation"})
@@ -157,9 +165,17 @@ class FactoryRegistry:
         self.refresh_statuses()
         return self._load()["factories"]
 
+    def _has_state_dir(self, name: str) -> bool:
+        return os.path.isfile(os.path.join(self.parent, name, "state.json"))
+
     def resolve_name(self, proposed: str, *, is_explicit: bool, is_resume: bool) -> str:
         """Resolve a requested or auto-generated factory name."""
-        if not validate_factory_name(proposed):
+        is_legacy_resume = (
+            is_resume
+            and validate_legacy_resume_name(proposed)
+            and self._has_state_dir(proposed)
+        )
+        if not validate_factory_name(proposed) and not is_legacy_resume:
             raise FactoryError(
                 f"Invalid factory name {proposed!r}. Use 2-40 lowercase "
                 "letters, numbers, and single hyphens."
@@ -171,6 +187,8 @@ class FactoryRegistry:
 
         if is_resume:
             if not existing:
+                if self._has_state_dir(proposed):
+                    return proposed
                 raise FactoryError(f"Cannot resume missing factory {proposed!r}.")
             return proposed
 
@@ -267,6 +285,11 @@ class FactoryRegistry:
 
         entries = set(os.listdir(self.parent))
         legacy_items = (entries & self._LEGACY_FILES) | {
+            item
+            for item in entries
+            if item.endswith("-FEEDBACK.md")
+            and os.path.isfile(os.path.join(self.parent, item))
+        } | {
             item
             for item in (entries & self._LEGACY_DIRS)
             if os.path.isdir(os.path.join(self.parent, item))

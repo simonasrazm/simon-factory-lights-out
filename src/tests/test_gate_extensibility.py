@@ -808,7 +808,7 @@ class TestSkillInjectionInComputeNext:
             2: {
                 "artifact": "QA-REPORT.md",
                 "role": "qa",
-                "skills": ["code-review"],
+                "skills": ["agent-skills/code-review"],
                 "gate_doc": "gates/test.md",
             },
             3: {"artifact": "SHIP.md", "role": "sflo", "gate_doc": "gates/ship.md"},
@@ -874,13 +874,13 @@ class TestSkillInjectionInComputeNext:
                 {
                     "artifact": "QA-REPORT.md",
                     "role": "qa",
-                    "skills": ["code-review"],
+                    "skills": ["agent-skills/code-review"],
                     "gate_doc": "gates/test.md",
                 },
                 {
                     "artifact": "SEC-REPORT.md",
                     "role": "security",
-                    "skills": ["sec-audit"],
+                    "skills": ["agent-skills/sec-audit"],
                     "gate_doc": "gates/sec.md",
                 },
             ],

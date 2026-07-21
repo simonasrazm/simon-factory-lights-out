@@ -53,15 +53,27 @@ def _role_slug(role):
     return slug or "agent"
 
 
+def _disabled_features():
+    """Return Codex features disabled for SFLO child agents."""
+    raw = os.environ.get("SFLO_CODEX_DISABLE_FEATURES")
+    if raw is None:
+        raw = "plugins"
+    return [
+        item.strip()
+        for item in raw.split(",")
+        if item.strip() and item.strip().lower() not in ("0", "false", "none", "off")
+    ]
+
+
 class CodexAdapter(RuntimeAdapter):
     """Spawn agents via `codex exec` and return the final assistant message."""
 
     MODEL_ALIASES = {
         "auto": "gpt-5.5",
         "gpt": "gpt-5.5",
-        "codex": "gpt-5.3-codex",
-        "gpt-codex": "gpt-5.3-codex",
-        "gpt-5-codex": "gpt-5.3-codex",
+        "codex": "gpt-5.5",
+        "gpt-codex": "gpt-5.5",
+        "gpt-5-codex": "gpt-5.5",
     }
 
     SPAWN_TIMEOUT_SECONDS = int(os.environ.get("SFLO_CODEX_TIMEOUT", "1800"))
@@ -105,6 +117,9 @@ class CodexAdapter(RuntimeAdapter):
         child_env = os.environ.copy()
         if env:
             child_env.update(env)
+        codex_home = child_env.get("SFLO_CODEX_HOME")
+        if codex_home:
+            child_env["CODEX_HOME"] = os.path.expanduser(codex_home)
         if child_env.get("TERM", "dumb") == "dumb":
             child_env["TERM"] = "xterm-256color"
 
@@ -135,6 +150,8 @@ class CodexAdapter(RuntimeAdapter):
             "--model",
             resolved_model,
         ]
+        for feature in _disabled_features():
+            cmd += ["--disable", feature]
         reasoning = _reasoning_effort(effort)
         if reasoning:
             cmd += ["-c", f'model_reasoning_effort="{reasoning}"']

@@ -31,7 +31,8 @@ BINDINGS_YAML = "roles:\n  pm:\n    model: opus\n  dev:\n    model: sonnet\n  qa
 GATE_ARTIFACTS = {
     1: "SCOPE.md",
     2: "BUILD-STATUS.md",
-    3: "QA-REPORT.md",  # parallel gate — SECURITY-REPORT.md handled separately
+    3: "QA-REPORT.md",
+    3.5: "SECURITY-REPORT.md",
     4: "PM-VERIFY.md",
     5: "SHIP-DECISION.md",
 }
@@ -47,6 +48,8 @@ PASSING_ARTIFACTS = {
         "counter displayed in the page. Single HTML file, inline styles "
         "and script, no build step, no external dependencies. A single "
         "page, a single button, a single visible number.\n\n"
+        "## Data Sources\n"
+        "No external data sources are required for this scope.\n\n"
         "## Acceptance Criteria\n"
         "- [x] AC1: clicking the button increments the counter\n"
         "- [x] AC2: page loads without console errors\n"

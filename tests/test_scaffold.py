@@ -138,8 +138,7 @@ class TestNextCommand(unittest.TestCase):
 
     def test_full_pipeline_traversal(self):
         """Walk through all 5 gates via next, verify pipeline completes."""
-        # Group artifacts by gate — parallel gates need all artifacts present
-        # before calling next (e.g. gate 3 = QA-REPORT.md + SECURITY-REPORT.md)
+        # Group artifacts by gate; custom pipelines may still use list gates.
         from src.constants import GATES
 
         gate_artifacts = {}
@@ -286,8 +285,8 @@ class TestCleanCommand(unittest.TestCase):
             "QA-REPORT.md",
             "PM-VERIFY.md",
             "SHIP-DECISION.md",
-            "QA-FEEDBACK.md",
-            "PM-FEEDBACK.md",
+            "QA-REPORT-FEEDBACK.md",
+            "PM-VERIFY-FEEDBACK.md",
         ):
             with open(os.path.join(self.sflo_dir, f), "w", encoding="utf-8") as fp:
                 fp.write("test content " + f)
@@ -325,8 +324,8 @@ class TestCleanCommand(unittest.TestCase):
             "QA-REPORT.md",
             "PM-VERIFY.md",
             "SHIP-DECISION.md",
-            "QA-FEEDBACK.md",
-            "PM-FEEDBACK.md",
+            "QA-REPORT-FEEDBACK.md",
+            "PM-VERIFY-FEEDBACK.md",
         ):
             self.assertNotIn(
                 f, remaining, f"{f} should be moved out of top level by clean"
@@ -344,8 +343,8 @@ class TestCleanCommand(unittest.TestCase):
             "QA-REPORT.md",
             "PM-VERIFY.md",
             "SHIP-DECISION.md",
-            "QA-FEEDBACK.md",
-            "PM-FEEDBACK.md",
+            "QA-REPORT-FEEDBACK.md",
+            "PM-VERIFY-FEEDBACK.md",
         ):
             self.assertIn(f, archived, f"{f} should be present in logs/ after clean")
 

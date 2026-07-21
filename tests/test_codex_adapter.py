@@ -57,6 +57,7 @@ class TestCodexSpawnAgent:
         assert "--ignore-user-config" in cmd
         assert "--ignore-rules" in cmd
         assert "--skip-git-repo-check" in cmd
+        assert cmd[cmd.index("--disable") + 1] == "plugins"
         assert cmd[-1] == "-"
 
     def test_pipes_combined_prompt_via_stdin(self, adapter, monkeypatch):
@@ -103,6 +104,23 @@ class TestCodexSpawnAgent:
         assert captured["env"]["SFLO_TEST"] == "codex"
         assert captured["env"]["TERM"] == "xterm-256color"
 
+    def test_sflo_codex_home_sets_child_codex_home(self, adapter, monkeypatch, tmp_path):
+        clean_home = tmp_path / "codex-clean"
+        clean_home.mkdir()
+
+        _, captured = self._run_spawn(
+            adapter,
+            monkeypatch,
+            env={"SFLO_CODEX_HOME": str(clean_home)},
+        )
+
+        assert captured["env"]["CODEX_HOME"] == str(clean_home)
+
+    def test_disable_features_can_be_overridden(self, adapter, monkeypatch):
+        monkeypatch.setenv("SFLO_CODEX_DISABLE_FEATURES", "")
+        _, captured = self._run_spawn(adapter, monkeypatch)
+        assert "--disable" not in captured["cmd"]
+
     def test_readonly_tools_mode_uses_readonly_sandbox(self, adapter, monkeypatch):
         _, captured = self._run_spawn(adapter, monkeypatch, tools_mode="readonly")
         cmd = captured["cmd"]
@@ -123,7 +141,7 @@ class TestCodexSpawnAgent:
     def test_codex_alias_uses_current_codex_model(self, adapter, monkeypatch):
         _, captured = self._run_spawn(adapter, monkeypatch, model="gpt-codex")
         cmd = captured["cmd"]
-        assert cmd[cmd.index("--model") + 1] == "gpt-5.3-codex"
+        assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
 
 
 class TestCodexErrors:

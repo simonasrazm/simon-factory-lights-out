@@ -92,22 +92,6 @@ else
   echo "Source: $SOURCE"
 fi
 
-# --- Initialize git submodules (vendor/agent-skills) ---
-# SFLO resolves pipeline skills from vendor/agent-skills/; a fresh clone
-# leaves it empty until initialized. rev-parse skips cleanly (rather than
-# aborting setup) when SFLO was extracted from an archive, not git-cloned.
-echo ""
-echo "Initializing git submodules (vendor/agent-skills)..."
-if git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
-  if git -C "$SCRIPT_DIR" submodule update --init --recursive; then
-    echo "  ✓ Submodules initialized"
-  else
-    echo "  ⚠ git submodule update failed — vendor/agent-skills may be incomplete."
-  fi
-else
-  echo "  ⚠ Not a git work tree — skipping. Populate vendor/agent-skills manually."
-fi
-
 # --- Resolve install directory ---
 
 if [[ -z "$INSTALL_DIR" ]]; then
@@ -116,6 +100,62 @@ fi
 
 echo "Install dir: $INSTALL_DIR"
 echo ""
+
+STATUS_DIR="$INSTALL_DIR/.sflo"
+STATUS_FILE="$STATUS_DIR/.setup-status"
+mkdir -p "$STATUS_DIR"
+
+atomic_status() {
+  local status="$1" tmp
+  tmp="$(mktemp "$STATUS_DIR/.setup-status.XXXXXX")"
+  printf '%s\n' "$status" > "$tmp"
+  mv -f "$tmp" "$STATUS_FILE"
+}
+
+emit_setup_result() {
+  local ok="$1" status="$2" error="${3:-}"
+  "$PYTHON_CMD" - "$ok" "$RUNTIME" "$INSTALL_DIR" "${SFLO_PATH:-}" "$status" "$error" <<'PYEOF'
+import json, sys
+ok, runtime, install_dir, sflo_path, status, error = sys.argv[1:]
+result = {
+    "ok": ok == "true",
+    "runtime": runtime,
+    "install_dir": install_dir,
+    "sflo_path": sflo_path,
+    "status": status,
+}
+if error:
+    result["error"] = error
+print("SFLO_SETUP_RESULT:" + json.dumps(result, separators=(",", ":")))
+PYEOF
+}
+
+SETUP_SUCCEEDED=false
+SETUP_ERROR="setup did not complete"
+atomic_status "failed"
+setup_exit() {
+  local rc=$?
+  trap - EXIT
+  if [[ "$SETUP_SUCCEEDED" != true ]]; then
+    atomic_status "failed" || true
+    emit_setup_result false failed "$SETUP_ERROR" || true
+    [[ $rc -ne 0 ]] || rc=1
+  fi
+  exit "$rc"
+}
+trap setup_exit EXIT
+
+die() {
+  SETUP_ERROR="$1"
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+MATT_REQUIRED_REL="vendor/mattpocock-skills/skills/engineering/tdd/SKILL.md"
+ensure_matt_skills() {
+  local root="$1"
+  [[ -f "$root/$MATT_REQUIRED_REL" ]] || die "required vendored Matt skill is missing: $root/$MATT_REQUIRED_REL"
+}
 
 # --- Install SFLO to install directory ---
 
@@ -158,6 +198,7 @@ elif [[ -n "$SFLO_REAL" && -n "$SOURCE_REAL" && "$SFLO_REAL" == "$SOURCE_REAL"/*
   echo "Target is inside source directory — configuring in-place (no copy needed)"
 elif [[ -d "$SOURCE" ]]; then
   # Local source — copy (prefer cp -r for cross-platform, rsync if available)
+  ensure_matt_skills "$SOURCE"
   if [[ -d "$SFLO_PATH" ]]; then
     echo "Updating SFLO at $SFLO_PATH from local source..."
   else
@@ -173,16 +214,16 @@ elif [[ -d "$SOURCE" ]]; then
     cp -r "$SOURCE" "$SFLO_PATH"
     rm -rf "$SFLO_PATH/.git" "$SFLO_PATH/__pycache__" "$SFLO_PATH/.sflo"
   fi
-elif [[ "$SOURCE" == http* ]]; then
+elif [[ "$SOURCE" == http* || "$SOURCE" == git@* || "$SOURCE" == ssh://* || "$SOURCE" == file://* ]]; then
   # Remote source — git clone
   if [[ -d "$SFLO_PATH/.git" ]]; then
     echo "Updating SFLO at $SFLO_PATH from git..."
-    git -C "$SFLO_PATH" pull origin "$BRANCH" 2>/dev/null || true
+    git -C "$SFLO_PATH" pull --ff-only origin "$BRANCH" || die "failed to update SFLO checkout at $SFLO_PATH"
   elif [[ -d "$SFLO_PATH" ]]; then
-    echo "SFLO exists at $SFLO_PATH but is not a git repo — skipping clone"
+    die "SFLO exists at $SFLO_PATH but is not a git checkout"
   else
     echo "Cloning SFLO..."
-    git clone --branch "$BRANCH" --depth 1 "$SOURCE" "$SFLO_PATH"
+    git clone --branch "$BRANCH" --depth 1 "$SOURCE" "$SFLO_PATH" || die "failed to clone SFLO from $SOURCE"
   fi
 else
   echo "ERROR: Source not found: $SOURCE"
@@ -191,6 +232,9 @@ fi
 echo "  ✓ SFLO at $SFLO_PATH"
 
 fi  # end of SFLO_PATH_OVERRIDE check
+
+ensure_matt_skills "$SFLO_PATH"
+[[ -f "$SFLO_PATH/pipeline.yaml" ]] || die "pipeline.yaml not found at $SFLO_PATH/pipeline.yaml"
 
 # --- Install hooks ---
 
@@ -307,6 +351,38 @@ remove_owned_skill_dir() {
   fi
 }
 
+install_runtime_pipeline() {
+  local src="$1"
+  local label="$2"
+  local dst="$INSTALL_DIR/pipeline.yaml"
+
+  if [[ ! -f "$src" ]]; then
+    echo "  ⚠ $label pipeline source not found at $src"
+    return 1
+  fi
+
+  mkdir -p "$INSTALL_DIR"
+  if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then
+    cp "$dst" "$dst.bak"
+    echo "  ✓ Existing pipeline.yaml backed up to $dst.bak"
+  fi
+  cp "$src" "$dst"
+  echo "  ✓ $label pipeline installed at $dst"
+}
+
+cursor_skill_roots() {
+  if [[ -n "${CURSOR_SKILLS_DIR:-}" ]]; then
+    printf '%s\n' "$CURSOR_SKILLS_DIR"
+    return
+  fi
+
+  local cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
+  printf '%s\n' "$cursor_home/skills"
+  if [[ -d "$cursor_home/skills-cursor" ]]; then
+    printf '%s\n' "$cursor_home/skills-cursor"
+  fi
+}
+
 remove_old_agents_block() {
   local agents_file="$1"
 
@@ -376,16 +452,15 @@ else:
   fi
 
 elif [[ "$RUNTIME" == "cursor" ]]; then
-  # Cursor integration: project stop hook plus a global Agent Skill. The
-  # skill lives under ~/.cursor/skills so projects do not accumulate SFLO
-  # rule files; the stop hook remains project-local because Cursor reads
+  # Cursor integration: project stop hook plus global Agent Skill roots. The
+  # primary custom-skill root is ~/.cursor/skills. Some Cursor builds expose
+  # ~/.cursor/skills-cursor as the active root, so install there too when it
+  # already exists. The stop hook remains project-local because Cursor reads
   # hooks from the workspace.
   CURSOR_DIR="$INSTALL_DIR/.cursor"
   HOOKS_FILE="$CURSOR_DIR/hooks.json"
   RULES_DIR="$CURSOR_DIR/rules"
   CURSOR_SKILL_SRC="$SFLO_PATH/src/hooks/cursor/skills/sflo"
-  CURSOR_SKILL_ROOT="${CURSOR_HOME:-$HOME/.cursor}/skills"
-  CURSOR_SKILL_DST="$CURSOR_SKILL_ROOT/sflo"
   STOP_HOOK_ABS="$SFLO_PATH/src/hooks/cursor/stop_hook.py"
   STOP_HOOK_REL="$(relative_hook_path "$INSTALL_DIR" "$STOP_HOOK_ABS")"
 
@@ -417,8 +492,12 @@ with open(path, "w") as f:
 print("  ✓ .cursor/hooks.json updated (stop hook -> SFLO)")
 PYEOF
 
-  install_owned_skill_dir "$CURSOR_SKILL_SRC" "$CURSOR_SKILL_DST" "Cursor factory-triggering" || exit 1
-  remove_owned_skill_dir "$CURSOR_SKILL_ROOT/sflo-factory-triggering"
+  while IFS= read -r CURSOR_SKILL_ROOT; do
+    [[ -n "$CURSOR_SKILL_ROOT" ]] || continue
+    install_owned_skill_dir "$CURSOR_SKILL_SRC" "$CURSOR_SKILL_ROOT/sflo" "Cursor factory-triggering" || exit 1
+    remove_owned_skill_dir "$CURSOR_SKILL_ROOT/sflo-factory-triggering"
+  done < <(cursor_skill_roots)
+  install_runtime_pipeline "$SFLO_PATH/pipeline-cursor.yaml" "Cursor" || exit 1
   rm -f "$RULES_DIR/sflo.mdc" "$RULES_DIR/sflo-factory-triggering.mdc"
   rmdir "$RULES_DIR" 2>/dev/null || true
 
@@ -486,7 +565,7 @@ fi
 
 PIPELINE_FILE="$SFLO_PATH/pipeline.yaml"
 if [[ ! -f "$PIPELINE_FILE" ]]; then
-  echo "  ⚠ pipeline.yaml not found at $PIPELINE_FILE — installation may be incomplete"
+  die "pipeline.yaml not found at $PIPELINE_FILE"
 else
   echo "  ✓ pipeline.yaml present"
 fi
@@ -503,16 +582,14 @@ fi
 
 # --- Write setup status ---
 
-STATUS_DIR="$INSTALL_DIR/.sflo"
-mkdir -p "$STATUS_DIR"
-STATUS_FILE="$STATUS_DIR/.setup-status"
 if [[ "$RUNTIME" == "openclaw" ]]; then
-  echo "restart_required" > "$STATUS_FILE"
+  FINAL_STATUS="restart_required"
 else
   # claude-code hot-reloads settings.json; cursor live-reloads
   # .cursor/hooks.json and discovers the global skill; codex has no hook.
-  echo "ready" > "$STATUS_FILE"
+  FINAL_STATUS="ready"
 fi
+atomic_status "$FINAL_STATUS"
 
 # --- Final output ---
 
@@ -521,4 +598,6 @@ echo "╔═══════════════════════�
 echo "║  SFLO installed successfully!             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-echo "SFLO_SETUP_RESULT:{\"ok\":true,\"runtime\":\"$RUNTIME\",\"install_dir\":\"$INSTALL_DIR\",\"sflo_path\":\"$SFLO_PATH\",\"status\":\"$(cat "$STATUS_FILE")\"}"
+emit_setup_result true "$FINAL_STATUS"
+SETUP_SUCCEEDED=true
+trap - EXIT

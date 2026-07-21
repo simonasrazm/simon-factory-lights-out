@@ -5,7 +5,7 @@ each gate spawn is a single non-interactive invocation of `cursor-agent`
 in print mode with JSON output. The runner orchestrates gate sequencing;
 this adapter just spawns one agent and returns its final text.
 
-Cursor CLI reference (verified against cursor.com/docs/cli/reference):
+Cursor CLI reference (verified against local `cursor-agent --help`):
     cursor-agent --print                      headless / non-interactive
                  --output-format json         single JSON object on stdout
                  --model <name>               model selection (cursor model id)
@@ -25,6 +25,7 @@ import atexit
 import ctypes
 import json
 import os
+import re as _re
 import shutil
 import subprocess
 import tempfile
@@ -87,8 +88,6 @@ _job_handle = None
 # Last resort: return the shim itself; the caller routes it through
 # cmd.exe /c and warns that metacharacters may be mangled.
 # ---------------------------------------------------------------------------
-
-import re as _re
 
 # PowerShell switches for running a .ps1 shim: skip the user profile, never
 # prompt, and bypass the execution policy so an unsigned shim still runs. The
@@ -327,14 +326,18 @@ class CursorAdapter(RuntimeAdapter):
     parse the final result string.
     """
 
-    # Cursor uses vendor-specific model identifiers. Generic aliases from
-    # pipeline.yaml are mapped here; unknown values pass through unchanged.
+    # Cursor encodes Claude thinking/effort in the model id. Keep aliases as
+    # compatibility sugar for logical SFLO names; exact pipeline model ids pass
+    # through unchanged so Cursor installs can mirror pipeline.yaml without
+    # adapter drift.
     MODEL_ALIASES = {
-        "opus": "claude-opus-4-7-thinking-high",
+        "opus": "claude-opus-4-8-thinking-high",
         "sonnet": "claude-4.6-sonnet-medium-thinking",
         "haiku": "claude-4.5-haiku-thinking",
         "gpt": "gpt-5.5",
-        "gpt-codex": "gpt-5.2-codex",
+        "codex": "gpt-5.5",
+        "gpt-codex": "gpt-5.5",
+        "gpt-5-codex": "gpt-5.5",
         "auto": "auto",
     }
 

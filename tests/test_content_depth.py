@@ -230,6 +230,7 @@ class TestContentDepthPassPath(unittest.TestCase):
         self.write(
             "SCOPE.md",
             (
+                "## Data Sources\nNo external data sources are required.\n"
                 "## Acceptance Criteria\n- [x] AC1: clicking button increments counter\n"
                 "## What We're Building\nA small widget with a button.\n" + "word " * 50
             ),

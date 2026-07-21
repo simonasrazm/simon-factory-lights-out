@@ -371,6 +371,7 @@ class TestHookPipelineTraversal(unittest.TestCase):
                 else [GATES[3]["artifact"]],
                 "QA",
             ),
+            "gate-3.5": ([GATES[3.5]["artifact"]], "SECURITY"),
             "gate-4": (["PM-VERIFY.md"], "PM-VERIFY"),
             "gate-5": (["SHIP-DECISION.md"], "SHIP-DECISION"),
         }
@@ -390,21 +391,14 @@ class TestHookPipelineTraversal(unittest.TestCase):
 
     def test_loop_back_prompts_dev(self):
         """After QA failure, prompt should re-target DEV."""
-        from src.constants import GATES
-
         self.artifact("SCOPE.md", PASSING_ARTIFACTS["SCOPE.md"])
         self.advance()
         self.artifact("BUILD-STATUS.md", PASSING_ARTIFACTS["BUILD-STATUS.md"])
         self.advance()
-        # Write failing QA report + passing security report for parallel gate 3
+        # A failing sequential QA report returns directly to Developer.
         self.artifact("QA-REPORT.md", "### Grade: F\n### Issues Found\n1. CRITICAL\n")
-        if isinstance(GATES.get(3), list):
-            for entry in GATES[3]:
-                a = entry.get("artifact")
-                if a and a != "QA-REPORT.md" and a in PASSING_ARTIFACTS:
-                    self.artifact(a, PASSING_ARTIFACTS[a])
         result = self.advance()
-        self.assertEqual(result["state"], "loop-inner")
+        self.assertEqual(result["state"], "loop-gate-3")
 
         r = self.prompt()
         self.assertTrue(r["ok"])

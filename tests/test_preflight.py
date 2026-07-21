@@ -1,7 +1,5 @@
 """Tests for src.preflight — SOUL validation, vendor, and browser checks."""
 
-import pytest
-
 import src.preflight as preflight_mod
 from src.preflight import (
     check_agent_soul,
@@ -11,23 +9,34 @@ from src.preflight import (
 
 
 class TestCheckAgentSoul:
-    def test_dev_with_rebuild_section_passes(self, tmp_path):
+    def test_dev_with_context_listed_feedback_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
-        soul.write_text("# Dev\n## rebuild mode\nFix feedback.\n", encoding="utf-8")
+        soul.write_text(
+            "# Dev\n## rebuild mode\nRead all feedback files listed in Context.\n",
+            encoding="utf-8",
+        )
         assert check_agent_soul("dev", str(tmp_path)) == [], (
-            "dev with rebuild section should pass with no issues"
+            "dev with generic context-listed feedback handling should pass"
         )
 
-    def test_dev_without_rebuild_fails(self, tmp_path):
+    def test_dev_without_context_listed_feedback_fails(self, tmp_path):
         soul = tmp_path / "SOUL.md"
         soul.write_text("# Dev\nBuild stuff.\n", encoding="utf-8")
         issues = check_agent_soul("dev", str(tmp_path))
         assert len(issues) == 1, (
-            f"expected 1 issue for dev without rebuild, got {len(issues)}: {issues}"
+            f"expected 1 issue for dev without feedback handling, got {len(issues)}: {issues}"
         )
-        assert "rebuild" in issues[0].lower() or "feedback" in issues[0].lower(), (
-            f"issue should mention rebuild or feedback, got: {issues[0]!r}"
+        assert "feedback" in issues[0].lower(), (
+            f"issue should mention feedback, got: {issues[0]!r}"
         )
+
+    def test_dev_with_old_qa_specific_feedback_fails(self, tmp_path):
+        soul = tmp_path / "SOUL.md"
+        soul.write_text("# Dev\n## rebuild mode\nFix QA feedback.\n", encoding="utf-8")
+
+        issues = check_agent_soul("dev", str(tmp_path))
+
+        assert len(issues) == 1
 
     def test_qa_with_grading_passes(self, tmp_path):
         soul = tmp_path / "SOUL.md"
@@ -71,7 +80,7 @@ class TestCheckAgentSoul:
 class TestPreflightCheck:
     def test_all_agents_pass(self, tmp_path):
         for role, content in [
-            ("dev", "## rebuild mode\nFix."),
+            ("dev", "## rebuild mode\nRead feedback files listed in Context."),
             ("qa", "### Grade: B\n"),
             ("pm", "## Acceptance Criteria\n"),
         ]:
@@ -123,7 +132,7 @@ class TestCheckVendor:
 
     def _populate(self, root):
         """Create a populated vendor/agent-skills/skills/ tree under root."""
-        skill_dir = root / "vendor" / "agent-skills" / "skills" / "tdd"
+        skill_dir = root / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# TDD skill\n", encoding="utf-8")
 
@@ -139,8 +148,8 @@ class TestCheckVendor:
         monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
         issue = check_vendor()
         assert issue is not None, "missing vendor should produce an issue"
-        assert "agent-skills" in issue, (
-            f"issue should name the agent-skills submodule, got: {issue!r}"
+        assert "mattpocock-skills" in issue, (
+            f"issue should name the Matt Pocock submodule, got: {issue!r}"
         )
         assert "git submodule update" in issue, (
             f"issue should give the init command, got: {issue!r}"
@@ -149,19 +158,19 @@ class TestCheckVendor:
     def test_empty_submodule_dir_returns_issue(self, monkeypatch, tmp_path):
         # The submodule directory exists but is empty — the exact state of a
         # fresh clone before `git submodule update --init`.
-        (tmp_path / "vendor" / "agent-skills").mkdir(parents=True)
+        (tmp_path / "vendor" / "mattpocock-skills").mkdir(parents=True)
         monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
         issue = check_vendor()
         assert issue is not None, (
             "an empty (uninitialized) submodule dir should produce an issue"
         )
-        assert "agent-skills" in issue and "git submodule update" in issue, (
+        assert "mattpocock-skills" in issue and "git submodule update" in issue, (
             f"issue should name the submodule and init command, got: {issue!r}"
         )
 
     def test_skills_dir_present_but_empty_returns_issue(self, monkeypatch, tmp_path):
         # skills/ exists but has no skill subdirectories — still unusable.
-        (tmp_path / "vendor" / "agent-skills" / "skills").mkdir(parents=True)
+        (tmp_path / "vendor" / "mattpocock-skills" / "skills").mkdir(parents=True)
         monkeypatch.setattr(preflight_mod, "SFLO_ROOT", str(tmp_path))
         issue = check_vendor()
         assert issue is not None, (

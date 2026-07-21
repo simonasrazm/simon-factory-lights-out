@@ -4,10 +4,17 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 SFLO_ROOT = Path(__file__).resolve().parents[1]
+requires_posix_shell = pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX installer integration is covered by the Linux CI job",
+)
 
 
+@requires_posix_shell
 def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
     """Codex setup installs the factory-triggering skill and ready status."""
     install_dir = tmp_path / "install"
@@ -47,6 +54,7 @@ def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
     ) == "ready\n"
 
 
+@requires_posix_shell
 def test_setup_sh_codex_removes_old_agents_trigger_block(tmp_path):
     """Codex setup removes old token-trigger AGENTS blocks without clobbering user text."""
     install_dir = tmp_path / "install"
@@ -87,6 +95,7 @@ def test_setup_sh_codex_removes_old_agents_trigger_block(tmp_path):
     assert "When the user says `SFLO:`" not in agents
 
 
+@requires_posix_shell
 def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     """Cursor setup installs the guarded factory-triggering skill globally."""
     install_dir = tmp_path / "install"
@@ -96,6 +105,7 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     rule_file.write_text("old token trigger\n", encoding="utf-8")
     duplicate_rule = install_dir / ".cursor" / "rules" / "sflo-factory-triggering.mdc"
     duplicate_rule.write_text("intermediate duplicate\n", encoding="utf-8")
+    (home_dir / ".cursor" / "skills-cursor").mkdir(parents=True)
     env = os.environ.copy()
     env["HOME"] = str(home_dir)
     old_global_skill = (
@@ -103,6 +113,15 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     )
     old_global_skill.parent.mkdir(parents=True)
     old_global_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
+    old_skills_cursor_skill = (
+        home_dir
+        / ".cursor"
+        / "skills-cursor"
+        / "sflo-factory-triggering"
+        / "SKILL.md"
+    )
+    old_skills_cursor_skill.parent.mkdir(parents=True)
+    old_skills_cursor_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -138,14 +157,29 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     assert "{{SFLO_PATH}}" not in skill
     assert "{{SFLO_RUNNER_SH}}" not in skill
     assert "<<'SFLO_TASK'" in skill
+    assert (install_dir / "pipeline.yaml").read_text(encoding="utf-8") == (
+        SFLO_ROOT / "pipeline-cursor.yaml"
+    ).read_text(encoding="utf-8")
     assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
+    compat_skill = (
+        home_dir
+        / ".cursor"
+        / "skills-cursor"
+        / "sflo"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "name: sflo" in compat_skill
+    assert "--runtime cursor" in compat_skill
+    assert (old_skills_cursor_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
     assert not rule_file.exists()
     assert not duplicate_rule.exists()
     assert not (install_dir / ".cursor" / "rules").exists()
     assert not old_global_skill.parent.exists()
+    assert not old_skills_cursor_skill.parent.exists()
     assert (install_dir / ".cursor" / "hooks.json").is_file()
 
 
+@requires_posix_shell
 def test_setup_sh_rejects_removed_workspace_flag(tmp_path):
     """Setup rejects the removed --workspace flag."""
     install_dir = tmp_path / "install"
@@ -172,6 +206,7 @@ def test_setup_sh_rejects_removed_workspace_flag(tmp_path):
     assert not (install_dir / "AGENTS.md").exists()
 
 
+@requires_posix_shell
 def test_hook_installer_openclaw_copies_hook(tmp_path):
     """OpenClaw hook repair copies the hook into the chosen install dir."""
     install_dir = tmp_path / "install"
@@ -203,6 +238,7 @@ def test_hook_installer_openclaw_copies_hook(tmp_path):
     assert "Symlinked:" not in result.stdout
 
 
+@requires_posix_shell
 def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
     """Cursor hook repair installs the guarded global factory-triggering skill."""
     install_dir = tmp_path / "install"
@@ -212,6 +248,7 @@ def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
     old_rule.write_text("old token trigger\n", encoding="utf-8")
     duplicate_rule = install_dir / ".cursor" / "rules" / "sflo-factory-triggering.mdc"
     duplicate_rule.write_text("intermediate duplicate\n", encoding="utf-8")
+    (home_dir / ".cursor" / "skills-cursor").mkdir(parents=True)
     env = os.environ.copy()
     env["HOME"] = str(home_dir)
     old_global_skill = (
@@ -219,6 +256,15 @@ def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
     )
     old_global_skill.parent.mkdir(parents=True)
     old_global_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
+    old_skills_cursor_skill = (
+        home_dir
+        / ".cursor"
+        / "skills-cursor"
+        / "sflo-factory-triggering"
+        / "SKILL.md"
+    )
+    old_skills_cursor_skill.parent.mkdir(parents=True)
+    old_skills_cursor_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -251,11 +297,25 @@ def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
     assert "{{SFLO_PATH}}" not in skill
     assert "{{SFLO_RUNNER_SH}}" not in skill
     assert "<<'SFLO_TASK'" in skill
+    assert (install_dir / "pipeline.yaml").read_text(encoding="utf-8") == (
+        SFLO_ROOT / "pipeline-cursor.yaml"
+    ).read_text(encoding="utf-8")
     assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
+    compat_skill = (
+        home_dir
+        / ".cursor"
+        / "skills-cursor"
+        / "sflo"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "name: sflo" in compat_skill
+    assert "--runtime cursor" in compat_skill
+    assert (old_skills_cursor_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
     assert not old_rule.exists()
     assert not duplicate_rule.exists()
     assert not (install_dir / ".cursor" / "rules").exists()
     assert not old_global_skill.parent.exists()
+    assert not old_skills_cursor_skill.parent.exists()
     assert (install_dir / ".cursor" / "hooks.json").is_file()
 
 
@@ -269,6 +329,7 @@ def test_cursor_hook_template_uses_shell_quoted_placeholder():
     assert "{{SFLO_PATH}}/src/hooks/cursor/stop_hook.py" not in text
 
 
+@requires_posix_shell
 def test_hook_installer_rejects_removed_workspace_flag(tmp_path):
     """Hook-only repair also rejects the removed --workspace flag."""
     install_dir = tmp_path / "install"
@@ -293,6 +354,7 @@ def test_hook_installer_rejects_removed_workspace_flag(tmp_path):
     assert not (install_dir / "hooks").exists()
 
 
+@requires_posix_shell
 def test_setup_sh_openclaw_without_install_dir_uses_current_directory(tmp_path):
     """OpenClaw setup does not infer an install dir from runtime config."""
     install_dir = tmp_path / "install"
@@ -332,6 +394,7 @@ def test_setup_sh_openclaw_without_install_dir_uses_current_directory(tmp_path):
     assert '"install_dir":"' + str(install_dir) + '"' in result.stdout
 
 
+@requires_posix_shell
 def test_hook_installer_openclaw_without_install_dir_uses_current_directory(tmp_path):
     """Hook repair uses cwd as install dir when --install-dir is omitted."""
     install_dir = tmp_path / "install"
@@ -368,6 +431,7 @@ def test_hook_installer_openclaw_without_install_dir_uses_current_directory(tmp_
     assert not (configured_workspace / "hooks" / "sflo-pipeline").exists()
 
 
+@requires_posix_shell
 def test_hook_installer_claude_code_removes_legacy_stop_key(tmp_path):
     """Hook repair does not leave stale lowercase Claude Code stop hooks."""
     install_dir = tmp_path / "install"
@@ -401,6 +465,7 @@ def test_hook_installer_claude_code_removes_legacy_stop_key(tmp_path):
     assert '"Other"' in settings
 
 
+@requires_posix_shell
 def test_hook_installer_claude_code_handles_single_quote_install_dir(tmp_path):
     """Claude hook repair must be argv-safe for paths containing single quotes."""
     install_dir = tmp_path / "install's-dir"
@@ -486,11 +551,24 @@ def test_setup_ps1_writes_all_runtime_status_and_result():
     assert "function Write-SetupStatus" in text
     assert "function Write-SetupResult" in text
     assert "SFLO_SETUP_RESULT:" in text
-    assert "$status = Write-SetupStatus -InstallDir $InstallDir -Runtime $Runtime" in text
+    assert "$status = Write-SetupStatus -InstallDir $InstallDir -Status 'ready'" in text
     assert (
         "Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir "
-        "-SfloHome $SfloHome -Status $status"
+        "-SfloHome $SfloHome -Status $status -Ok $true"
     ) in text
+    assert "-Status 'failed' -Ok $false" in text
+    assert "function Assert-SfloVendoredSkills" in text
+    assert "required vendored Matt skill is missing" in text
+    assert "git not found; skipping" not in text
+
+
+def test_setup_ps1_cursor_installs_runtime_pipeline():
+    """Windows Cursor setup installs pipeline-cursor.yaml as pipeline.yaml."""
+    text = (SFLO_ROOT / "setup.ps1").read_text(encoding="utf-8")
+
+    assert "function Install-SfloRuntimePipeline" in text
+    assert "pipeline-cursor.yaml" in text
+    assert "pipeline.yaml" in text
 
 
 def test_openclaw_hook_resolves_active_factory_not_workspace_state():

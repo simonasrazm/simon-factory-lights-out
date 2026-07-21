@@ -166,7 +166,7 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         )
 
     def test_qa_failure_loops_inner(self):
-        self.write_state("check-3", inner=2)
+        self.write_state("check-3")
         self.write_artifact(
             "QA-REPORT.md",
             "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
@@ -176,34 +176,35 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         result = apply_transition(state, result, self.sflo_dir)
         self.assertEqual(
             result["state"],
-            "loop-inner",
-            "QA failure with retries left should loop inner",
+            "loop-gate-3",
+            "QA failure with retries left should use configured restart",
         )
         self.assertEqual(
-            result["inner_count"], 3, "inner loop count should increment to 3"
+            result["gate_retry_count"], 1, "QA retry count should increment"
         )
         self.assertEqual(
             state["current_state"], "gate-2", "inner loop should reset state to gate-2"
         )
 
     def test_qa_failure_exhausted(self):
-        self.write_state("check-3", inner=9)
+        self.write_state("check-3")
         self.write_artifact(
             "QA-REPORT.md",
             "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
+        state["gate_retries"] = {"3": 9}
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
         self.assertEqual(
-            result["state"],
-            "loop-inner-exhausted",
-            "QA failure at max retries should exhaust inner loop",
+            result["action"],
+            "ask_human",
+            "QA failure at max retries should escalate",
         )
         self.assertEqual(
             state["current_state"],
-            "gate-4",
-            "exhausted inner loop should advance state to gate-4",
+            "escalate",
+            "exhausted QA retries must not bypass review",
         )
 
     def test_pm_rejection_loops_outer(self):
@@ -255,11 +256,11 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
 
 
 class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
-    """Test that QA findings survive the inner loop for dev to use."""
+    """Test that judge findings survive the inner loop for dev to use."""
 
     def test_qa_failure_saves_feedback(self):
         """When QA gives a low grade, feedback is saved before artifacts are archived."""
-        self.write_state("check-3", inner=0)
+        self.write_state("check-3")
         self.write_artifact(
             "QA-REPORT.md",
             "### Test Results\n| Test | Result |\n| Spacing | FAIL |\n"
@@ -271,7 +272,7 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         result = compute_next(state, self.sflo_dir)
         result = apply_transition(state, result, self.sflo_dir)
         self.assertEqual(
-            result["state"], "loop-inner", "QA failure should trigger inner loop"
+            result["state"], "loop-gate-3", "QA failure should restart Developer"
         )
 
         # QA-REPORT.md should be archived (moved to logs/, not at top level)
@@ -284,11 +285,11 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
             "QA-REPORT.md should be moved to logs/ directory",
         )
 
-        # But QA-FEEDBACK.md should exist with the findings (preserved in place)
-        feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
+        # But artifact feedback should exist with the findings (preserved in place)
+        feedback_path = os.path.join(self.sflo_dir, "QA-REPORT-FEEDBACK.md")
         self.assertTrue(
             os.path.isfile(feedback_path),
-            "QA-FEEDBACK.md should be created with findings",
+            "QA-REPORT-FEEDBACK.md should be created with findings",
         )
         with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
@@ -308,7 +309,9 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         self.write_state("check-3")
         self.write_artifact("QA-REPORT.md", PASSING_ARTIFACTS["QA-REPORT.md"])
         _write_sibling_artifacts(self.sflo_dir, 3, "QA-REPORT.md")
-        self.write_artifact("QA-FEEDBACK.md", "## QA Round 1\n### QA Grade: C\n")
+        self.write_artifact(
+            "QA-REPORT-FEEDBACK.md", "## Feedback Round 1 — qa\n### QA Grade: C\n"
+        )
 
         state = self.read_state_file()
         result = compute_next(state, self.sflo_dir)
@@ -316,12 +319,12 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
 
         # Feedback should be cleaned up
         self.assertFalse(
-            os.path.isfile(os.path.join(self.sflo_dir, "QA-FEEDBACK.md")),
-            "QA-FEEDBACK.md should be removed after QA passes",
+            os.path.isfile(os.path.join(self.sflo_dir, "QA-REPORT-FEEDBACK.md")),
+            "QA-REPORT-FEEDBACK.md should be removed after QA passes",
         )
 
     def test_feedback_accumulates_across_retries(self):
-        """Multiple QA failures accumulate findings in QA-FEEDBACK.md."""
+        """Multiple QA failures accumulate findings in artifact feedback."""
         # First failure
         self.write_state("check-3", inner=0)
         self.write_artifact(
@@ -342,7 +345,7 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
         result = compute_next(state, self.sflo_dir)
         apply_transition(state, result, self.sflo_dir)
 
-        feedback_path = os.path.join(self.sflo_dir, "QA-FEEDBACK.md")
+        feedback_path = os.path.join(self.sflo_dir, "QA-REPORT-FEEDBACK.md")
         with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn(
@@ -352,10 +355,10 @@ class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):
             "Bug B", content, "feedback should accumulate Bug B from second failure"
         )
         self.assertIn(
-            "QA Round 1", content, "feedback should contain QA Round 1 header"
+            "Feedback Round 1", content, "feedback should contain round 1 header"
         )
         self.assertIn(
-            "QA Round 2", content, "feedback should contain QA Round 2 header"
+            "Feedback Round 2", content, "feedback should contain round 2 header"
         )
 
 
@@ -661,10 +664,12 @@ class TestResolveAgentPath(unittest.TestCase):
 
     def test_absolute_agents_path_preserved(self):
         """Absolute path in agents: list is not joined with sflo_base."""
-        entry = {"role": "qa", "agents": ["/abs/path/to/agent"]}
+        absolute_agent = os.path.abspath(
+            os.path.join(os.sep, "abs", "path", "to", "agent")
+        )
+        entry = {"role": "qa", "agents": [absolute_agent]}
         result = self.resolve(entry, self.sflo_base, {}, {})
-        # a POSIX-absolute fixture is not absolute on Windows — normalize expected
-        self.assertEqual(result, os.path.normpath("/abs/path/to/agent"))
+        self.assertEqual(result, absolute_agent)
 
 
 class TestRolesWithExplicitAgents(unittest.TestCase):

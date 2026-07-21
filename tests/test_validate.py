@@ -15,6 +15,7 @@ from src.validate import (
     validate_agent_path,
     extract_qa_feedback,
     save_qa_feedback,
+    save_gate_feedback,
     PLACEHOLDER_PATTERN,
 )
 from src.constants import GRADE_MAP, GRADE_THRESHOLD, GATES
@@ -95,6 +96,8 @@ class TestValidateGate(unittest.TestCase):
         "file with inline styles and a tiny script block. No frameworks, "
         "no build step, no external dependencies. A single page, a single "
         "button, a single number.\n\n"
+        "## Data Sources\n"
+        "No external data sources are required for this scope.\n\n"
         "## Acceptance Criteria\n"
         "- [x] AC1: clicking the button increments the counter\n"
         "- [x] AC2: page loads without console errors\n"
@@ -126,7 +129,7 @@ class TestValidateGate(unittest.TestCase):
     )
 
     # Gate 1 — current validator checks: file_exists, has_acceptance_criteria
-    # (≥1 `- [ ]` line), has_substance (≥50 words), no_placeholders.
+    # (≥1 `- [ ]` line), source evidence/declaration, has_substance, placeholders.
     # Section-structure and content-depth checks were intentionally stripped
     # out; QA (gate 3) is the agent that evaluates quality, not validate.py.
     def test_gate1_valid(self):
@@ -319,14 +322,13 @@ class TestSecurityValidator(unittest.TestCase):
 
     def test_security_grade_a_passes(self):
         self.write("SECURITY-REPORT.md", self._full_security("A"))
-        self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
-        passed, _ = validate_gate(3, self.tmpdir)
+        passed, _ = validate_gate(3.5, self.tmpdir)
         self.assertTrue(passed)
 
     def test_security_grade_b_fails(self):
         self.write("SECURITY-REPORT.md", self._full_security("B"))
         self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
-        passed, checks = validate_gate(3, self.tmpdir)
+        passed, checks = validate_gate(3.5, self.tmpdir)
         self.assertFalse(passed)
         # Verify security grade_sufficient check is the failing one
         sec_grade = [
@@ -341,7 +343,7 @@ class TestSecurityValidator(unittest.TestCase):
             "## Security Audit\n- Critical: 0\n### Findings\n| None |\n",
         )
         self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
-        passed, checks = validate_gate(3, self.tmpdir)
+        passed, checks = validate_gate(3.5, self.tmpdir)
         self.assertFalse(passed, "Security report with no grade must fail")
 
     def test_security_critical_findings_fails(self):
@@ -350,7 +352,7 @@ class TestSecurityValidator(unittest.TestCase):
             "## Security Audit\n- Critical: 2\n### Grade: A\n",
         )
         self.write("QA-REPORT.md", "GATE_RESULT: PASS\n### Grade: A\n")
-        passed, checks = validate_gate(3, self.tmpdir)
+        passed, checks = validate_gate(3.5, self.tmpdir)
         self.assertFalse(passed)
         critical_check = next(c for c in checks if c["name"] == "no_critical_findings")
         self.assertFalse(critical_check["pass"])
@@ -409,19 +411,19 @@ class TestQAFeedback(unittest.TestCase):
         )
         save_qa_feedback(self.tmpdir)
 
-        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
+        feedback_path = os.path.join(self.tmpdir, "QA-REPORT-FEEDBACK.md")
         with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
         self.assertIn(
-            "QA Round 1", content, "expected QA Round 1 in accumulated feedback"
+            "Feedback Round 1", content, "expected round 1 in accumulated feedback"
         )
         self.assertIn("Bug 1", content)
-        self.assertIn("QA Round 2", content)
+        self.assertIn("Feedback Round 2", content)
         self.assertIn("Bug 2", content)
 
 
-class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
-    """Integration: save_qa_feedback must include findings from ALL parallel agents."""
+class TestSequentialReviewFeedback(unittest.TestCase):
+    """Sequential QA and Security feedback is preserved independently."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -434,7 +436,7 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
             f.write(content)
 
     def test_security_findings_in_feedback(self):
-        """SECURITY-REPORT.md findings appear in QA-FEEDBACK.md."""
+        """SECURITY-REPORT.md findings appear in artifact feedback."""
         self.write(
             "SECURITY-REPORT.md",
             "# Security Report\n\n"
@@ -448,8 +450,8 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
             "### Grade: B\n"
             "### Stranger Test\nYes.\n",
         )
-        save_qa_feedback(self.tmpdir)
-        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
+        save_gate_feedback(self.tmpdir, 3.5)
+        feedback_path = os.path.join(self.tmpdir, "SECURITY-REPORT-FEEDBACK.md")
         self.assertTrue(os.path.isfile(feedback_path))
         with open(feedback_path, encoding="utf-8") as f:
             content = f.read()
@@ -457,7 +459,7 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
         self.assertIn("Security Grade: C", content, "Security grade must be included")
 
     def test_qa_and_security_both_in_feedback(self):
-        """Both QA and security feedback appear in same QA-FEEDBACK.md."""
+        """Both QA and security feedback are preserved for dev."""
         self.write(
             "SECURITY-REPORT.md",
             "# Security Report\n\n"
@@ -473,15 +475,20 @@ class TestSaveQaFeedbackIncludesSecurity(unittest.TestCase):
             "### Stranger Test\nNo.\n",
         )
         save_qa_feedback(self.tmpdir)
-        feedback_path = os.path.join(self.tmpdir, "QA-FEEDBACK.md")
-        with open(feedback_path, encoding="utf-8") as f:
-            content = f.read()
-        # Both agents' findings present
-        self.assertIn("CSRF missing", content)
-        self.assertIn("Button misaligned", content)
-        # Both grades present
-        self.assertIn("QA Grade: C", content)
-        self.assertIn("Security Grade: B", content)
+        save_gate_feedback(self.tmpdir, 3.5)
+        qa_feedback_path = os.path.join(self.tmpdir, "QA-REPORT-FEEDBACK.md")
+        security_feedback_path = os.path.join(
+            self.tmpdir, "SECURITY-REPORT-FEEDBACK.md"
+        )
+        with open(qa_feedback_path, encoding="utf-8") as f:
+            qa_content = f.read()
+        with open(security_feedback_path, encoding="utf-8") as f:
+            security_content = f.read()
+
+        self.assertIn("Button misaligned", qa_content)
+        self.assertIn("QA Grade: C", qa_content)
+        self.assertIn("CSRF missing", security_content)
+        self.assertIn("Security Grade: B", security_content)
 
 
 class TestValidateAgentPath(unittest.TestCase):
@@ -569,7 +576,9 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
         tmpdir = tempfile.mkdtemp()
         try:
             scope = (
-                "# SCOPE\n\n## ACs\n- [ ] AC1: every data point has a [source] link\n\n"
+                "# SCOPE\n\n## Data Sources\n"
+                "No external data sources are required.\n\n"
+                "## ACs\n- [ ] AC1: every data point has a [source] link\n\n"
                 + "word " * 60
             )
             with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
@@ -589,7 +598,9 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
         tmpdir = tempfile.mkdtemp()
         try:
             scope = (
-                "# SCOPE\n\n## ACs\n- [ ] AC1: do things\n\nOwner: [TBD]\n\n"
+                "# SCOPE\n\n## Data Sources\n"
+                "No external data sources are required.\n\n"
+                "## ACs\n- [ ] AC1: do things\n\nOwner: [TBD]\n\n"
                 + "word " * 60
             )
             with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
@@ -600,6 +611,48 @@ class TestPlaceholderPatternContextAware(unittest.TestCase):
                 placeholder["pass"],
                 "validate_gate(1) should flag 'Owner: [TBD]' as a real placeholder",
             )
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_validate_gate1_rejects_unprobed_external_source(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            scope = (
+                "# SCOPE\n\n## Data Sources\n"
+                "- Endpoint: https://example.test/api — Verified\n\n"
+                "## Acceptance Criteria\n- [ ] AC1: show records\n\n"
+                + "word " * 60
+            )
+            with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
+                f.write(scope)
+            passed, checks = validate_gate(1, tmpdir)
+            self.assertFalse(passed)
+            source_check = next(
+                c for c in checks if c["name"] == "data_sources_verified"
+            )
+            self.assertFalse(source_check["pass"])
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_validate_gate1_accepts_retained_probe_evidence(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            scope = (
+                "# SCOPE\n\n## Data Sources\n"
+                "- Endpoint: https://example.test/api — Verified\n"
+                "  - Probe: `curl -i https://example.test/api`\n"
+                "  - Result: HTTP 200, returned 42 records\n\n"
+                "## Acceptance Criteria\n- [ ] AC1: show records\n\n"
+                + "word " * 60
+            )
+            with open(os.path.join(tmpdir, "SCOPE.md"), "w", encoding="utf-8") as f:
+                f.write(scope)
+            passed, checks = validate_gate(1, tmpdir)
+            self.assertTrue(passed, checks)
+            source_check = next(
+                c for c in checks if c["name"] == "data_sources_verified"
+            )
+            self.assertTrue(source_check["pass"])
         finally:
             shutil.rmtree(tmpdir)
 

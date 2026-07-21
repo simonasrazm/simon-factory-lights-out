@@ -10,7 +10,7 @@ through every gate without any "decision: block" workaround.
 | File | Purpose |
 |------|---------|
 | `stop_hook.py` | Reads the active factory state, asks `scaffold.py` for the next instruction, returns it as `followup_message` so Cursor auto-submits the next gate. |
-| `skills/sflo/SKILL.md` | Slash-only factory-triggering skill installed globally into `~/.cursor/skills/sflo/`. |
+| `skills/sflo/SKILL.md` | Slash-only factory-triggering skill installed globally into `~/.cursor/skills/sflo/`, and into `~/.cursor/skills-cursor/sflo/` when that active Cursor skill root already exists. |
 | `hooks.json.template` | The `.cursor/hooks.json` snippet `setup.sh` writes into your workspace. |
 
 ## How it fires
@@ -61,3 +61,4 @@ cp -R '/absolute/path/to/sflo/src/hooks/cursor/skills/sflo' "$HOME/.cursor/skill
 ```
 
 Replace `{{SFLO_PATH}}` in the copied `SKILL.md` with the absolute SFLO checkout path. `setup.sh --runtime cursor` does this automatically.
+If your Cursor session only advertises `~/.cursor/skills-cursor`, copy the same `sflo` folder there too, or rerun current setup so it installs both SFLO-owned copies.
