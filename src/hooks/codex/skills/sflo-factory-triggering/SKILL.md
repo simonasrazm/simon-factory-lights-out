@@ -19,6 +19,14 @@ SFLO_TASK
 
 If `python3` is unavailable, use `python`.
 
+On PowerShell:
+
+```powershell
+@'
+[task description]
+'@ | python {{SFLO_RUNNER_SH}} --runtime codex
+```
+
 For a named factory:
 
 ```bash
@@ -29,6 +37,14 @@ SFLO_TASK
 
 Factory names must be lowercase letters, numbers, and hyphens.
 
+On PowerShell, add the factory option to the same stdin-safe form:
+
+```powershell
+@'
+[task description]
+'@ | python {{SFLO_RUNNER_SH}} --runtime codex --factory [factory-name]
+```
+
 ## Manage
 
 ```bash
@@ -38,6 +54,14 @@ python3 {{SFLO_RUNNER_SH}} --runtime codex --resume [factory-name] <<'SFLO_TASK'
 SFLO_TASK
 python3 {{SFLO_RUNNER_SH}} --kill [factory-name]
 python3 {{SFLO_RUNNER_SH}} --clean-stale
+```
+
+On PowerShell, resume with:
+
+```powershell
+@'
+[continuation prompt]
+'@ | python {{SFLO_RUNNER_SH}} --runtime codex --resume [factory-name]
 ```
 
 ## Verify

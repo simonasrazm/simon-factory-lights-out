@@ -157,6 +157,42 @@ def test_missing_matt_skills_fails_before_runtime_mutation(tmp_path):
     assert not (install / ".agents").exists()
 
 
+def test_cursor_setup_preserves_existing_project_pipeline(tmp_path):
+    install = tmp_path / "install"
+    install.mkdir()
+    custom = "threshold: B\ncustom: keep-me\n"
+    (install / "pipeline.yaml").write_text(custom, encoding="utf-8")
+    home = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "setup.sh"),
+            "--runtime",
+            "cursor",
+            "--install-dir",
+            str(install),
+            "--sflo-path",
+            str(SFLO_ROOT),
+        ],
+        cwd=SFLO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "pipeline.yaml").read_text(encoding="utf-8") == custom
+    assert (install / "pipeline.yaml.sflo-default").read_text(encoding="utf-8") == (
+        SFLO_ROOT / "pipeline-cursor.yaml"
+    ).read_text(encoding="utf-8")
+    assert "preserved" in result.stdout.lower()
+
+
 def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path):
     source = tmp_path / "source"
     _git("init", "-b", "main", str(source))

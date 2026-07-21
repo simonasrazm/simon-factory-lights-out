@@ -348,16 +348,31 @@ function Install-SfloRuntimePipeline {
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     $destination = Join-Path $InstallDir 'pipeline.yaml'
-    if (Test-Path $destination) {
-        $existing = Get-Content -Path $destination -Raw
-        $incoming = Get-Content -Path $SourceFile -Raw
-        if ($existing -ne $incoming) {
-            Copy-Item -Path $destination -Destination "$destination.bak" -Force
-            Write-Host "    Existing pipeline.yaml backed up to $destination.bak" -ForegroundColor Yellow
-        }
+    $markerDirectory = Join-Path $InstallDir '.sflo'
+    $marker = Join-Path $markerDirectory 'pipeline.yaml.managed'
+    $proposed = Join-Path $InstallDir 'pipeline.yaml.sflo-default'
+    New-Item -ItemType Directory -Path $markerDirectory -Force | Out-Null
+    $incoming = Get-Content -Path $SourceFile -Raw
+
+    if (-not (Test-Path $destination)) {
+        Copy-Item -Path $SourceFile -Destination $destination -Force
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label pipeline installed at $destination" -ForegroundColor Green
+    } elseif ((Get-Content -Path $destination -Raw) -eq $incoming) {
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label pipeline already current at $destination" -ForegroundColor Green
+    } elseif ((Test-Path $marker) -and
+              ((Get-Content -Path $destination -Raw) -eq (Get-Content -Path $marker -Raw))) {
+        Copy-Item -Path $SourceFile -Destination $destination -Force
+        Copy-Item -Path $SourceFile -Destination $marker -Force
+        Remove-Item -Path $proposed -Force -ErrorAction SilentlyContinue
+        Write-Host "    $Label managed pipeline updated at $destination" -ForegroundColor Green
+    } else {
+        Copy-Item -Path $SourceFile -Destination $proposed -Force
+        Write-Host "    Existing project pipeline preserved at $destination; new SFLO defaults written to $proposed" -ForegroundColor Yellow
     }
-    Copy-Item -Path $SourceFile -Destination $destination -Force
-    Write-Host "    $Label pipeline installed at $destination" -ForegroundColor Green
 }
 
 function Remove-SfloOldAgentsBlock {

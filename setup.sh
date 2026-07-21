@@ -355,19 +355,33 @@ install_runtime_pipeline() {
   local src="$1"
   local label="$2"
   local dst="$INSTALL_DIR/pipeline.yaml"
+  local marker="$INSTALL_DIR/.sflo/pipeline.yaml.managed"
+  local proposed="$INSTALL_DIR/pipeline.yaml.sflo-default"
 
   if [[ ! -f "$src" ]]; then
     echo "  ⚠ $label pipeline source not found at $src"
     return 1
   fi
 
-  mkdir -p "$INSTALL_DIR"
-  if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then
-    cp "$dst" "$dst.bak"
-    echo "  ✓ Existing pipeline.yaml backed up to $dst.bak"
+  mkdir -p "$INSTALL_DIR" "$(dirname "$marker")"
+  if [[ ! -f "$dst" ]]; then
+    cp "$src" "$dst"
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  ✓ $label pipeline installed at $dst"
+  elif cmp -s "$src" "$dst"; then
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  ✓ $label pipeline already current at $dst"
+  elif [[ -f "$marker" ]] && cmp -s "$dst" "$marker"; then
+    cp "$src" "$dst"
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  ✓ $label managed pipeline updated at $dst"
+  else
+    cp "$src" "$proposed"
+    echo "  ✓ Existing project pipeline preserved at $dst; new SFLO defaults written to $proposed"
   fi
-  cp "$src" "$dst"
-  echo "  ✓ $label pipeline installed at $dst"
 }
 
 cursor_skill_roots() {
