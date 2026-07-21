@@ -158,6 +158,54 @@ class TestValidateGate(unittest.TestCase):
         substance_check = next(c for c in checks if c["name"] == "has_substance")
         self.assertFalse(substance_check["pass"])
 
+    def test_gate1_requires_deliverable_manifest_for_project_runs(self):
+        self.write("SCOPE.md", self.FULL_SCOPE)
+
+        passed, checks = validate_gate(1, self.tmpdir, output_dir=self.tmpdir)
+
+        self.assertFalse(passed)
+        manifest = next(c for c in checks if c["name"] == "deliverables_declared")
+        self.assertFalse(manifest["pass"])
+
+    def test_gate1_accepts_safe_relative_deliverable_files(self):
+        self.write(
+            "SCOPE.md",
+            self.FULL_SCOPE
+            + "\n## Deliverables\n"
+            + "- `hello.txt` — requested greeting\n"
+            + "- `docs/README.md` — usage instructions\n",
+        )
+
+        passed, checks = validate_gate(1, self.tmpdir, output_dir=self.tmpdir)
+
+        self.assertTrue(passed, checks)
+        manifest = next(c for c in checks if c["name"] == "deliverables_declared")
+        self.assertEqual(manifest["paths"], ["hello.txt", "docs/README.md"])
+
+    def test_gate1_rejects_unsafe_deliverable_paths(self):
+        for unsafe_path in (
+            "/tmp/escape.txt",
+            "../escape.txt",
+            ".sflo/hidden.txt",
+            "C:escape.txt",
+            "*.txt",
+        ):
+            with self.subTest(path=unsafe_path):
+                self.write(
+                    "SCOPE.md",
+                    self.FULL_SCOPE + f"\n## Deliverables\n- `{unsafe_path}`\n",
+                )
+
+                passed, checks = validate_gate(
+                    1, self.tmpdir, output_dir=self.tmpdir
+                )
+
+                self.assertFalse(passed)
+                safety = next(
+                    c for c in checks if c["name"] == "deliverables_safe"
+                )
+                self.assertFalse(safety["pass"])
+
     # Gate 2 — current validator checks: file_exists, build_success regex,
     # all_checks_marked (no unchecked `- [ ]`), has_checked_items (≥1 `- [x]`),
     # and acs_addressed (if SCOPE.md exists alongside).
@@ -192,12 +240,102 @@ class TestValidateGate(unittest.TestCase):
         build_check = next(c for c in checks if c["name"] == "build_success")
         self.assertFalse(build_check["pass"])
 
+    def _write_scope_with_deliverable(self, path="hello.txt"):
+        self.write(
+            "SCOPE.md",
+            self.FULL_SCOPE + f"\n## Deliverables\n- `{path}`\n",
+        )
+
+    def test_gate2_accepts_declared_file_in_project_output(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable()
+            self.write("BUILD-STATUS.md", self.FULL_BUILD)
+            with open(os.path.join(project, "hello.txt"), "w", encoding="utf-8") as f:
+                f.write("hello\n")
+
+            passed, checks = validate_gate(
+                2, self.tmpdir, output_dir=project
+            )
+
+            self.assertTrue(passed, checks)
+
+    def test_gate2_rejects_deliverable_misplaced_in_factory_state(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable()
+            self.write("BUILD-STATUS.md", self.FULL_BUILD)
+            self.write("hello.txt", "hello\n")
+
+            passed, checks = validate_gate(
+                2, self.tmpdir, output_dir=project
+            )
+
+            self.assertFalse(passed)
+            deliverable = next(
+                c for c in checks if c["name"] == "deliverable_exists:hello.txt"
+            )
+            self.assertFalse(deliverable["pass"])
+            self.assertIn(project, deliverable["detail"])
+
+    def test_gate2_rejects_directory_declared_as_file(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable("dist")
+            self.write("BUILD-STATUS.md", self.FULL_BUILD)
+            os.mkdir(os.path.join(project, "dist"))
+
+            passed, checks = validate_gate(
+                2, self.tmpdir, output_dir=project
+            )
+
+            self.assertFalse(passed)
+            deliverable = next(
+                c for c in checks if c["name"] == "deliverable_exists:dist"
+            )
+            self.assertFalse(deliverable["pass"])
+
+    def test_gate2_rejects_file_inside_custom_factory_state_directory(self):
+        output_dir = os.path.dirname(self.tmpdir)
+        relative_state = os.path.basename(self.tmpdir)
+        self._write_scope_with_deliverable(f"{relative_state}/hello.txt")
+        self.write("BUILD-STATUS.md", self.FULL_BUILD)
+        self.write("hello.txt", "hello\n")
+
+        passed, checks = validate_gate(
+            2, self.tmpdir, output_dir=output_dir
+        )
+
+        self.assertFalse(passed)
+        deliverable = next(
+            c
+            for c in checks
+            if c["name"] == f"deliverable_exists:{relative_state}/hello.txt"
+        )
+        self.assertFalse(deliverable["pass"])
+
     # Gate 3
     def test_gate3_grade_a(self):
         self.write("QA-REPORT.md", self.FULL_QA)
         _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
         passed, _ = validate_gate(3, self.tmpdir)
         self.assertTrue(passed)
+
+    def test_gate3_grade_a_cannot_override_missing_deliverable(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable()
+            self.write("QA-REPORT.md", self.FULL_QA)
+            _write_sibling_artifacts(self.tmpdir, 3, "QA-REPORT.md")
+
+            passed, checks = validate_gate(
+                3, self.tmpdir, output_dir=project
+            )
+
+            self.assertFalse(passed)
+            self.assertFalse(
+                next(
+                    c
+                    for c in checks
+                    if c["name"] == "deliverable_exists:hello.txt"
+                )["pass"]
+            )
 
     def test_gate3_grade_b_plus(self):
         threshold = _gate_role_threshold(3, "qa")
@@ -297,6 +435,38 @@ class TestValidateGate(unittest.TestCase):
         self.assertFalse(passed)
         decision_check = next(c for c in checks if c["name"] == "decision_present")
         self.assertFalse(decision_check["pass"])
+
+    def test_gate5_rechecks_declared_deliverables_before_ship(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable()
+            self.write("SHIP-DECISION.md", self.FULL_SHIP)
+
+            passed, checks = validate_gate(
+                5, self.tmpdir, output_dir=project
+            )
+
+            self.assertFalse(passed)
+            self.assertFalse(
+                next(
+                    c
+                    for c in checks
+                    if c["name"] == "deliverable_exists:hello.txt"
+                )["pass"]
+            )
+
+    def test_gate5_hold_does_not_require_ship_deliverables(self):
+        with tempfile.TemporaryDirectory() as project:
+            self._write_scope_with_deliverable()
+            self.write("SHIP-DECISION.md", "### Decision: HOLD\n")
+
+            passed, checks = validate_gate(
+                5, self.tmpdir, output_dir=project
+            )
+
+            self.assertTrue(passed)
+            self.assertFalse(
+                any(c["name"].startswith("deliverable_") for c in checks)
+            )
 
 
 class TestSecurityValidator(unittest.TestCase):

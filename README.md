@@ -49,6 +49,8 @@ The pipeline runs automatically. Scout picks the right agents, gates enforce qua
 
 Each CLI run gets its own factory directory under `.sflo/`, named from the prompt or from `--factory NAME`. This lets multiple factories run in parallel against the same project without sharing `state.json`, locks, logs, or gate artifacts.
 
+User-facing files are separate from factory state. By default they are written under the directory where SFLO was invoked; pass `--output-dir PATH` to target another existing project directory. The selected directory is persisted for resume, while `SCOPE.md` declares the required project-relative deliverable files that Gate 2, QA/Security, and the final ship check verify deterministically.
+
 Useful commands from the SFLO checkout:
 
 - `python3 src/runner.py --list`

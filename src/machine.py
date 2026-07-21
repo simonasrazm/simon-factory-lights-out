@@ -561,9 +561,14 @@ def _compute_gate(n, n_str, sflo_dir, sflo_base, roles, assignments, gates, **_k
     }
 
 
-def _compute_check(n, n_str, sflo_dir, gates, **_kw):
+def _compute_check(n, n_str, sflo_dir, gates, state, **_kw):
     """Handle check-N state — run validation."""
-    passed, checks = validate_gate(n, sflo_dir, gates=gates)
+    passed, checks = validate_gate(
+        n,
+        sflo_dir,
+        gates=gates,
+        output_dir=state.get("output_dir"),
+    )
     return {
         "state": f"check-{n_str}",
         "action": "validated" if passed else "check_failed",

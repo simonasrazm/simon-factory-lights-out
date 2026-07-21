@@ -14,6 +14,7 @@ Read the user's project brief or idea (provided by the SFLO agent).
 2. **Verify sources work** — use the least expensive method that proves the point. Prefer tools already available over building infrastructure.
 3. **Define scope** — what can we build with available data?
 4. **Set acceptance criteria** — specific, testable conditions
+5. **Declare deliverables** — list the required project-relative files that must exist for the work to be shippable; never list directories, globs, pipeline artifacts, or `.sflo/` paths
 
 ## Output
 

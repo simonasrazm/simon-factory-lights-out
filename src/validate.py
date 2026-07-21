@@ -1,5 +1,6 @@
 """SFLO gate validation — artifact checks for each gate."""
 
+import ntpath
 import os
 import re
 
@@ -98,6 +99,94 @@ def section_body(content, heading_pattern):
     next_heading = re.search(r"\n##", rest)
     body = rest[: next_heading.start()] if next_heading else rest
     return body.strip()
+
+
+def extract_deliverable_paths(scope_content):
+    """Return declared relative deliverable files and contract errors."""
+    body = section_body(scope_content, r"Deliverables")
+    paths = re.findall(r"(?m)^\s*[-*]\s+`([^`\r\n]+)`", body)
+    errors = []
+    for path in paths:
+        parts = path.split("/")
+        if (
+            os.path.isabs(path)
+            or ntpath.isabs(path)
+            or "\\" in path
+            or any(part in ("", ".", "..") for part in parts)
+            or parts[0].lower() == ".sflo"
+            or ":" in path
+            or any(char in path for char in "*?[]{}")
+        ):
+            errors.append(path)
+    if len(paths) != len(set(paths)):
+        errors.append("duplicate paths")
+    return paths, errors
+
+
+def validate_deliverable_files(scope_content, output_dir, sflo_dir=None):
+    """Verify every declared deliverable is a real file inside output_dir."""
+    paths, contract_errors = extract_deliverable_paths(scope_content)
+    checks = []
+    if not paths:
+        return [
+            {
+                "name": "deliverables_declared",
+                "pass": False,
+                "detail": "SCOPE.md has no declared deliverable files",
+            }
+        ]
+
+    root = os.path.realpath(os.path.abspath(output_dir))
+    state_root = os.path.realpath(os.path.abspath(sflo_dir)) if sflo_dir else None
+    root_is_directory = os.path.isdir(root)
+    checks.append(
+        {
+            "name": "output_directory_exists",
+            "pass": root_is_directory,
+            "detail": root,
+        }
+    )
+    unsafe = set(contract_errors)
+    for path in paths:
+        target = os.path.realpath(os.path.join(root, *path.split("/")))
+        try:
+            inside_root = os.path.commonpath((root, target)) == root
+        except ValueError:
+            inside_root = False
+        try:
+            inside_state = bool(state_root) and (
+                os.path.commonpath((state_root, target)) == state_root
+            )
+        except ValueError:
+            inside_state = False
+        safe = path not in unsafe and inside_root and not inside_state
+        exists = safe and root_is_directory and os.path.isfile(target)
+        checks.append(
+            {
+                "name": f"deliverable_exists:{path}",
+                "pass": exists,
+                "detail": (
+                    target
+                    if exists
+                    else f"required project file missing or unsafe: {target}"
+                ),
+            }
+        )
+    return checks
+
+
+def validate_scope_deliverables(sflo_dir, output_dir):
+    """Load SCOPE.md and validate its deliverables against the project root."""
+    scope_content, _ = read_artifact(sflo_dir, "SCOPE.md")
+    if not scope_content:
+        return [
+            {
+                "name": "deliverables_declared",
+                "pass": False,
+                "detail": "SCOPE.md missing or has no deliverable manifest",
+            }
+        ]
+    return validate_deliverable_files(scope_content, output_dir, sflo_dir=sflo_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +615,7 @@ def _load_validator_module(validator_path):
     return module, None
 
 
-def validate_gate(gate_num, sflo_dir, gates=None):
+def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
     """Validate a gate's artifact. Returns (passed, checks_list).
 
     For unknown gates (not in built-in gates 1-5), falls back to
@@ -632,6 +721,15 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                 if not pm_passed:
                     all_passed = False
 
+        review_roles = {
+            entry.get("role") for entry in info if isinstance(entry, dict)
+        }
+        if output_dir is not None and review_roles.intersection({"qa", "security"}):
+            deliverable_checks = validate_scope_deliverables(sflo_dir, output_dir)
+            all_checks.extend(deliverable_checks)
+            if not all(check["pass"] for check in deliverable_checks):
+                all_passed = False
+
         return all_passed, all_checks
 
     checks = []
@@ -679,12 +777,16 @@ def validate_gate(gate_num, sflo_dir, gates=None):
     if entry_role == "qa":
         role_passed, role_checks = _validate_qa_content(content, effective_threshold)
         checks.extend(role_checks)
+        if output_dir is not None:
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
         return role_passed and all(c["pass"] for c in checks), checks
     if entry_role == "security":
         role_passed, role_checks = _validate_security_content(
             content, effective_threshold
         )
         checks.extend(role_checks)
+        if output_dir is not None:
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
         return role_passed and all(c["pass"] for c in checks), checks
 
     # Check for custom validator from extension registry (if available).
@@ -781,6 +883,34 @@ def validate_gate(gate_num, sflo_dir, gates=None):
             }
         )
 
+        if output_dir is not None:
+            deliverable_paths, deliverable_errors = extract_deliverable_paths(content)
+            checks.append(
+                {
+                    "name": "deliverables_declared",
+                    "pass": bool(deliverable_paths),
+                    "paths": deliverable_paths,
+                    "detail": (
+                        f"{len(deliverable_paths)} required file(s) declared"
+                        if deliverable_paths
+                        else "missing ## Deliverables entries formatted as - `relative/path`"
+                    ),
+                }
+            )
+            checks.append(
+                {
+                    "name": "deliverables_safe",
+                    "pass": bool(deliverable_paths) and not deliverable_errors,
+                    "detail": (
+                        "OK"
+                        if deliverable_paths and not deliverable_errors
+                        else f"unsafe deliverable declarations: {', '.join(deliverable_errors)}"
+                        if deliverable_errors
+                        else "no deliverables to validate"
+                    ),
+                }
+            )
+
     elif gate_num == 2:
         # Build success marker
         has_success = bool(
@@ -831,6 +961,8 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                         "detail": f"{addressed}/{len(scope_acs)} ACs referenced",
                     }
                 )
+            if output_dir is not None:
+                checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
 
     elif gate_num == 3:
         qa_passed, qa_checks = _validate_qa_content(content, effective_threshold)
@@ -852,6 +984,8 @@ def validate_gate(gate_num, sflo_dir, gates=None):
                 "value": decision,
             }
         )
+        if output_dir is not None and decision and decision.upper() == "SHIP":
+            checks.extend(validate_scope_deliverables(sflo_dir, output_dir))
         checks.append(
             {
                 "name": "decision_valid",

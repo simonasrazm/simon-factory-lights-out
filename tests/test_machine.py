@@ -124,6 +124,25 @@ class TestComputeNext(TempDirMixin, unittest.TestCase):
         )
         self.assertFalse(result["pass"], "failing QA check should set pass to False")
 
+    def test_check_uses_factory_output_directory_for_deliverables(self):
+        self.write_state("check-2")
+        self.write_artifact(
+            "SCOPE.md",
+            PASSING_ARTIFACTS["SCOPE.md"]
+            + "\n## Deliverables\n- `hello.txt`\n",
+        )
+        self.write_artifact("BUILD-STATUS.md", PASSING_ARTIFACTS["BUILD-STATUS.md"])
+        state = self.read_state_file()
+        state["output_dir"] = self.tmpdir
+
+        result = compute_next(state, self.sflo_dir)
+
+        self.assertEqual(result["action"], "check_failed")
+        self.assertIn(
+            "deliverable_exists:hello.txt",
+            [check["name"] for check in result["checks"] if not check["pass"]],
+        )
+
     def test_does_not_mutate_state(self):
         self.write_state("check-1")
         self.write_artifact("SCOPE.md", PASSING_ARTIFACTS["SCOPE.md"])

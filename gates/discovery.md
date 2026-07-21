@@ -29,6 +29,14 @@ Or, for every required external source:
 - [Risk/constraint]: [impact] — [mitigation]
 - [Risk/constraint]: [impact] — [mitigation]
 
+## Deliverables
+- `relative/path/to/required-file.ext` — [what this user-facing file provides]
+- `another/required-file.ext` — [what this user-facing file provides]
+
+List every file whose presence is required to call the project delivered. Paths are
+relative to the project root, use `/` separators, and name files rather than
+directories or globs. Never list pipeline artifacts or anything under `.sflo/`.
+
 ## Acceptance Criteria
 - [ ] AC1: [specific, testable]
 - [ ] AC2: [specific, testable]
@@ -39,5 +47,6 @@ Or, for every required external source:
 
 - [ ] SCOPE.md exists
 - [ ] Every required external source includes real probe evidence, or the scope explicitly states that no external source is required
+- [ ] At least one safe project-relative deliverable file is declared under `## Deliverables`
 - [ ] Acceptance criteria are specific and testable
 The scaffold validates these checks before advancing to Gate 2.
