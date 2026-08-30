@@ -8,7 +8,7 @@ import {
   unlinkSync,
   mkdirSync,
 } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -93,9 +93,9 @@ function resolveSfloDir(workspaceDir: string): string | null {
 }
 
 /**
- * Resolve the SFLO checkout that owns scaffold.py.
- * setup.sh writes .sflo-home next to this copied hook; SFLO_HOME lets users
- * override it when they move directories after setup.
+ * Resolve the self-contained SFLO skill that owns scaffold.py.
+ * The installed hook is a symlink into that skill, so its real module path
+ * provides the normal location. SFLO_HOME remains an explicit override.
  */
 function resolveSfloHome(workspaceDir: string): string | null {
   const candidates: string[] = [];
@@ -106,6 +106,7 @@ function resolveSfloHome(workspaceDir: string): string | null {
 
   try {
     const hookDir = dirname(fileURLToPath(import.meta.url));
+    candidates.push(resolve(hookDir, "../../../.."));
     const recordedHome = join(hookDir, ".sflo-home");
     if (existsSync(recordedHome)) {
       const value = readFileSync(recordedHome, "utf-8").trim();

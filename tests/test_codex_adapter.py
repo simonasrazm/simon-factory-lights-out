@@ -3,12 +3,17 @@
 import asyncio
 import os
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.adapters.codex import CodexAdapter, _sandbox_for_tools_mode
+from src.adapters.codex import (
+    CodexAdapter,
+    _sandbox_for_tools_mode,
+    resolve_codex_argv,
+)
 from src.adapters.errors import NonRetryableError, TransientError
 
 
@@ -20,9 +25,9 @@ def adapter():
 class TestCodexSpawnAgent:
     def _run_spawn(self, adapter, monkeypatch, **spawn_kwargs):
         captured = {}
-        model = spawn_kwargs.pop("model", "gpt-5.5")
+        model = spawn_kwargs.pop("model", "gpt-5.6-sol")
 
-        def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
             captured["cmd"] = cmd
             captured["input"] = input_bytes
             captured["cwd"] = cwd
@@ -34,8 +39,8 @@ class TestCodexSpawnAgent:
 
         monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
         monkeypatch.setattr(
-            "src.adapters.codex.shutil.which",
-            lambda name: "/usr/bin/codex" if name == "codex" else None,
+            "src.adapters.codex.resolve_codex_argv",
+            lambda env: ["/usr/bin/codex"],
         )
 
         result = asyncio.run(
@@ -81,7 +86,7 @@ class TestCodexSpawnAgent:
         assert cmd[cmd.index("-C") + 1] == str(project)
         assert captured["cwd"] == str(project)
 
-    def test_output_file_uses_factory_state_dir(self, adapter, monkeypatch, tmp_path):
+    def test_output_file_uses_os_temp_and_is_deleted(self, adapter, monkeypatch, tmp_path):
         sflo_dir = tmp_path / ".sflo" / "fancy-click-counter"
         venv = sflo_dir / ".venv"
         _, captured = self._run_spawn(
@@ -91,9 +96,10 @@ class TestCodexSpawnAgent:
         )
         cmd = captured["cmd"]
         out_path = Path(cmd[cmd.index("--output-last-message") + 1])
-        assert out_path.parent == sflo_dir
+        assert out_path.parent != sflo_dir
+        assert tmp_path not in out_path.parents
         assert out_path.name.startswith("codex-last-message-dev-")
-        assert out_path.exists()
+        assert not out_path.exists()
 
     def test_merges_env_and_normalizes_term(self, adapter, monkeypatch):
         _, captured = self._run_spawn(
@@ -136,17 +142,24 @@ class TestCodexSpawnAgent:
         result, captured = self._run_spawn(adapter, monkeypatch, model=None)
         cmd = captured["cmd"]
         assert result == "final answer"
-        assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
+        assert cmd[cmd.index("--model") + 1] == "gpt-5.6-sol"
 
     def test_codex_alias_uses_current_codex_model(self, adapter, monkeypatch):
         _, captured = self._run_spawn(adapter, monkeypatch, model="gpt-codex")
         cmd = captured["cmd"]
-        assert cmd[cmd.index("--model") + 1] == "gpt-5.5"
+        assert cmd[cmd.index("--model") + 1] == "gpt-5.6-sol"
 
 
 class TestCodexErrors:
+    @staticmethod
+    def _stub_resolver(monkeypatch):
+        monkeypatch.setattr(
+            "src.adapters.codex.resolve_codex_argv",
+            lambda env: ["/usr/bin/codex"],
+        )
+
     def test_missing_binary_is_non_retryable(self, adapter, monkeypatch):
-        monkeypatch.setattr("src.adapters.codex.shutil.which", lambda name: None)
+        monkeypatch.setenv("SFLO_CODEX_BIN", "definitely-missing-codex")
         with pytest.raises(NonRetryableError):
             asyncio.run(
                 adapter.spawn_agent(
@@ -157,13 +170,13 @@ class TestCodexErrors:
             )
 
     def test_login_failure_is_non_retryable(self, adapter, monkeypatch):
-        def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
             return (b"", b"Please login to Codex", 1)
 
         monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
         monkeypatch.setattr(
-            "src.adapters.codex.shutil.which",
-            lambda name: "/usr/bin/codex" if name == "codex" else None,
+            "src.adapters.codex.resolve_codex_argv",
+            lambda env: ["/usr/bin/codex"],
         )
         with pytest.raises(NonRetryableError):
             asyncio.run(
@@ -175,13 +188,13 @@ class TestCodexErrors:
             )
 
     def test_rate_failure_is_transient(self, adapter, monkeypatch):
-        def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
             return (b"", b"429 rate limit", 1)
 
         monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
         monkeypatch.setattr(
-            "src.adapters.codex.shutil.which",
-            lambda name: "/usr/bin/codex" if name == "codex" else None,
+            "src.adapters.codex.resolve_codex_argv",
+            lambda env: ["/usr/bin/codex"],
         )
         with pytest.raises(TransientError):
             asyncio.run(
@@ -192,6 +205,130 @@ class TestCodexErrors:
                 )
             )
 
+    def test_nonzero_exit_deletes_scratch_file(self, adapter, monkeypatch):
+        captured = {}
+
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+            path = Path(cmd[cmd.index("--output-last-message") + 1])
+            captured["path"] = path
+            path.write_text("sensitive partial output", encoding="utf-8")
+            return (b"", b"429 rate limit", 1)
+
+        self._stub_resolver(monkeypatch)
+        monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
+        with pytest.raises(TransientError):
+            asyncio.run(
+                adapter.spawn_agent(
+                    model="gpt-5.5", system_prompt="sp", user_prompt="up"
+                )
+            )
+        assert not captured["path"].exists()
+
+    def test_timeout_deletes_scratch_file(self, adapter, monkeypatch):
+        captured = {}
+
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+            path = Path(cmd[cmd.index("--output-last-message") + 1])
+            captured["path"] = path
+            path.write_text("sensitive partial output", encoding="utf-8")
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        self._stub_resolver(monkeypatch)
+        monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
+        with pytest.raises(TransientError):
+            asyncio.run(
+                adapter.spawn_agent(
+                    model="gpt-5.5", system_prompt="sp", user_prompt="up"
+                )
+            )
+        assert not captured["path"].exists()
+
+    def test_spawn_file_not_found_deletes_scratch_file(self, adapter, monkeypatch):
+        captured = {}
+
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+            path = Path(cmd[cmd.index("--output-last-message") + 1])
+            captured["path"] = path
+            path.write_text("sensitive partial output", encoding="utf-8")
+            raise FileNotFoundError("launcher disappeared")
+
+        self._stub_resolver(monkeypatch)
+        monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
+        with pytest.raises(NonRetryableError, match="Failed to spawn Codex CLI"):
+            asyncio.run(
+                adapter.spawn_agent(
+                    model="gpt-5.5", system_prompt="sp", user_prompt="up"
+                )
+            )
+        assert not captured["path"].exists()
+
+    def test_output_read_error_deletes_scratch_file(self, adapter, monkeypatch):
+        captured = {}
+
+        async def fake_run_with_pipes(cmd, input_bytes, cwd=None, env=None):
+            path = Path(cmd[cmd.index("--output-last-message") + 1])
+            captured["path"] = path
+            path.write_text("sensitive final output", encoding="utf-8")
+            return (b"stdout", b"", 0)
+
+        self._stub_resolver(monkeypatch)
+        monkeypatch.setattr(adapter, "_run_with_pipes", fake_run_with_pipes)
+        monkeypatch.setattr(
+            adapter,
+            "_read_output_file",
+            lambda path: (_ for _ in ()).throw(OSError("read failed")),
+        )
+        with pytest.raises(OSError, match="read failed"):
+            asyncio.run(
+                adapter.spawn_agent(
+                    model="gpt-5.5", system_prompt="sp", user_prompt="up"
+                )
+            )
+        assert not captured["path"].exists()
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture")
+    def test_cancellation_terminates_child_before_deleting_scratch(
+        self, adapter, tmp_path
+    ):
+        fake_codex = tmp_path / "fake-codex"
+        marker = tmp_path / "scratch-path"
+        fake_codex.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, sys, time\n"
+            "out = pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1])\n"
+            "out.write_text('partial', encoding='utf-8')\n"
+            "pathlib.Path(os.environ['FAKE_CODEX_MARKER']).write_text(str(out))\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        fake_codex.chmod(0o755)
+
+        async def cancel_spawn():
+            task = asyncio.create_task(
+                adapter.spawn_agent(
+                    model="gpt-5.6-sol",
+                    system_prompt="sp",
+                    user_prompt="up",
+                    env={
+                        "SFLO_CODEX_BIN": str(fake_codex),
+                        "FAKE_CODEX_MARKER": str(marker),
+                    },
+                )
+            )
+            for _ in range(200):
+                if marker.exists():
+                    break
+                await asyncio.sleep(0.01)
+            assert marker.exists()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(cancel_spawn())
+
+        scratch = Path(marker.read_text(encoding="utf-8"))
+        assert not scratch.exists()
+
 
 class TestCodexHelpers:
     def test_sandbox_override_wins(self, monkeypatch):
@@ -201,6 +338,126 @@ class TestCodexHelpers:
     def test_default_sandbox_is_workspace_write(self, monkeypatch):
         monkeypatch.delenv("SFLO_CODEX_SANDBOX", raising=False)
         assert _sandbox_for_tools_mode(None) == "workspace-write"
+
+
+class TestCodexExecutableResolution:
+    def _make_executable(self, path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def test_reads_override_at_spawn_time_after_module_import(self, monkeypatch, tmp_path):
+        binary = self._make_executable(tmp_path / "late codex")
+        monkeypatch.setenv("SFLO_CODEX_BIN", str(binary))
+
+        assert resolve_codex_argv(dict(os.environ)) == [str(binary)]
+
+    def test_uses_effective_child_path(self, tmp_path):
+        binary = self._make_executable(tmp_path / "bin" / "codex")
+        env = {"PATH": str(binary.parent), "SFLO_CODEX_BIN": "codex"}
+
+        assert resolve_codex_argv(env) == [str(binary)]
+
+    @pytest.mark.parametrize("value", ['"/tmp/codex"', "'/tmp/codex'"])
+    def test_rejects_shell_quoted_override(self, value):
+        with pytest.raises(NonRetryableError, match="must not include shell quotes"):
+            resolve_codex_argv({"SFLO_CODEX_BIN": value, "PATH": ""})
+
+    def test_rejects_non_executable_unix_file(self, tmp_path):
+        binary = tmp_path / "codex"
+        binary.write_text("not executable", encoding="utf-8")
+        binary.chmod(0o600)
+
+        with pytest.raises(NonRetryableError, match="not executable"):
+            resolve_codex_argv({"SFLO_CODEX_BIN": str(binary), "PATH": ""})
+
+    def test_windows_pathext_resolves_cmd_to_sibling_exe(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.adapters.codex._is_windows", lambda: True)
+        bin_dir = tmp_path / "windows bin"
+        bin_dir.mkdir()
+        (bin_dir / "codex.CMD").write_text("@echo off\n", encoding="utf-8")
+        native = bin_dir / "codex.exe"
+        native.write_bytes(b"MZ")
+        env = {
+            "PATH": str(bin_dir),
+            "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+            "SFLO_CODEX_BIN": "codex",
+        }
+
+        assert resolve_codex_argv(env)[0].lower() == str(native).lower()
+
+    def test_windows_cmd_uses_sibling_powershell_without_cmd_exe(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("src.adapters.codex._is_windows", lambda: True)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        shim = bin_dir / "codex.cmd"
+        shim.write_text("@echo off\n", encoding="utf-8")
+        ps1 = bin_dir / "codex.ps1"
+        ps1.write_text("", encoding="utf-8")
+        powershell = bin_dir / "pwsh.EXE"
+        powershell.write_bytes(b"MZ")
+        env = {
+            "PATH": str(bin_dir),
+            "PATHEXT": ".EXE;.CMD",
+            "SFLO_CODEX_BIN": str(shim),
+        }
+
+        argv = resolve_codex_argv(env)
+        assert argv[0] == str(powershell)
+        assert argv[-2:] == ["-File", str(ps1)]
+        assert "cmd.exe" not in [part.lower() for part in argv]
+
+    def test_windows_path_search_does_not_implicitly_use_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setattr("src.adapters.codex._is_windows", lambda: True)
+        (tmp_path / "codex.EXE").write_bytes(b"MZ")
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(NonRetryableError, match="not found on PATH"):
+            resolve_codex_argv(
+                {
+                    "PATH": str(empty_bin),
+                    "PATHEXT": ".EXE;.CMD",
+                    "SFLO_CODEX_BIN": "codex",
+                }
+            )
+
+    def test_windows_explicit_ps1_uses_powershell_argv(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.adapters.codex._is_windows", lambda: True)
+        script = tmp_path / "codex.ps1"
+        script.write_text("", encoding="utf-8")
+        powershell = tmp_path / "powershell.EXE"
+        powershell.write_bytes(b"MZ")
+
+        argv = resolve_codex_argv(
+            {
+                "PATH": str(tmp_path),
+                "PATHEXT": ".EXE;.CMD",
+                "SFLO_CODEX_BIN": str(script),
+            }
+        )
+        assert argv[0].lower() == str(powershell).lower()
+        assert argv[-2:] == ["-File", str(script)]
+
+    def test_windows_rejects_batch_without_safe_launcher(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.adapters.codex._is_windows", lambda: True)
+        shim = tmp_path / "codex.bat"
+        shim.write_text("@echo off\n", encoding="utf-8")
+
+        with pytest.raises(NonRetryableError, match="native codex.exe"):
+            resolve_codex_argv(
+                {
+                    "PATH": str(tmp_path),
+                    "PATHEXT": ".EXE;.BAT;.CMD",
+                    "SFLO_CODEX_BIN": str(shim),
+                }
+            )
 
 
 class TestCodexAdapterSelection:

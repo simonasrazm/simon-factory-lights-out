@@ -6,8 +6,8 @@
 #   bash sflo/src/hooks/install.sh --runtime <openclaw|cursor|claude-code> [--install-dir PATH]
 #
 # Supported runtimes:
-#   - OpenClaw: copies hook to <install-dir>/hooks/ and enables in config
-#   - Cursor: configures .cursor/hooks.json and installs a global Cursor skill
+#   - OpenClaw: links the hook into <install-dir>/hooks/ and enables it
+#   - Cursor: repairs the project-local .cursor/hooks.json continuation hook
 #   - Claude Code: configures stop hook in .claude/settings.json
 
 set -euo pipefail
@@ -52,37 +52,6 @@ default_install_dir() {
   fi
 }
 
-render_template_file() {
-  local src="$1"
-  local dst="$2"
-
-  "$PYTHON_CMD" - "$src" "$dst" "$SFLO_ROOT" <<'PYEOF'
-import os
-import shlex
-import sys
-
-src, dst, sflo_root = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(src, encoding="utf-8") as f:
-    content = f.read()
-content = content.replace("{{SFLO_PATH}}", sflo_root)
-content = content.replace(
-    "{{SFLO_RUNNER_SH}}",
-    shlex.quote(os.path.join(sflo_root, "src", "runner.py")),
-)
-content = content.replace(
-    "{{SFLO_SCAFFOLD_SH}}",
-    shlex.quote(os.path.join(sflo_root, "src", "scaffold.py")),
-)
-content = content.replace(
-    "{{SFLO_CURSOR_STOP_HOOK_SH}}",
-    shlex.quote(os.path.join(sflo_root, "src", "hooks", "cursor", "stop_hook.py")),
-)
-os.makedirs(os.path.dirname(dst), exist_ok=True)
-with open(dst, "w", encoding="utf-8") as f:
-    f.write(content)
-PYEOF
-}
-
 shell_quote() {
   "$PYTHON_CMD" - "$1" <<'PYEOF'
 import shlex
@@ -92,79 +61,37 @@ print(shlex.quote(sys.argv[1]))
 PYEOF
 }
 
-install_skill_dir() {
-  local src="$1"
-  local dst="$2"
-
-  if [[ ! -d "$src" ]]; then
-    echo "ERROR: SFLO skill source not found at $src"
-    exit 1
-  fi
-
-  rm -rf "$dst"
-  mkdir -p "$dst"
-  cp -r "$src"/* "$dst/"
-  if [[ -f "$dst/SKILL.md" ]]; then
-    render_template_file "$dst/SKILL.md" "$dst/SKILL.md"
-  fi
-}
-
-is_sflo_skill_dir() {
-  local dir="$1"
-
-  [[ -f "$dir/.sflo-owned" ]] && return 0
-  [[ -f "$dir/SKILL.md" ]] && grep -q "SFLO Factory Triggering" "$dir/SKILL.md"
-}
-
-install_owned_skill_dir() {
-  local src="$1"
-  local dst="$2"
-
-  if [[ -e "$dst" ]]; then
-    if ! is_sflo_skill_dir "$dst"; then
-      echo "ERROR: Cursor skill already exists at $dst and is not SFLO-owned"
-      exit 1
-    fi
-    rm -rf "$dst"
-  fi
-
-  install_skill_dir "$src" "$dst"
-  printf '%s\n' "sflo" > "$dst/.sflo-owned"
-}
-
-remove_owned_skill_dir() {
-  local dir="$1"
-
-  [[ -e "$dir" ]] || return 0
-  if is_sflo_skill_dir "$dir"; then
-    rm -rf "$dir"
-  else
-    echo "  Leaving non-SFLO skill directory untouched: $dir"
-  fi
-}
-
 install_runtime_pipeline() {
   local src="$1"
   local label="$2"
   local dst="$INSTALL_DIR/pipeline.yaml"
+  local marker="$INSTALL_DIR/.sflo/pipeline.yaml.managed"
+  local proposed="$INSTALL_DIR/pipeline.yaml.sflo-default"
 
   if [[ ! -f "$src" ]]; then
     echo "  ERROR: $label pipeline source not found at $src" >&2
     exit 1
   fi
 
-  mkdir -p "$INSTALL_DIR"
-  if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then
-    cp "$dst" "$dst.bak"
-    echo "  Existing pipeline.yaml backed up to $dst.bak"
+  mkdir -p "$INSTALL_DIR" "$(dirname "$marker")"
+  if [[ ! -f "$dst" ]]; then
+    cp "$src" "$dst"
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  $label pipeline installed at $dst"
+  elif cmp -s "$src" "$dst"; then
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  $label pipeline already current at $dst"
+  elif [[ -f "$marker" ]] && cmp -s "$dst" "$marker"; then
+    cp "$src" "$dst"
+    cp "$src" "$marker"
+    rm -f "$proposed"
+    echo "  $label managed pipeline updated at $dst"
+  else
+    cp "$src" "$proposed"
+    echo "  Existing project pipeline preserved at $dst; new SFLO defaults written to $proposed"
   fi
-  cp "$src" "$dst"
-  echo "  $label pipeline installed at $dst"
-}
-
-cursor_skill_root() {
-  local cursor_home="${CURSOR_HOME:-$HOME/.cursor}"
-  printf '%s\n' "$cursor_home/skills"
 }
 
 # --- OpenClaw ---
@@ -191,9 +118,8 @@ install_openclaw() {
     rm -rf "$hook_dst"
   fi
 
-  cp -r "$hook_src" "$hook_dst"
-  printf '%s\n' "$SFLO_ROOT" > "$hook_dst/.sflo-home"
-  echo "  Copied: $hook_src -> $hook_dst"
+  ln -s "$hook_src" "$hook_dst"
+  echo "  Linked: $hook_src -> $hook_dst"
 
   # Enable in OpenClaw config
   if command -v openclaw &>/dev/null; then
@@ -236,7 +162,6 @@ install_cursor() {
   default_install_dir
 
   local stop_hook="$SCRIPT_DIR/cursor/stop_hook.py"
-  local skill_src="$SCRIPT_DIR/cursor/skills/sflo"
   local cursor_dir="$INSTALL_DIR/.cursor"
   local rules_dir="$cursor_dir/rules"
   local hooks_file="$cursor_dir/hooks.json"
@@ -244,10 +169,6 @@ install_cursor() {
 
   if [[ ! -f "$stop_hook" ]]; then
     echo "ERROR: Cursor stop hook not found at $stop_hook"
-    exit 1
-  fi
-  if [[ ! -d "$skill_src" ]]; then
-    echo "ERROR: Cursor factory-triggering skill not found at $skill_src"
     exit 1
   fi
 
@@ -267,7 +188,8 @@ data.setdefault("version", 1)
 hooks = data.setdefault("hooks", {})
 stop_list = [
     h for h in hooks.get("stop", [])
-    if "stop_hook.py" not in str(h.get("command", ""))
+    if "src/hooks/cursor/stop_hook.py"
+    not in str(h.get("command", "")).replace("\\", "/")
 ]
 stop_list.insert(0, {"command": hook_cmd, "loop_limit": None})
 hooks["stop"] = stop_list
@@ -275,17 +197,10 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
 PYEOF
-  local skills_root compat_skills_root
-  skills_root="$(cursor_skill_root)"
-  compat_skills_root="${CURSOR_HOME:-$HOME/.cursor}/skills-cursor"
-  install_owned_skill_dir "$skill_src" "$skills_root/sflo"
-  remove_owned_skill_dir "$skills_root/sflo-factory-triggering"
-  remove_owned_skill_dir "$compat_skills_root/sflo"
-  remove_owned_skill_dir "$compat_skills_root/sflo-factory-triggering"
   install_runtime_pipeline "$SFLO_ROOT/pipeline-cursor.yaml" "Cursor"
   rm -f "$rules_dir/sflo.mdc" "$rules_dir/sflo-factory-triggering.mdc"
   rmdir "$rules_dir" 2>/dev/null || true
-  echo "  Cursor hook and global skill installed successfully."
+  echo "  Cursor continuation hook repaired successfully."
 }
 
 # --- Claude Code ---
@@ -327,7 +242,13 @@ if os.path.isfile(settings_file):
     if existing:
         settings = json.loads(existing)
 hooks = settings.setdefault("hooks", {})
-hooks["Stop"] = [{"type": "command", "command": hook_command}]
+existing = list(hooks.get("Stop", [])) + list(hooks.get("stop", []))
+hooks["Stop"] = [{"type": "command", "command": hook_command}] + [
+    entry
+    for entry in existing
+    if "src/hooks/claude-code/stop_hook.py"
+    not in str(entry.get("command", "")).replace("\\", "/")
+]
 hooks.pop("stop", None)
 os.makedirs(os.path.dirname(settings_file), exist_ok=True)
 with open(settings_file, "w", encoding="utf-8") as f:
