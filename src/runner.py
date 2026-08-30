@@ -45,6 +45,14 @@ if __package__ in (None, ""):
 
 
 from ._stderr import _safe_stderr, _scrub_secret  # noqa: E402 — must be early, before any stderr use
+from .gate_execution import (  # noqa: E402
+    execute_custom_gate,
+    load_custom_runner as _load_custom_runner,
+)
+
+
+# Public alias for testing / external callers.
+load_custom_runner = _load_custom_runner
 
 
 # ---------------------------------------------------------------------------
@@ -327,63 +335,6 @@ def format_prior_artifacts_for_prompt(
         chunks.append(chunk)
         used += len(chunk)
     return "\n\n---\n\n".join(chunks)
-
-
-# ---------------------------------------------------------------------------
-# Pluggable runner/validator loaders
-# ---------------------------------------------------------------------------
-
-
-def _load_custom_runner(runner_path):
-    """Load a custom runner module from a relative file path via importlib.
-
-    Returns (module, error_string). Rejects absolute paths and '..' traversal.
-    Path resolved relative to cwd, contained within cwd or SFLO_ROOT.
-    """
-    import importlib.util
-
-    if not runner_path:
-        return None, "runner path is empty"
-    if os.path.isabs(runner_path):
-        return None, f"Runner path must be relative: {runner_path}"
-    parts = runner_path.replace("\\", "/").split("/")
-    if ".." in parts:
-        return None, f"Runner path must not contain '..': {runner_path}"
-
-    abs_path = os.path.realpath(os.path.join(os.getcwd(), runner_path))
-    cwd_real = os.path.realpath(os.getcwd())
-    sflo_root_real = os.path.realpath(
-        os.environ.get("SFLO_ROOT")
-        or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    if not (
-        abs_path.startswith(cwd_real + os.sep)
-        or abs_path == cwd_real
-        or abs_path.startswith(sflo_root_real + os.sep)
-        or abs_path == sflo_root_real
-    ):
-        return None, f"Runner path resolves outside project: {abs_path}"
-
-    if not os.path.isfile(abs_path):
-        return None, f"Runner file not found: {abs_path}"
-
-    spec = importlib.util.spec_from_file_location("_sflo_runner", abs_path)
-    if spec is None:
-        return None, f"Cannot load module from {abs_path}"
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:
-        return None, f"Failed to load runner {abs_path}: {e}"
-
-    if not hasattr(module, "run_gate") and not hasattr(module, "run"):
-        return None, f"Runner {abs_path} has no run_gate() or run() function"
-
-    return module, None
-
-
-# Public alias for testing / external callers
-load_custom_runner = _load_custom_runner
 
 
 def _recover_artifact(produces, spawn_start, response, log):
@@ -1681,40 +1632,18 @@ async def run_pipeline(
             runner_path = result.get("runner")
             gate_key_str = str(gate_num)
             artifact_name = result.get("artifact")
-            log(f"  Gate {gate_num} [custom runner: {runner_path}] ...")
 
-            runner_module, load_err = _load_custom_runner(runner_path)
-            if load_err:
-                log(f"  Gate {gate_num} runner load FAILED: {load_err}")
-                if artifact_name:
-                    err_artifact_path = os.path.join(sflo_dir, artifact_name)
-                    os.makedirs(
-                        os.path.dirname(err_artifact_path) or ".", exist_ok=True
-                    )
-                    with open(err_artifact_path, "w", encoding="utf-8") as f:
-                        f.write(f"# Runner Error\n\nVerdict: DEGRADED\n\n{load_err}\n")
-            else:
-                try:
-                    import inspect as _inspect_mod
-
-                    run_fn = (
-                        getattr(runner_module, "run_gate", None) or runner_module.run
-                    )
-                    result_or_coro = run_fn(GATES[gate_num], sflo_dir, output_dir)
-                    if _inspect_mod.iscoroutine(result_or_coro):
-                        await result_or_coro
-                except Exception as e:
-                    log(f"  Gate {gate_num} custom runner FAILED (DEGRADED): {e}")
-                    log(f"  {traceback.format_exc()}")
-                    if artifact_name:
-                        err_artifact_path = os.path.join(sflo_dir, artifact_name)
-                        os.makedirs(
-                            os.path.dirname(err_artifact_path) or ".", exist_ok=True
-                        )
-                        with open(err_artifact_path, "w", encoding="utf-8") as f:
-                            f.write(
-                                f"# Runner Error\n\nVerdict: DEGRADED\n\n{e}\n\n```\n{traceback.format_exc()}\n```\n"
-                            )
+            # Contract: helper writes a ``Verdict: DEGRADED`` artifact when
+            # runner loading or execution fails, then normal validation runs.
+            await execute_custom_gate(
+                gate_num=gate_num,
+                runner_path=runner_path,
+                gate_config=GATES[gate_num],
+                sflo_dir=sflo_dir,
+                output_dir=output_dir,
+                log=log,
+                label_prefix="  Gate",
+            )
 
             # Mutate state for non-progress guard
             if "gate_retries" not in state:

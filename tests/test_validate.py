@@ -137,6 +137,15 @@ class TestValidateGate(unittest.TestCase):
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertTrue(passed)
 
+    def test_gate1_plain_pm_precise_escalation_sentinel_fails(self):
+        self.write("SCOPE.md", "VERDICT: ESCALATE\n\n" + self.FULL_SCOPE)
+        passed, checks = validate_gate(1, self.tmpdir)
+        self.assertFalse(passed)
+        sentinel_check = next(
+            c for c in checks if c["name"] == "pm_precise_not_escalated"
+        )
+        self.assertFalse(sentinel_check["pass"])
+
     def test_gate1_missing_artifact(self):
         passed, checks = validate_gate(1, self.tmpdir)
         self.assertFalse(passed)

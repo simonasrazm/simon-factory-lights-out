@@ -929,7 +929,7 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
             )
 
         pm_precise_escalated = bool(
-            re.search(r"(?im)^##\s*VERDICT\s*:\s*ESCALATE\b", content)
+            re.search(r"(?im)^\s*(?:#{1,6}\s*)?VERDICT\s*:\s*ESCALATE\b", content)
         )
         checks.append(
             {

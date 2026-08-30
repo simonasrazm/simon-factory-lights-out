@@ -239,6 +239,45 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
             "gate 1.5 must not become the dev rebuild target",
         )
 
+    def test_custom_restart_clears_rebuild_artifacts(self):
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            2.1: {"artifact": "DEVLOOP-REPORT.md", "runner": "tools/devloop.py"},
+            2.5: {
+                "artifact": "STST-REPORT.md",
+                "runner": "tools/stst/sflo_driver.py",
+                "on_reject_restart_at": 2,
+            },
+            3: [{"artifact": "QA-REPORT.md", "role": "qa"}],
+        }
+        self.write_state("check-2.5")
+        self.write_artifact("BUILD-STATUS.md", PASSING_ARTIFACTS["BUILD-STATUS.md"])
+        self.write_artifact("DEVLOOP-REPORT.md", "devloop ok")
+        self.write_artifact("STST-REPORT.md", "## Summary\n\nVerdict: REJECT\n")
+        state = self.read_state_file()
+        result = {
+            "action": "check_failed",
+            "gate": 2.5,
+            "checks": [{"name": "stst_verdict", "pass": False}],
+        }
+
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
+
+        self.assertEqual(result["state"], "loop-gate-2.5")
+        self.assertEqual(state["current_state"], "gate-2")
+        self.assertFalse(os.path.exists(os.path.join(self.sflo_dir, "BUILD-STATUS.md")))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.sflo_dir, "DEVLOOP-REPORT.md"))
+        )
+        self.assertFalse(os.path.exists(os.path.join(self.sflo_dir, "STST-REPORT.md")))
+        feedback_path = os.path.join(self.sflo_dir, "STST-REPORT-FEEDBACK.md")
+        self.assertTrue(os.path.exists(feedback_path))
+        with open(feedback_path, encoding="utf-8") as f:
+            feedback = f.read()
+        self.assertIn("stst_verdict", feedback)
+        self.assertIn("Verdict: REJECT", feedback)
+
     def test_qa_failure_exhausted(self):
         self.write_state("check-3")
         self.write_artifact(

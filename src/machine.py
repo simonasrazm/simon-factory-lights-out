@@ -69,6 +69,66 @@ def _gate_entries(gate_info):
     return gate_info if isinstance(gate_info, list) else [gate_info]
 
 
+def _artifact_names_from_gate(gate_info):
+    """Return artifact names produced by a single or parallel gate entry."""
+    names = []
+    for entry in _gate_entries(gate_info):
+        if isinstance(entry, dict) and entry.get("artifact"):
+            names.append(entry["artifact"])
+    return names
+
+
+def _archive_artifacts_from(start_gate, sflo_dir, gates):
+    """Archive gate output artifacts >= start_gate using the active gates config."""
+    from .archive import archive_to_logs
+
+    preserve_names = {"QA-FEEDBACK.md", "PM-FEEDBACK.md"}
+    to_archive = []
+    for gate_key in _sorted_gates(gates=gates):
+        if gate_key < start_gate:
+            continue
+        for artifact in _artifact_names_from_gate(gates[gate_key]):
+            if artifact in preserve_names:
+                continue
+            artifact_path = os.path.join(sflo_dir, artifact)
+            if os.path.isfile(artifact_path):
+                to_archive.append(artifact_path)
+    if to_archive:
+        archive_to_logs(sflo_dir, to_archive)
+
+
+def _write_gate_feedback(sflo_dir, artifact_name, checks, artifact_path=None):
+    """Write artifact-specific validation feedback for rebuild prompts."""
+    if not artifact_name or not checks:
+        return None
+    feedback_name = artifact_name.replace(".md", "-FEEDBACK.md")
+    feedback_path = os.path.join(sflo_dir, feedback_name)
+    lines = ["## Validation Errors — Fix These", ""]
+    for check in checks:
+        if check.get("pass", True):
+            continue
+        name = check.get("name", "check")
+        detail = check.get("detail") or check.get("reason") or "failed"
+        lines.append(f"- **{name}**: {detail}")
+    if len(lines) <= 2:
+        return None
+    if artifact_path and os.path.isfile(artifact_path):
+        try:
+            with open(artifact_path, encoding="utf-8") as f:
+                excerpt = f.read(5000).strip()
+        except OSError:
+            excerpt = ""
+        if excerpt:
+            lines.extend(["", "## Rejected Artifact Excerpt", "", "```", excerpt, "```"])
+    append = os.path.isfile(feedback_path) and os.path.getsize(feedback_path) > 0
+    with open(feedback_path, "a" if append else "w", encoding="utf-8") as f:
+        if append:
+            f.write("\n")
+        f.write("\n".join(lines))
+        f.write("\n")
+    return feedback_path
+
+
 def _first_gate_with_role(role, gates=None):
     """Return the first gate key containing the given role."""
     _gates = gates if gates is not None else GATES
@@ -781,10 +841,20 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     write_state(sflo_dir, state)
                     return compute_next(state, sflo_dir, gates=gates)
                 from .archive import archive_to_logs
+                artifact_name = gate_info.get("artifact")
+                artifact_path = (
+                    os.path.join(sflo_dir, artifact_name) if artifact_name else None
+                )
+                _write_gate_feedback(
+                    sflo_dir,
+                    artifact_name,
+                    result.get("checks", []),
+                    artifact_path=artifact_path,
+                )
                 from .validate import save_gate_feedback
 
-                # Preserve the rejecting review's evidence before its artifact
-                # is archived and Developer is restarted.
+                # Add role-specific feedback after the deterministic validation
+                # errors/excerpt so both forms survive the rebuild.
                 save_gate_feedback(sflo_dir, n, gates=_gates)
 
                 artifacts_to_archive = []
@@ -797,9 +867,9 @@ def apply_transition(state, result, sflo_dir, gates=None):
                         artifact = entry.get("artifact") if isinstance(entry, dict) else None
                         if not artifact:
                             continue
-                        artifact_path = os.path.join(sflo_dir, artifact)
-                        if os.path.isfile(artifact_path):
-                            artifacts_to_archive.append(artifact_path)
+                        generated_path = os.path.join(sflo_dir, artifact)
+                        if os.path.isfile(generated_path):
+                            artifacts_to_archive.append(generated_path)
                     state["gates"].setdefault(str(gate_num), {})["status"] = "pending"
                 if artifacts_to_archive:
                     archive_to_logs(sflo_dir, artifacts_to_archive)

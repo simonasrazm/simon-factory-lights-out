@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import tempfile
+import asyncio
 import pytest
 
 # Allow import from sibling dir
@@ -23,6 +24,9 @@ from epic_orchestrator import (
     advance_epic_state,
     finalize_epic_state,
 )
+
+from src.epic_orchestrator import run_gate_range
+from src.state import write_state
 
 
 # --- Test Fixtures ---
@@ -364,6 +368,70 @@ class TestR3H2ContextFilteringSafety:
         coverage = _extract_relevant_ac_coverage(SAMPLE_WB, [4, 5, 6])
 
         assert coverage == ["- AC5 → WP-4", "- AC6 → WP-4"]
+
+
+# --- Gate Range Dispatch Tests ---
+
+
+class TestRunGateRange:
+    def test_executes_custom_gate_inside_epic_range(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "custom_gate.py").write_text(
+            "from pathlib import Path\n\n"
+            "def run_gate(gate, sflo_dir, output_dir):\n"
+            "    Path(sflo_dir, gate['artifact']).write_text('custom ok', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        sflo_dir = tmp_path / ".sflo" / "factory"
+        sflo_dir.mkdir(parents=True)
+        gates = {
+            2.1: {
+                "artifact": "CUSTOM-REPORT.md",
+                "runner": "tools/custom_gate.py",
+            },
+            3: {
+                "artifact": "AFTER.md",
+                "role": "qa",
+            },
+        }
+        state = {
+            "current_state": "gate-2.1",
+            "roles": {},
+            "assignments": {},
+            "inner_loops": 0,
+            "outer_loops": 0,
+            "gates": {
+                "2.1": {
+                    "status": "waiting",
+                    "artifact": "CUSTOM-REPORT.md",
+                    "parallel_artifacts": None,
+                }
+            },
+        }
+        write_state(str(sflo_dir), state)
+
+        result = asyncio.run(
+            run_gate_range(
+                start_gate=2.1,
+                end_gate=2.1,
+                sflo_dir=str(sflo_dir),
+                state=state,
+                adapter=object(),
+                user_prompt="test",
+                output_dir=str(tmp_path),
+                runtime="codex",
+                log=lambda msg: None,
+                gates_config=gates,
+                roles={},
+                assignments={},
+            )
+        )
+
+        assert result["passed"] is True
+        assert (sflo_dir / "CUSTOM-REPORT.md").read_text(encoding="utf-8") == "custom ok"
 
 
 # --- State Management Tests ---

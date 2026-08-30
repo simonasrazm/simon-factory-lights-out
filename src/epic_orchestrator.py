@@ -582,6 +582,51 @@ async def run_gate_range(
                 else:
                     log(f"    Epic gate {gate_num} ✗")
 
+        elif action == "run_custom_gate":
+            from .gate_execution import execute_custom_gate
+            from .state import read_state
+
+            gate_num = result.get("gate_num")
+            runner_path = result.get("runner")
+
+            await execute_custom_gate(
+                gate_num=gate_num,
+                runner_path=runner_path,
+                gate_config=gates_config[gate_num],
+                sflo_dir=sflo_dir,
+                output_dir=output_dir,
+                log=log,
+                label_prefix="    Epic gate",
+            )
+
+            auto_transition(state, sflo_dir, gates=gates_config)
+            state = read_state(sflo_dir)
+            result = compute_next(state, sflo_dir, gates=gates_config)
+            result = apply_transition(state, result, sflo_dir, gates=gates_config)
+            state = read_state(sflo_dir)
+
+            gate_num = result.get("gate")
+            passed = result.get("pass", False)
+            if passed and gate_num:
+                last_gate_passed = gate_num
+                log(f"    Epic gate {gate_num} ✓")
+            elif not passed and gate_num:
+                loop_action = result.get("action", "")
+                if "loop" in loop_action:
+                    retry_count = result.get("gate_retry_count")
+                    retry_max = result.get("max")
+                    log(f"    Epic gate {gate_num} ✗ — retry {retry_count}/{retry_max}")
+                else:
+                    log(f"    Epic gate {gate_num} ✗")
+
+            if result.get("action") == "ask_human":
+                return {
+                    "passed": False,
+                    "final_gate": last_gate_passed,
+                    "escalated": True,
+                    "reason": result.get("reason", "escalated"),
+                }
+
         else:
             log(f"    Unknown action in epic range: {action}")
             break
