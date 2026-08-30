@@ -69,13 +69,3 @@ $pythonCommand = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else
 $pythonArgs = if ($pythonCommand -eq 'py') { @('-3') } else { @() }
 & $pythonCommand @pythonArgs "{{SFLO_PATH}}\src\update_skill.py"
 ```
-
-Downloaded release marker.
-
-Downloaded release marker.
-
-Downloaded release marker.
-
-Downloaded release marker.
-
-Downloaded release marker.
