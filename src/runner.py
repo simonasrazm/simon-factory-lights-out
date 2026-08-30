@@ -165,6 +165,7 @@ if __name__ == "__main__":
         resolve_sflo_base,
     )
     from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    import src.constants as _runner_constants
     from src.config import (
         derive_roles_from_pipeline,
         load_pipeline_config as _load_pipeline_config,
@@ -205,6 +206,7 @@ else:
         resolve_sflo_base,
     )
     from .constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    from . import constants as _runner_constants
     from .config import (
         derive_roles_from_pipeline,
         load_pipeline_config as _load_pipeline_config,
@@ -992,6 +994,16 @@ async def run_pipeline(
     adapter = get_adapter(runtime)
     log = make_logger(sflo_dir, verbose)
 
+    # Imports happen before CLI/runtime arguments are known. Reload through
+    # the target state directory so project config wins over caller cwd.
+    try:
+        _resolved_pipeline = _runner_constants.reload_pipeline_config(
+            sflo_dir=os.path.abspath(sflo_dir)
+        )
+    except Exception as _config_reload_error:
+        _resolved_pipeline = "<config reload failed>"
+        log(f"  Pipeline config: reload failed — {_config_reload_error}")
+
     # --- Init: role config from pipeline.yaml ---
     roles = derive_roles_from_pipeline()
 
@@ -1004,7 +1016,7 @@ async def run_pipeline(
         from pathlib import Path as _Path
         from .config import resolve_pipeline_path as _resolve_pp
 
-        _pp = _resolve_pp()
+        _pp = _resolve_pp(sflo_dir=os.path.abspath(sflo_dir))
         if _pp and os.path.isfile(_pp):
             _loaded = _evals.load_evals_from_config(_Path(_pp))
             if _loaded:
@@ -1168,21 +1180,16 @@ async def run_pipeline(
 
     log(f"SFLO Pipeline — {user_prompt[:60]}")
 
-    # Surface resolved config so silent threshold drift becomes visible.
-    # Without this, when cwd ≠ project-with-pipeline.yaml, the runner
-    # silently falls back to the submodule's default threshold and the
-    # operator never knows their project pipeline.yaml was bypassed.
-    try:
-        from .config import resolve_pipeline_path
-        from .constants import GRADE_THRESHOLD, GRADE_MAP
-
-        _resolved = resolve_pipeline_path() or "<built-in defaults>"
-        _threshold_name = next(
-            (k for k, v in GRADE_MAP.items() if v == GRADE_THRESHOLD), "?"
-        )
-        log(f"  Pipeline config: {_resolved} (threshold={_threshold_name})")
-    except Exception as _cfg_log_err:
-        log(f"  Pipeline config: log failed — {_cfg_log_err}")
+    # Surface resolved config so threshold drift cannot remain silent.
+    _threshold_name = next(
+        (
+            key
+            for key, value in _runner_constants.GRADE_MAP.items()
+            if value == _runner_constants.GRADE_THRESHOLD
+        ),
+        "?",
+    )
+    log(f"  Pipeline config: {_resolved_pipeline} (threshold={_threshold_name})")
 
     # --- Chrome extension check (inform only, never block) ---
     if RuntimeAdapter._extra_cli_args.get("chrome") is not None:

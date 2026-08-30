@@ -4,12 +4,13 @@ import ntpath
 import os
 import re
 
+from . import constants
+
 try:
     from .constants import (
         GATES,
         SFLO_ROOT,
         GRADE_MAP,
-        GRADE_THRESHOLD,
         inner_loop_gate_key,
         outer_loop_gate_key,
     )
@@ -18,7 +19,6 @@ except ImportError:  # Support legacy top-level imports from sflo/src on sys.pat
         GATES,
         SFLO_ROOT,
         GRADE_MAP,
-        GRADE_THRESHOLD,
         inner_loop_gate_key,
         outer_loop_gate_key,
     )
@@ -716,9 +716,9 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
             # Per-gate threshold: entry.threshold -> global GRADE_THRESHOLD
             entry_threshold_str = entry.get("threshold")
             entry_threshold = (
-                GRADE_MAP.get(entry_threshold_str, GRADE_THRESHOLD)
+                GRADE_MAP.get(entry_threshold_str, constants.GRADE_THRESHOLD)
                 if entry_threshold_str
-                else GRADE_THRESHOLD
+                else constants.GRADE_THRESHOLD
             )
             if entry_role == "qa":
                 qa_passed, qa_checks = _validate_qa_content(content, entry_threshold)
@@ -782,9 +782,9 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
     # Resolve per-gate threshold: gate entry threshold -> global GRADE_THRESHOLD
     gate_threshold_str = info.get("threshold") if isinstance(info, dict) else None
     effective_threshold = (
-        GRADE_MAP.get(gate_threshold_str, GRADE_THRESHOLD)
+        GRADE_MAP.get(gate_threshold_str, constants.GRADE_THRESHOLD)
         if gate_threshold_str
-        else GRADE_THRESHOLD
+        else constants.GRADE_THRESHOLD
     )
 
     # Single-entry review gates validate by role, not by numeric position.
