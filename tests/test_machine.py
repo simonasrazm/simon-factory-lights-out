@@ -205,16 +205,98 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
             state["current_state"], "gate-2", "inner loop should reset state to gate-2"
         )
 
-    def test_qa_failure_exhausted(self):
-        self.write_state("check-3")
+    def test_qa_failure_with_gate_1_5_still_loops_to_dev(self):
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            1.5: {
+                "artifact": "WORK-BREAKDOWN.md",
+                "role": "decomposer",
+                "on_reject_restart_at": 1.5,
+            },
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            2.5: {
+                "artifact": "STST-REPORT.md",
+                "runner": "tools/stst/sflo_driver.py",
+                "on_reject_restart_at": 2,
+            },
+            3: [{"artifact": "QA-REPORT.md", "role": "qa"}],
+            4: {"artifact": "PM-VERIFY.md", "role": "pm"},
+            5: {"artifact": "SHIP-DECISION.md", "role": "sflo"},
+        }
+        self.write_state("check-3", inner=2)
         self.write_artifact(
             "QA-REPORT.md",
             "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
         )
         state = self.read_state_file()
-        state["gate_retries"] = {"3": 9}
-        result = compute_next(state, self.sflo_dir)
-        result = apply_transition(state, result, self.sflo_dir)
+        result = compute_next(state, self.sflo_dir, gates=gates)
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
+
+        self.assertEqual(result["state"], "loop-inner")
+        self.assertEqual(
+            state["current_state"],
+            "gate-2",
+            "gate 1.5 must not become the dev rebuild target",
+        )
+
+    def test_custom_restart_clears_rebuild_artifacts(self):
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            2.1: {"artifact": "DEVLOOP-REPORT.md", "runner": "tools/devloop.py"},
+            2.5: {
+                "artifact": "STST-REPORT.md",
+                "runner": "tools/stst/sflo_driver.py",
+                "on_reject_restart_at": 2,
+            },
+            3: [{"artifact": "QA-REPORT.md", "role": "qa"}],
+        }
+        self.write_state("check-2.5")
+        self.write_artifact("BUILD-STATUS.md", PASSING_ARTIFACTS["BUILD-STATUS.md"])
+        self.write_artifact("DEVLOOP-REPORT.md", "devloop ok")
+        self.write_artifact("STST-REPORT.md", "## Summary\n\nVerdict: REJECT\n")
+        state = self.read_state_file()
+        result = {
+            "action": "check_failed",
+            "gate": 2.5,
+            "checks": [{"name": "stst_verdict", "pass": False}],
+        }
+
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
+
+        self.assertEqual(result["state"], "loop-gate-2.5")
+        self.assertEqual(state["current_state"], "gate-2")
+        self.assertFalse(os.path.exists(os.path.join(self.sflo_dir, "BUILD-STATUS.md")))
+        self.assertFalse(
+            os.path.exists(os.path.join(self.sflo_dir, "DEVLOOP-REPORT.md"))
+        )
+        self.assertFalse(os.path.exists(os.path.join(self.sflo_dir, "STST-REPORT.md")))
+        feedback_path = os.path.join(self.sflo_dir, "STST-REPORT-FEEDBACK.md")
+        self.assertTrue(os.path.exists(feedback_path))
+        with open(feedback_path, encoding="utf-8") as f:
+            feedback = f.read()
+        self.assertIn("stst_verdict", feedback)
+        self.assertIn("Verdict: REJECT", feedback)
+
+    def test_qa_failure_exhausted(self):
+        """When inner-loop QA failures hit INNER_LOOP_MAX, escalate to
+        human — do NOT bypass the gate by proceeding to PM verification.
+        Bypass would ship code that QA contractually rejected."""
+        gates = {
+            1: {"artifact": "SCOPE.md", "role": "pm"},
+            2: {"artifact": "BUILD-STATUS.md", "role": "dev"},
+            3: {"artifact": "QA-REPORT.md", "role": "qa"},
+            4: {"artifact": "PM-VERIFY.md", "role": "pm"},
+            5: {"artifact": "SHIP-DECISION.md", "role": "sflo"},
+        }
+        self.write_state("check-3", inner=9)
+        self.write_artifact(
+            "QA-REPORT.md",
+            "### Test Results\n| T | R |\n### Grade: C\n### Stranger Test\nNo.\n",
+        )
+        state = self.read_state_file()
+        result = compute_next(state, self.sflo_dir, gates=gates)
+        result = apply_transition(state, result, self.sflo_dir, gates=gates)
         self.assertEqual(
             result["action"],
             "ask_human",
@@ -225,6 +307,9 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
             "escalate",
             "exhausted QA retries must not bypass review",
         )
+        self.assertEqual(result["state"], "escalate")
+        self.assertIn("escalate_reason", state)
+        self.assertIn("escalate_options", state)
 
     def test_pm_rejection_loops_outer(self):
         self.write_state("check-4", inner=5, outer=1)
@@ -272,6 +357,31 @@ class TestApplyTransition(TempDirMixin, unittest.TestCase):
         self.assertEqual(
             returned, result, "non-check actions should pass through unchanged"
         )
+
+    def test_pm_precise_escalation_reroutes_to_full_pm(self):
+        self.write_state("check-1")
+        self.write_artifact(
+            "SCOPE.md",
+            "## VERDICT: ESCALATE\n\nReason: architectural choice needed.\n",
+        )
+        state = self.read_state_file()
+        state["assignments"] = {
+            "pm": "/tmp/agents/pm-precise",
+            "pm_fallback": "/tmp/agents/pm",
+            "scope_tier": "precise",
+        }
+        result = {
+            "action": "check_failed",
+            "gate": 1,
+            "checks": [{"name": "pm_precise_not_escalated", "pass": False}],
+        }
+
+        result = apply_transition(state, result, self.sflo_dir)
+
+        self.assertEqual(result["state"], "pm-precise-escalated")
+        self.assertEqual(state["current_state"], "gate-1")
+        self.assertEqual(state["assignments"]["pm"], "/tmp/agents/pm")
+        self.assertEqual(state["assignments"]["scope_tier"], "standard")
 
 
 class TestQAFeedbackPreservation(TempDirMixin, unittest.TestCase):

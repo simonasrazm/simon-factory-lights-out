@@ -276,12 +276,27 @@ def parse_pipeline_yaml(path):
     return result, None
 
 
-def resolve_pipeline_path(explicit=None):
-    """Resolve pipeline.yaml: explicit -> cwd -> sflo/ subdir -> SFLO_ROOT."""
+def resolve_pipeline_path(explicit=None, sflo_dir=None):
+    """Resolve pipeline.yaml from explicit path, project state, or fallbacks.
+
+    When ``sflo_dir`` is known, walk upward from its parent so callers do not
+    silently load SFLO's bundled config merely because they launched outside
+    the target project.
+    """
     from .constants import SFLO_ROOT
 
     if explicit and os.path.isfile(explicit):
         return explicit
+    if sflo_dir:
+        candidate = os.path.dirname(os.path.abspath(sflo_dir))
+        while True:
+            project_path = os.path.join(candidate, "pipeline.yaml")
+            if os.path.isfile(project_path):
+                return project_path
+            parent = os.path.dirname(candidate)
+            if parent == candidate:
+                break
+            candidate = parent
     cwd_path = os.path.join(os.getcwd(), "pipeline.yaml")
     if os.path.isfile(cwd_path):
         return cwd_path
@@ -294,7 +309,7 @@ def resolve_pipeline_path(explicit=None):
     return None
 
 
-def load_pipeline_config(path=None):
+def load_pipeline_config(path=None, sflo_dir=None):
     """Load pipeline config from pipeline.yaml.
 
     Returns a dict with keys:
@@ -310,7 +325,7 @@ def load_pipeline_config(path=None):
     if path:
         resolved = path if os.path.isfile(path) else None
     else:
-        resolved = resolve_pipeline_path()
+        resolved = resolve_pipeline_path(sflo_dir=sflo_dir)
 
     if not resolved:
         # No pipeline.yaml anywhere. Return sentinel for preflight to catch.

@@ -4,7 +4,10 @@ import os
 import shutil
 import sys
 
-from .config import load_pipeline_config, GRADE_MAP  # noqa: F401 — re-export
+try:
+    from .config import load_pipeline_config, GRADE_MAP  # noqa: F401 — re-export
+except ImportError:  # Support legacy top-level imports from sflo/src on sys.path.
+    from config import load_pipeline_config, GRADE_MAP  # noqa: F401
 
 # Root of the sflo repo.
 # SFLO_ROOT env var (set by host app to vault path) takes precedence.
@@ -51,6 +54,38 @@ KNOWN_ROLES = {
     for e in (g if isinstance(g, list) else [g])
     if e.get("role")
 } | {"extra", "sflo-dir"}
+
+
+def reload_pipeline_config(sflo_dir=None):
+    """Reload project config after the caller knows its state directory.
+
+    Mutable mappings update in place so modules that imported them earlier
+    observe the new project gates. Scalar threshold consumers read through
+    ``src.constants`` at validation time.
+    """
+    global GRADE_THRESHOLD
+
+    cfg = load_pipeline_config(sflo_dir=sflo_dir)
+    GATES.clear()
+    GATES.update(cfg["gates"])
+    SCOUT_CONFIG.clear()
+    SCOUT_CONFIG.update(cfg.get("scout", {}))
+    SFLO_CONFIG.clear()
+    SFLO_CONFIG.update(cfg.get("sflo", {}))
+    GRADE_THRESHOLD = cfg["grade_threshold"]
+
+    KNOWN_ROLES.clear()
+    KNOWN_ROLES.update(
+        e.get("role")
+        for gate in GATES.values()
+        for e in (gate if isinstance(gate, list) else [gate])
+        if e.get("role")
+    )
+    KNOWN_ROLES.update({"extra", "sflo-dir"})
+
+    from .config import resolve_pipeline_path
+
+    return resolve_pipeline_path(sflo_dir=sflo_dir) or "<built-in defaults>"
 
 
 def _detect_python():

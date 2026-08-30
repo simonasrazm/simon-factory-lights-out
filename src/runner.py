@@ -45,6 +45,14 @@ if __package__ in (None, ""):
 
 
 from ._stderr import _safe_stderr, _scrub_secret  # noqa: E402 — must be early, before any stderr use
+from .gate_execution import (  # noqa: E402
+    execute_custom_gate,
+    load_custom_runner as _load_custom_runner,
+)
+
+
+# Public alias for testing / external callers.
+load_custom_runner = _load_custom_runner
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +165,7 @@ if __name__ == "__main__":
         resolve_sflo_base,
     )
     from src.constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    import src.constants as _runner_constants
     from src.config import (
         derive_roles_from_pipeline,
         load_pipeline_config as _load_pipeline_config,
@@ -197,6 +206,7 @@ else:
         resolve_sflo_base,
     )
     from .constants import SFLO_ROOT, S_DONE, S_ESCALATE, GATES
+    from . import constants as _runner_constants
     from .config import (
         derive_roles_from_pipeline,
         load_pipeline_config as _load_pipeline_config,
@@ -327,63 +337,6 @@ def format_prior_artifacts_for_prompt(
         chunks.append(chunk)
         used += len(chunk)
     return "\n\n---\n\n".join(chunks)
-
-
-# ---------------------------------------------------------------------------
-# Pluggable runner/validator loaders
-# ---------------------------------------------------------------------------
-
-
-def _load_custom_runner(runner_path):
-    """Load a custom runner module from a relative file path via importlib.
-
-    Returns (module, error_string). Rejects absolute paths and '..' traversal.
-    Path resolved relative to cwd, contained within cwd or SFLO_ROOT.
-    """
-    import importlib.util
-
-    if not runner_path:
-        return None, "runner path is empty"
-    if os.path.isabs(runner_path):
-        return None, f"Runner path must be relative: {runner_path}"
-    parts = runner_path.replace("\\", "/").split("/")
-    if ".." in parts:
-        return None, f"Runner path must not contain '..': {runner_path}"
-
-    abs_path = os.path.realpath(os.path.join(os.getcwd(), runner_path))
-    cwd_real = os.path.realpath(os.getcwd())
-    sflo_root_real = os.path.realpath(
-        os.environ.get("SFLO_ROOT")
-        or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    if not (
-        abs_path.startswith(cwd_real + os.sep)
-        or abs_path == cwd_real
-        or abs_path.startswith(sflo_root_real + os.sep)
-        or abs_path == sflo_root_real
-    ):
-        return None, f"Runner path resolves outside project: {abs_path}"
-
-    if not os.path.isfile(abs_path):
-        return None, f"Runner file not found: {abs_path}"
-
-    spec = importlib.util.spec_from_file_location("_sflo_runner", abs_path)
-    if spec is None:
-        return None, f"Cannot load module from {abs_path}"
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as e:
-        return None, f"Failed to load runner {abs_path}: {e}"
-
-    if not hasattr(module, "run_gate") and not hasattr(module, "run"):
-        return None, f"Runner {abs_path} has no run_gate() or run() function"
-
-    return module, None
-
-
-# Public alias for testing / external callers
-load_custom_runner = _load_custom_runner
 
 
 def _recover_artifact(produces, spawn_start, response, log):
@@ -878,6 +831,7 @@ def build_agent_prompt(agent_info, user_prompt, sflo_dir, runtime=None, output_d
 # Single definition; used in two places within run_pipeline.
 _ARCHIVABLE_ARTIFACTS = [
     "SCOPE.md",
+    "WORK-BREAKDOWN.md",
     "BUILD-STATUS.md",
     "QA-REPORT.md",
     "SECURITY-REPORT.md",
@@ -900,6 +854,110 @@ def _archivable_paths(sflo_dir, include_state=False):
     except OSError:
         pass
     return [os.path.join(sflo_dir, name) for name in dict.fromkeys(names)]
+
+
+def _gate_entries(gate_info):
+    return gate_info if isinstance(gate_info, list) else [gate_info]
+
+
+def _first_gate_with_role(role):
+    for key in sorted(GATES.keys()):
+        for entry in _gate_entries(GATES[key]):
+            if isinstance(entry, dict) and entry.get("role") == role:
+                return key
+    return None
+
+
+def _next_gate_after_local(gate_num):
+    keys = sorted(GATES.keys())
+    for i, key in enumerate(keys):
+        if key == gate_num and i + 1 < len(keys):
+            return keys[i + 1]
+    return None
+
+
+def _current_gate_number(state):
+    match = re.match(r"gate-(\d+\.?\d*)$", state.get("current_state", ""))
+    if not match:
+        return None
+    value = float(match.group(1))
+    return int(value) if value.is_integer() else value
+
+
+def _scope_complexity(sflo_dir):
+    scope_path = os.path.join(sflo_dir, "SCOPE.md")
+    if not os.path.isfile(scope_path):
+        return None
+    try:
+        with open(scope_path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    patterns = [
+        r"(?is)##\s*Complexity\s+Estimate\b.*?\b(XL|L|M|S)\b",
+        r"(?im)^\s*[-*]?\s*\*\*?Complexity\*\*?\s*:\s*(XL|L|M|S)\b",
+        r"(?im)^\s*Complexity\s*:\s*(XL|L|M|S)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, content)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def _work_breakdown_skip_reason(state, sflo_dir):
+    gate_num = _current_gate_number(state)
+    if gate_num != 1.5:
+        return None
+    gate_info = GATES.get(1.5, {})
+    if gate_info.get("artifact") != "WORK-BREAKDOWN.md":
+        return None
+
+    assignments = state.get("assignments") or {}
+    scope_tier = str(assignments.get("scope_tier", "")).lower()
+    if scope_tier == "precise":
+        return "scout classified task as precise"
+
+    complexity = _scope_complexity(sflo_dir)
+    if complexity == "S":
+        return "SCOPE.md complexity estimate is S"
+
+    return None
+
+
+def _skip_current_gate(state, sflo_dir, log, reason):
+    gate_num = _current_gate_number(state)
+    if gate_num is None:
+        return False
+    gate_key = str(gate_num)
+    state["gates"].setdefault(gate_key, {})["status"] = "skipped"
+    next_gate = _next_gate_after_local(gate_num)
+    state["current_state"] = f"gate-{next_gate}" if next_gate is not None else S_DONE
+    _locked_write_state(sflo_dir, state)
+    log(f"  Gate {gate_num} skipped — {reason}")
+    return True
+
+
+def _should_run_epic_iteration(state, sflo_dir):
+    dev_gate = _first_gate_with_role("dev")
+    if dev_gate is None or _current_gate_number(state) != dev_gate:
+        return False
+
+    wb_path = os.path.join(sflo_dir, "WORK-BREAKDOWN.md")
+    if not os.path.isfile(wb_path):
+        return False
+
+    epic_state = state.get("epic_iteration") or {}
+    if epic_state.get("active"):
+        return True
+
+    completed = epic_state.get("completed") or []
+    total = epic_state.get("total_epics") or 0
+    if total and len(completed) >= total and not epic_state.get("failed"):
+        return False
+
+    return True
 
 
 async def run_pipeline(
@@ -936,6 +994,16 @@ async def run_pipeline(
     adapter = get_adapter(runtime)
     log = make_logger(sflo_dir, verbose)
 
+    # Imports happen before CLI/runtime arguments are known. Reload through
+    # the target state directory so project config wins over caller cwd.
+    try:
+        _resolved_pipeline = _runner_constants.reload_pipeline_config(
+            sflo_dir=os.path.abspath(sflo_dir)
+        )
+    except Exception as _config_reload_error:
+        _resolved_pipeline = "<config reload failed>"
+        log(f"  Pipeline config: reload failed — {_config_reload_error}")
+
     # --- Init: role config from pipeline.yaml ---
     roles = derive_roles_from_pipeline()
 
@@ -948,7 +1016,7 @@ async def run_pipeline(
         from pathlib import Path as _Path
         from .config import resolve_pipeline_path as _resolve_pp
 
-        _pp = _resolve_pp()
+        _pp = _resolve_pp(sflo_dir=os.path.abspath(sflo_dir))
         if _pp and os.path.isfile(_pp):
             _loaded = _evals.load_evals_from_config(_Path(_pp))
             if _loaded:
@@ -1111,6 +1179,17 @@ async def run_pipeline(
     _locked_write_state(sflo_dir, state)
 
     log(f"SFLO Pipeline — {user_prompt[:60]}")
+
+    # Surface resolved config so threshold drift cannot remain silent.
+    _threshold_name = next(
+        (
+            key
+            for key, value in _runner_constants.GRADE_MAP.items()
+            if value == _runner_constants.GRADE_THRESHOLD
+        ),
+        "?",
+    )
+    log(f"  Pipeline config: {_resolved_pipeline} (threshold={_threshold_name})")
 
     # --- Chrome extension check (inform only, never block) ---
     if RuntimeAdapter._extra_cli_args.get("chrome") is not None:
@@ -1350,6 +1429,61 @@ async def run_pipeline(
             json.dumps(state.get("gate_retries", {}), sort_keys=True),
         )
 
+        skip_reason = _work_breakdown_skip_reason(state, sflo_dir)
+        if skip_reason:
+            _skip_current_gate(state, sflo_dir, log, skip_reason)
+            continue
+
+        if _should_run_epic_iteration(state, sflo_dir):
+            from .epic_orchestrator import detect_epics, run_epic_iteration
+
+            epics = detect_epics(sflo_dir)
+            if epics:
+                log(f"  Epic iteration detected: {len(epics)} epics")
+                epic_result = await run_epic_iteration(
+                    epics,
+                    sflo_dir,
+                    state,
+                    adapter,
+                    user_prompt=user_prompt,
+                    output_dir=output_dir,
+                    runtime=runtime,
+                    log=log,
+                    gates_config=GATES,
+                    roles=roles,
+                    assignments=assignments,
+                )
+                state = read_state(sflo_dir) or state
+                if epic_result.escalated or not epic_result.all_passed:
+                    state["current_state"] = S_ESCALATE
+                    state["escalate_reason"] = (
+                        epic_result.escalation_reason
+                        or f"Epic iteration failed for epics {epic_result.failed_epics}"
+                    )
+                    state["escalate_options"] = [
+                        "inspect failed epic artifacts and retry",
+                        f"delete {sflo_dir}/ and retry",
+                        "fall back to linear gate execution",
+                    ]
+                    _locked_write_state(sflo_dir, state)
+                    log(f"  ESCALATE: {state['escalate_reason']}")
+                    break
+
+                next_after_epic = _next_gate_after_local(3)
+                for gate_key in sorted(GATES.keys()):
+                    if 2 <= gate_key <= 3:
+                        state["gates"].setdefault(str(gate_key), {})[
+                            "status"
+                        ] = "done"
+                state["current_state"] = (
+                    f"gate-{next_after_epic}"
+                    if next_after_epic is not None
+                    else S_DONE
+                )
+                _locked_write_state(sflo_dir, state)
+                log("  Epic iteration ✓ — advancing to post-epic gates")
+                continue
+
         auto_transition(state, sflo_dir)
         result = compute_next(state, sflo_dir)
         action = result.get("action")
@@ -1521,40 +1655,18 @@ async def run_pipeline(
             runner_path = result.get("runner")
             gate_key_str = str(gate_num)
             artifact_name = result.get("artifact")
-            log(f"  Gate {gate_num} [custom runner: {runner_path}] ...")
 
-            runner_module, load_err = _load_custom_runner(runner_path)
-            if load_err:
-                log(f"  Gate {gate_num} runner load FAILED: {load_err}")
-                if artifact_name:
-                    err_artifact_path = os.path.join(sflo_dir, artifact_name)
-                    os.makedirs(
-                        os.path.dirname(err_artifact_path) or ".", exist_ok=True
-                    )
-                    with open(err_artifact_path, "w", encoding="utf-8") as f:
-                        f.write(f"# Runner Error\n\nVerdict: DEGRADED\n\n{load_err}\n")
-            else:
-                try:
-                    import inspect as _inspect_mod
-
-                    run_fn = (
-                        getattr(runner_module, "run_gate", None) or runner_module.run
-                    )
-                    result_or_coro = run_fn(GATES[gate_num], sflo_dir, output_dir)
-                    if _inspect_mod.iscoroutine(result_or_coro):
-                        await result_or_coro
-                except Exception as e:
-                    log(f"  Gate {gate_num} custom runner FAILED (DEGRADED): {e}")
-                    log(f"  {traceback.format_exc()}")
-                    if artifact_name:
-                        err_artifact_path = os.path.join(sflo_dir, artifact_name)
-                        os.makedirs(
-                            os.path.dirname(err_artifact_path) or ".", exist_ok=True
-                        )
-                        with open(err_artifact_path, "w", encoding="utf-8") as f:
-                            f.write(
-                                f"# Runner Error\n\nVerdict: DEGRADED\n\n{e}\n\n```\n{traceback.format_exc()}\n```\n"
-                            )
+            # Contract: helper writes a ``Verdict: DEGRADED`` artifact when
+            # runner loading or execution fails, then normal validation runs.
+            await execute_custom_gate(
+                gate_num=gate_num,
+                runner_path=runner_path,
+                gate_config=GATES[gate_num],
+                sflo_dir=sflo_dir,
+                output_dir=output_dir,
+                log=log,
+                label_prefix="  Gate",
+            )
 
             # Mutate state for non-progress guard
             if "gate_retries" not in state:

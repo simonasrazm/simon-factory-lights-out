@@ -64,6 +64,94 @@ def _last_gate(gates=None):
     return keys[-1] if keys else None
 
 
+def _gate_entries(gate_info):
+    """Return normalized gate entries for single or parallel gate configs."""
+    return gate_info if isinstance(gate_info, list) else [gate_info]
+
+
+def _artifact_names_from_gate(gate_info):
+    """Return artifact names produced by a single or parallel gate entry."""
+    names = []
+    for entry in _gate_entries(gate_info):
+        if isinstance(entry, dict) and entry.get("artifact"):
+            names.append(entry["artifact"])
+    return names
+
+
+def _archive_artifacts_from(start_gate, sflo_dir, gates):
+    """Archive gate output artifacts >= start_gate using the active gates config."""
+    from .archive import archive_to_logs
+
+    preserve_names = {"QA-FEEDBACK.md", "PM-FEEDBACK.md"}
+    to_archive = []
+    for gate_key in _sorted_gates(gates=gates):
+        if gate_key < start_gate:
+            continue
+        for artifact in _artifact_names_from_gate(gates[gate_key]):
+            if artifact in preserve_names:
+                continue
+            artifact_path = os.path.join(sflo_dir, artifact)
+            if os.path.isfile(artifact_path):
+                to_archive.append(artifact_path)
+    if to_archive:
+        archive_to_logs(sflo_dir, to_archive)
+
+
+def _write_gate_feedback(sflo_dir, artifact_name, checks, artifact_path=None):
+    """Write artifact-specific validation feedback for rebuild prompts."""
+    if not artifact_name or not checks:
+        return None
+    feedback_name = artifact_name.replace(".md", "-FEEDBACK.md")
+    feedback_path = os.path.join(sflo_dir, feedback_name)
+    lines = ["## Validation Errors — Fix These", ""]
+    for check in checks:
+        if check.get("pass", True):
+            continue
+        name = check.get("name", "check")
+        detail = check.get("detail") or check.get("reason") or "failed"
+        lines.append(f"- **{name}**: {detail}")
+    if len(lines) <= 2:
+        return None
+    if artifact_path and os.path.isfile(artifact_path):
+        try:
+            with open(artifact_path, encoding="utf-8") as f:
+                excerpt = f.read(5000).strip()
+        except OSError:
+            excerpt = ""
+        if excerpt:
+            lines.extend(["", "## Rejected Artifact Excerpt", "", "```", excerpt, "```"])
+    append = os.path.isfile(feedback_path) and os.path.getsize(feedback_path) > 0
+    with open(feedback_path, "a" if append else "w", encoding="utf-8") as f:
+        if append:
+            f.write("\n")
+        f.write("\n".join(lines))
+        f.write("\n")
+    return feedback_path
+
+
+def _first_gate_with_role(role, gates=None):
+    """Return the first gate key containing the given role."""
+    _gates = gates if gates is not None else GATES
+    for key in _sorted_gates(gates=_gates):
+        for entry in _gate_entries(_gates[key]):
+            if isinstance(entry, dict) and entry.get("role") == role:
+                return key
+    return None
+
+
+def _inner_loop_restart_gate(gates=None):
+    """Return the dev/rebuild gate.
+
+    Historical configs used the second gate as Dev. Gate 1.5 breaks that
+    positional assumption, so prefer the first `role: dev` gate.
+    """
+    dev_gate = _first_gate_with_role("dev", gates=gates)
+    if dev_gate is not None:
+        return dev_gate
+    sorted_gates = _sorted_gates(gates=gates)
+    return sorted_gates[1] if len(sorted_gates) >= 2 else None
+
+
 def _discover_vendor_dirs(sflo_base):
     """Discover all vendor directories (SFLO_ROOT/vendor/* and sflo_base/vendor/*).
 
@@ -681,7 +769,7 @@ def apply_transition(state, result, sflo_dir, gates=None):
 
         # Clean up feedback files once they've served their purpose
         sorted_gates = _sorted_gates(gates=gates)
-        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+        inner_loop_restart = _inner_loop_restart_gate(gates=gates)
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
         outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
 
@@ -712,8 +800,9 @@ def apply_transition(state, result, sflo_dir, gates=None):
         inner_loop_gate = sorted_gates[-3] if len(sorted_gates) >= 3 else None
         # Outer loop gate is the second to last (gate 4 in default pipeline)
         outer_loop_gate = sorted_gates[-2] if len(sorted_gates) >= 2 else None
-        # Inner loop restart gate is gate 2 in default pipeline
-        inner_loop_restart = sorted_gates[1] if len(sorted_gates) >= 2 else None
+        # Inner loop restart is the first dev gate. Gate 1.5 means this is no
+        # longer reliably the second configured gate.
+        inner_loop_restart = _inner_loop_restart_gate(gates=gates)
 
         # Config-driven restart: gates with on_reject_restart_at loop back
         # to a specific gate without touching inner_loops/outer_loops.
@@ -752,10 +841,20 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     write_state(sflo_dir, state)
                     return compute_next(state, sflo_dir, gates=gates)
                 from .archive import archive_to_logs
+                artifact_name = gate_info.get("artifact")
+                artifact_path = (
+                    os.path.join(sflo_dir, artifact_name) if artifact_name else None
+                )
+                _write_gate_feedback(
+                    sflo_dir,
+                    artifact_name,
+                    result.get("checks", []),
+                    artifact_path=artifact_path,
+                )
                 from .validate import save_gate_feedback
 
-                # Preserve the rejecting review's evidence before its artifact
-                # is archived and Developer is restarted.
+                # Add role-specific feedback after the deterministic validation
+                # errors/excerpt so both forms survive the rebuild.
                 save_gate_feedback(sflo_dir, n, gates=_gates)
 
                 artifacts_to_archive = []
@@ -768,9 +867,9 @@ def apply_transition(state, result, sflo_dir, gates=None):
                         artifact = entry.get("artifact") if isinstance(entry, dict) else None
                         if not artifact:
                             continue
-                        artifact_path = os.path.join(sflo_dir, artifact)
-                        if os.path.isfile(artifact_path):
-                            artifacts_to_archive.append(artifact_path)
+                        generated_path = os.path.join(sflo_dir, artifact)
+                        if os.path.isfile(generated_path):
+                            artifacts_to_archive.append(generated_path)
                     state["gates"].setdefault(str(gate_num), {})["status"] = "pending"
                 if artifacts_to_archive:
                     archive_to_logs(sflo_dir, artifacts_to_archive)
@@ -785,17 +884,54 @@ def apply_transition(state, result, sflo_dir, gates=None):
                     "next": compute_next(state, sflo_dir, gates=gates),
                 }
 
-        if n == inner_loop_gate:
-            state["inner_loops"] += 1
-            if state["inner_loops"] >= INNER_LOOP_MAX:
-                next_gate = _next_gate_after(n, gates=gates)
-                state["current_state"] = f"gate-{next_gate}"
+        failed_check_names = {
+            c.get("name") for c in result.get("checks", []) if not c.get("pass", True)
+        }
+        if n == 1 and "pm_precise_not_escalated" in failed_check_names:
+            fallback = (state.get("assignments") or {}).get("pm_fallback")
+            current_pm = (state.get("assignments") or {}).get("pm")
+            if fallback and fallback != current_pm:
+                state.setdefault("assignments", {})["pm"] = fallback
+                state["assignments"]["scope_tier"] = "standard"
+                artifact_path = os.path.join(sflo_dir, "SCOPE.md")
+                if os.path.isfile(artifact_path):
+                    from .archive import archive_to_logs
+
+                    archive_to_logs(sflo_dir, [artifact_path])
+                state["gates"].setdefault("1", {})["status"] = "pending"
+                state["current_state"] = "gate-1"
                 write_state(sflo_dir, state)
                 return {
                     **result,
-                    "state": "loop-inner-exhausted",
-                    "action": "proceed",
-                    "note": f"Inner loop exhausted ({INNER_LOOP_MAX} Dev<>QA cycles). Proceeding to PM verification.",
+                    "state": "pm-precise-escalated",
+                    "action": "loop_back",
+                    "reason": "pm-precise requested full PM reroute",
+                    "next": compute_next(state, sflo_dir, gates=gates),
+                }
+
+        if n == inner_loop_gate:
+            state["inner_loops"] += 1
+            if state["inner_loops"] >= INNER_LOOP_MAX:
+                # Inner loop exhausted — Dev<>QA failed to reach threshold
+                # INNER_LOOP_MAX times. Escalate instead of bypassing review.
+                gate_artifact = gate_info.get("artifact") or f"gate-{n}"
+                state["current_state"] = S_ESCALATE
+                state["escalate_reason"] = (
+                    f"Gate {n} ({gate_artifact}) below threshold for "
+                    f"{INNER_LOOP_MAX} Dev<>QA cycles. Escalating to human."
+                )
+                state["escalate_options"] = [
+                    f"raise the threshold via project pipeline.yaml and retry",
+                    f"fix {gate_artifact} manually and retry",
+                    f"delete {sflo_dir}/ and retry",
+                    "override threshold (not recommended)",
+                ]
+                write_state(sflo_dir, state)
+                return {
+                    **result,
+                    "state": "escalate",
+                    "action": "ask_human",
+                    "reason": state["escalate_reason"],
                     "inner_count": state["inner_loops"],
                     "next": compute_next(state, sflo_dir, gates=gates),
                 }

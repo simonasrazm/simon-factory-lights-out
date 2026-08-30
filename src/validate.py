@@ -4,13 +4,24 @@ import ntpath
 import os
 import re
 
-from .constants import (
-    GATES,
-    SFLO_ROOT,
-    GRADE_MAP,
-    GRADE_THRESHOLD,
-    outer_loop_gate_key,
-)
+from . import constants
+
+try:
+    from .constants import (
+        GATES,
+        SFLO_ROOT,
+        GRADE_MAP,
+        inner_loop_gate_key,
+        outer_loop_gate_key,
+    )
+except ImportError:  # Support legacy top-level imports from sflo/src on sys.path.
+    from constants import (
+        GATES,
+        SFLO_ROOT,
+        GRADE_MAP,
+        inner_loop_gate_key,
+        outer_loop_gate_key,
+    )
 
 
 def read_artifact(sflo_dir, filename):
@@ -537,7 +548,10 @@ def clean_artifacts_from(start_gate, sflo_dir, preserve=None):
     for the next agent, not gate outputs to regenerate.
     Gate artifacts (including PM-VERIFY.md) are moved to logs/ for debugging.
     """
-    from .archive import archive_to_logs
+    try:
+        from .archive import archive_to_logs
+    except ImportError:
+        from archive import archive_to_logs
 
     preserve_names = set()
     if preserve:
@@ -622,7 +636,10 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
     file-existence check only via validate_ext registry.
     """
     _gates = gates if gates is not None else GATES
-    from .validate_ext import get_validator
+    try:
+        from .validate_ext import get_validator
+    except ImportError:
+        from validate_ext import get_validator
 
     if gate_num not in _gates:
         return False, [
@@ -699,9 +716,9 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
             # Per-gate threshold: entry.threshold -> global GRADE_THRESHOLD
             entry_threshold_str = entry.get("threshold")
             entry_threshold = (
-                GRADE_MAP.get(entry_threshold_str, GRADE_THRESHOLD)
+                GRADE_MAP.get(entry_threshold_str, constants.GRADE_THRESHOLD)
                 if entry_threshold_str
-                else GRADE_THRESHOLD
+                else constants.GRADE_THRESHOLD
             )
             if entry_role == "qa":
                 qa_passed, qa_checks = _validate_qa_content(content, entry_threshold)
@@ -765,9 +782,9 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
     # Resolve per-gate threshold: gate entry threshold -> global GRADE_THRESHOLD
     gate_threshold_str = info.get("threshold") if isinstance(info, dict) else None
     effective_threshold = (
-        GRADE_MAP.get(gate_threshold_str, GRADE_THRESHOLD)
+        GRADE_MAP.get(gate_threshold_str, constants.GRADE_THRESHOLD)
         if gate_threshold_str
-        else GRADE_THRESHOLD
+        else constants.GRADE_THRESHOLD
     )
 
     # Single-entry review gates validate by role, not by numeric position.
@@ -910,6 +927,32 @@ def validate_gate(gate_num, sflo_dir, gates=None, output_dir=None):
                     ),
                 }
             )
+
+        pm_precise_escalated = bool(
+            re.search(r"(?im)^\s*(?:#{1,6}\s*)?VERDICT\s*:\s*ESCALATE\b", content)
+        )
+        checks.append(
+            {
+                "name": "pm_precise_not_escalated",
+                "pass": not pm_precise_escalated,
+                "detail": "pm-precise requested full PM reroute"
+                if pm_precise_escalated
+                else "OK",
+            }
+        )
+
+    elif gate_num == 1.5:
+        try:
+            from .validate_wb import validate_work_breakdown
+        except ImportError:
+            from validate_wb import validate_work_breakdown
+
+        scope_content, _ = read_artifact(sflo_dir, "SCOPE.md")
+        wb_checks = validate_work_breakdown(content, scope_content or "")
+        checks.extend(
+            {"name": c.name, "pass": c.passed, "detail": c.detail}
+            for c in wb_checks
+        )
 
     elif gate_num == 2:
         # Build success marker
