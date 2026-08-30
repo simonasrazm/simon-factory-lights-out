@@ -29,7 +29,22 @@ Tell your AI agent:
 
 > Install SFLO from https://github.com/simonasrazm/simon-factory-lights-out
 
-The agent will clone the repo, run setup, install the runtime skill, and configure the default files. Cursor installs a single global `/sflo` skill under `~/.cursor/skills/` while keeping only the stop hook in the project.
+The agent uses the checkout only as installation input. Setup transactionally
+installs one complete, self-contained `sflo` skill under the selected runtime's
+user skill directory, then configures project-local defaults and continuation
+hooks where the runtime needs them. The checkout can be deleted afterward.
+
+- Codex: `~/.agents/skills/sflo`
+- Cursor: `~/.cursor/skills/sflo`
+- Claude Code: `~/.claude/skills/sflo`
+- OpenClaw: `<install-dir>/skills/sflo`
+
+Ask the installed `sflo` skill to update SFLO, or run its bundled
+`src/update_skill.py`. The updater downloads into disposable staging, validates
+the full replacement before switching directories, refuses to overwrite
+unowned content, and restores the previous working installation if activation
+fails. Project `pipeline.yaml` and `.sflo` factory state are outside the
+installed skill and remain untouched.
 
 SFLO vendors a pinned snapshot of [Matt Pocock's composable engineering skills](https://github.com/mattpocock/skills), including provenance in `vendor/mattpocock-skills/SFLO-VENDOR.md`. Skills are opt-in per gate through `skills:`. The Codex default attaches TDD plus code-review to Developer and code-review to QA because those treatments earned [professional comparative evidence](docs/evaluation.md); other roles remain skill-free. Add or change skills only when role-specific evaluation shows a measurable gain over that role's no-skill configuration. Role SOULs, gate documents, and artifact contracts remain authoritative when a supplemental skill describes an incompatible workflow. Custom runners own their prompts and are outside this automatic attachment boundary. Vendor updates are deliberate: replace the snapshot from a reviewed release commit, inspect the selected skill and companion-file diff, then run the full test suite and prompt-budget check.
 
@@ -51,7 +66,7 @@ Each CLI run gets its own factory directory under `.sflo/`, named from the promp
 
 User-facing files are separate from factory state. By default they are written under the directory where SFLO was invoked; pass `--output-dir PATH` to target another existing project directory. The selected directory is persisted for resume, while `SCOPE.md` declares the required project-relative deliverable files that Gate 2, QA/Security, and the final ship check verify deterministically.
 
-Useful commands from the SFLO checkout:
+Useful commands from the installed `sflo` skill directory:
 
 - `python3 src/runner.py --list`
 - `printf '%s\n' 'continue the original task' | python3 src/runner.py --runtime <runtime> --resume fancy-click-counter`

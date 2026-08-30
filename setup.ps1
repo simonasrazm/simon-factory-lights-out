@@ -3,18 +3,20 @@
     Set up SFLO runtime integration files on Windows.
 
 .DESCRIPTION
-    Installs the selected SFLO runtime integration into an install directory.
-    Re-running is safe.
+    Installs a self-contained SFLO skill for the selected runtime and writes
+    project-local integration files into an install directory. Re-running is safe.
 
-    This script configures an existing SFLO checkout.
-    It does not clone, copy, or update SFLO from git, and it does not install OpenClaw integration.
-    OpenClaw setup remains in setup.sh.
+    The source checkout is used only as installation input. The installed
+    skill remains usable after that checkout is moved or deleted. This script
+    does not clone or update SFLO from git, and it does not install OpenClaw
+    integration. OpenClaw setup remains in setup.sh.
 
 .PARAMETER Runtime
     REQUIRED. One of: codex, cursor, claude-code.
 
 .PARAMETER InstallDir
-    Directory for runtime files such as .agents, .cursor, or .claude.
+    Project directory for pipeline, hook settings, and setup status.
+    Runtime skills are installed into their conventional user-level roots.
     Defaults to the current directory.
 
 .PARAMETER SfloHome
@@ -65,11 +67,11 @@ function Assert-SfloVendoredSkills {
 }
 
 function Get-SfloPythonCommand {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        return 'python'
-    }
     if (Get-Command py -ErrorAction SilentlyContinue) {
         return 'py -3'
+    }
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        return 'python'
     }
     return 'python'
 }
@@ -77,6 +79,38 @@ function Get-SfloPythonCommand {
 function Get-CursorSkillsRoot {
     $cursorHome = if ($env:CURSOR_HOME) { $env:CURSOR_HOME } else { Join-Path $HOME '.cursor' }
     return (Join-Path $cursorHome 'skills')
+}
+
+function Get-CodexSkillsRoot {
+    $agentsHome = if ($env:AGENTS_HOME) { $env:AGENTS_HOME } else { Join-Path $HOME '.agents' }
+    return (Join-Path $agentsHome 'skills')
+}
+
+function Get-ClaudeSkillsRoot {
+    $claudeHome = if ($env:CLAUDE_HOME) {
+        $env:CLAUDE_HOME
+    } elseif ($env:CLAUDE_CONFIG_DIR) {
+        $env:CLAUDE_CONFIG_DIR
+    } else {
+        Join-Path $HOME '.claude'
+    }
+    return (Join-Path $claudeHome 'skills')
+}
+
+function Get-SfloSkillDestination {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Runtime)
+
+    if ($Runtime -eq 'codex') {
+        return (Join-Path (Get-CodexSkillsRoot) 'sflo')
+    }
+    if ($Runtime -eq 'cursor') {
+        return (Join-Path (Get-CursorSkillsRoot) 'sflo')
+    }
+    if ($Runtime -eq 'claude-code') {
+        return (Join-Path (Get-ClaudeSkillsRoot) 'sflo')
+    }
+    throw "Unsupported Windows runtime: $Runtime"
 }
 
 function ConvertTo-ShSingleQuoted {
@@ -125,6 +159,17 @@ function Ensure-ObjectProperty {
     return $Object.$Name
 }
 
+function Write-Utf8NoBom {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
 function Write-JsonObject {
     [CmdletBinding()]
     param(
@@ -133,10 +178,24 @@ function Write-JsonObject {
     )
 
     $dir = Split-Path -Parent $Path
-    if ($dir) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $writeDir = if ($dir) { $dir } else { (Get-Location).Path }
+    New-Item -ItemType Directory -Path $writeDir -Force | Out-Null
+    $tempPath = Join-Path $writeDir ((Split-Path -Leaf $Path) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $content = ($Object | ConvertTo-Json -Depth 20) + "`n"
+    try {
+        Write-Utf8NoBom -Path $tempPath -Content $content
+        if (Test-Path $Path -PathType Leaf) {
+            try {
+                [System.IO.File]::Replace($tempPath, $Path, $null)
+            } catch [System.PlatformNotSupportedException] {
+                Move-Item -Path $tempPath -Destination $Path -Force
+            }
+        } else {
+            Move-Item -Path $tempPath -Destination $Path
+        }
+    } finally {
+        Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
     }
-    $Object | ConvertTo-Json -Depth 20 | Set-Content -Path $Path -Encoding UTF8
 }
 
 function Write-SetupStatus {
@@ -151,7 +210,7 @@ function Write-SetupStatus {
     $statusPath = Join-Path $sfloDir '.setup-status'
     $tempPath = Join-Path $sfloDir ('.setup-status.' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
-        Set-Content -Path $tempPath -Value $Status -Encoding UTF8
+        Write-Utf8NoBom -Path $tempPath -Content ($Status + "`n")
         Move-Item -Path $tempPath -Destination $statusPath -Force
     } finally {
         Remove-Item -Path $tempPath -Force -ErrorAction SilentlyContinue
@@ -190,12 +249,20 @@ function Set-StopHook {
 
     $settings = Read-JsonObject -Path $SettingsFile
     $hooks = Ensure-ObjectProperty -Object $settings -Name 'hooks'
-    $hooks | Add-Member -Force -MemberType NoteProperty -Name 'Stop' -Value @(
-        [pscustomobject]@{
-            type = 'command'
-            command = $HookCommand
+    $sfloHookPattern = 'src[\\/]hooks[\\/]claude-code[\\/]stop_hook\.py'
+    $existingStop = @()
+    foreach ($propertyName in @('Stop', 'stop')) {
+        if ($hooks.PSObject.Properties[$propertyName]) {
+            $existingStop += @($hooks.$propertyName) | Where-Object {
+                -not (([string]$_.command) -match $sfloHookPattern)
+            }
         }
-    )
+    }
+    $sfloHook = [pscustomobject]@{
+        type = 'command'
+        command = $HookCommand
+    }
+    $hooks | Add-Member -Force -MemberType NoteProperty -Name 'Stop' -Value (@($sfloHook) + @($existingStop))
     if ($hooks.PSObject.Properties['stop']) {
         $hooks.PSObject.Properties.Remove('stop')
     }
@@ -213,10 +280,11 @@ function Set-CursorStopHook {
     $data | Add-Member -Force -MemberType NoteProperty -Name 'version' -Value 1
     $hooks = Ensure-ObjectProperty -Object $data -Name 'hooks'
 
+    $sfloHookPattern = 'src[\\/]hooks[\\/]cursor[\\/]stop_hook\.py'
     $existingStop = @()
     if ($hooks.PSObject.Properties['stop']) {
         $existingStop = @($hooks.stop) | Where-Object {
-            -not (([string]$_.command) -match 'stop_hook\.py')
+            -not (([string]$_.command) -match $sfloHookPattern)
         }
     }
 
@@ -228,54 +296,39 @@ function Set-CursorStopHook {
     Write-JsonObject -Path $HooksFile -Object $data
 }
 
-function Write-RenderedTemplate {
+function Install-SfloSelfContainedSkill {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][string]$SourceFile,
-        [Parameter(Mandatory)][string]$DestinationFile,
-        [Parameter(Mandatory)][string]$SfloHome
+        [Parameter(Mandatory)][string]$SfloHome,
+        [Parameter(Mandatory)][string]$Runtime,
+        [Parameter(Mandatory)][string]$DestinationDir
     )
 
-    if (-not (Test-Path $SourceFile)) {
-        throw "SFLO template not found at $SourceFile."
+    $installer = Join-Path $SfloHome 'src\install_skill.py'
+    if (-not (Test-Path $installer -PathType Leaf)) {
+        throw "SFLO skill installer not found at $installer."
     }
 
-    $dir = Split-Path -Parent $DestinationFile
-    if ($dir) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-
-    $runner = Join-Path $SfloHome 'src\runner.py'
-    $scaffold = Join-Path $SfloHome 'src\scaffold.py'
-    $cursorStopHook = Join-Path $SfloHome 'src\hooks\cursor\stop_hook.py'
-    $content = (Get-Content $SourceFile -Raw).Replace('{{SFLO_PATH}}', $SfloHome)
-    $content = $content.Replace('{{SFLO_RUNNER_SH}}', (ConvertTo-ShSingleQuoted -Value $runner))
-    $content = $content.Replace('{{SFLO_SCAFFOLD_SH}}', (ConvertTo-ShSingleQuoted -Value $scaffold))
-    $content = $content.Replace('{{SFLO_CURSOR_STOP_HOOK_SH}}', (ConvertTo-ShSingleQuoted -Value $cursorStopHook))
-    Set-Content -Path $DestinationFile -Value $content -Encoding UTF8
-}
-
-function Install-SfloSkillDirectory {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$SourceDir,
-        [Parameter(Mandatory)][string]$DestinationDir,
-        [Parameter(Mandatory)][string]$SfloHome
+    $arguments = @(
+        $installer,
+        '--source', $SfloHome,
+        '--runtime', $Runtime,
+        '--destination', $DestinationDir
     )
-
-    if (-not (Test-Path $SourceDir)) {
-        throw "SFLO skill source not found at $SourceDir."
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        & py -3 @arguments
+    } elseif (Get-Command python -ErrorAction SilentlyContinue) {
+        & python @arguments
+    } else {
+        throw 'Python 3 is required to install the SFLO skill.'
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "SFLO skill installer failed for $Runtime (exit $LASTEXITCODE)."
     }
 
-    if (Test-Path $DestinationDir) {
-        Remove-Item -Path $DestinationDir -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
-    Copy-Item -Path (Join-Path $SourceDir '*') -Destination $DestinationDir -Recurse -Force
-
-    $skillFile = Join-Path $DestinationDir 'SKILL.md'
-    if (Test-Path $skillFile) {
-        Write-RenderedTemplate -SourceFile $skillFile -DestinationFile $skillFile -SfloHome $SfloHome
+    $installedRunner = Join-Path $DestinationDir 'src\runner.py'
+    if (-not (Test-Path $installedRunner -PathType Leaf)) {
+        throw "SFLO installation did not produce $installedRunner."
     }
 }
 
@@ -283,6 +336,16 @@ function Test-SfloOwnedSkillDirectory {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
+    $manifestPath = Join-Path $Path '.sflo-install.json'
+    if (Test-Path $manifestPath -PathType Leaf) {
+        try {
+            $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+            return ($manifest.product -eq 'sflo')
+        } catch {
+            # A corrupt marker is not proof of ownership. Preserve the directory.
+            return $false
+        }
+    }
     if (Test-Path (Join-Path $Path '.sflo-owned')) {
         return $true
     }
@@ -291,24 +354,6 @@ function Test-SfloOwnedSkillDirectory {
         return ((Get-Content $skillFile -Raw) -match 'SFLO Factory Triggering')
     }
     return $false
-}
-
-function Install-SfloOwnedSkillDirectory {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$SourceDir,
-        [Parameter(Mandatory)][string]$DestinationDir,
-        [Parameter(Mandatory)][string]$SfloHome
-    )
-
-    if (Test-Path $DestinationDir) {
-        if (-not (Test-SfloOwnedSkillDirectory -Path $DestinationDir)) {
-            throw "Skill already exists at $DestinationDir and is not SFLO-owned."
-        }
-        Remove-Item -Path $DestinationDir -Recurse -Force
-    }
-    Install-SfloSkillDirectory -SourceDir $SourceDir -DestinationDir $DestinationDir -SfloHome $SfloHome
-    Set-Content -Path (Join-Path $DestinationDir '.sflo-owned') -Value 'sflo' -Encoding UTF8
 }
 
 function Remove-SfloOwnedSkillDirectory {
@@ -387,7 +432,7 @@ function Remove-SfloOldAgentsBlock {
     if ([string]::IsNullOrWhiteSpace($trimmed)) {
         Remove-Item -Path $AgentsFile -Force
     } else {
-        Set-Content -Path $AgentsFile -Value ($trimmed + "`n") -Encoding UTF8
+        Write-Utf8NoBom -Path $AgentsFile -Content ($trimmed + "`n")
     }
 }
 
@@ -403,12 +448,19 @@ function Install-SfloCodex {
     Write-Host "==> Installing SFLO Codex integration" -ForegroundColor Cyan
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    $skillSrc = Join-Path $SfloHome 'src\hooks\codex\skills\sflo'
-    $skillDst = Join-Path $InstallDir '.agents\skills\sflo'
-    Install-SfloOwnedSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
+    $skillDst = Get-SfloSkillDestination -Runtime 'codex'
+    Install-SfloSelfContainedSkill -SfloHome $SfloHome -Runtime 'codex' -DestinationDir $skillDst
+    Remove-SfloOwnedSkillDirectory -Path (Join-Path (Get-CodexSkillsRoot) 'sflo-factory-triggering')
+
+    # Remove prior project-local SFLO wrappers only after the global,
+    # self-contained installation has succeeded. Never remove unowned skills.
+    $oldProjectSkill = Join-Path $InstallDir '.agents\skills\sflo'
+    if ((Resolve-SfloPath -Path $oldProjectSkill) -ne (Resolve-SfloPath -Path $skillDst)) {
+        Remove-SfloOwnedSkillDirectory -Path $oldProjectSkill
+    }
     Remove-SfloOwnedSkillDirectory -Path (Join-Path $InstallDir '.agents\skills\sflo-factory-triggering')
     Remove-SfloOldAgentsBlock -AgentsFile (Join-Path $InstallDir 'AGENTS.md')
-    Write-Host "    Codex sflo skill installed" -ForegroundColor Green
+    Write-Host "    Codex self-contained sflo skill installed at $skillDst" -ForegroundColor Green
 
     if (-not (Get-Command codex -ErrorAction SilentlyContinue)) {
         Write-Host "    NOTE: codex CLI not on PATH. Install/login before triggering SFLO." -ForegroundColor Yellow
@@ -426,24 +478,21 @@ function Install-SfloCursor {
 
     Assert-SfloCheckout -SfloHome $SfloHome
 
-    $stopHook = Join-Path $SfloHome 'src\hooks\cursor\stop_hook.py'
-    $skillSrc = Join-Path $SfloHome 'src\hooks\cursor\skills\sflo'
-    if (-not (Test-Path $stopHook)) { throw "Cursor stop hook not found at $stopHook." }
-    if (-not (Test-Path $skillSrc)) { throw "Cursor factory-triggering skill not found at $skillSrc." }
-
     Write-Host "==> Installing SFLO Cursor integration" -ForegroundColor Cyan
     $cursorDir = Join-Path $InstallDir '.cursor'
     $hooksFile = Join-Path $cursorDir 'hooks.json'
     $rulesDir = Join-Path $cursorDir 'rules'
-    $skillsRoot = Get-CursorSkillsRoot
     $cursorHome = if ($env:CURSOR_HOME) { $env:CURSOR_HOME } else { Join-Path $HOME '.cursor' }
     $compatRoot = Join-Path $cursorHome 'skills-cursor'
 
+    $skillDst = Get-SfloSkillDestination -Runtime 'cursor'
+    Install-SfloSelfContainedSkill -SfloHome $SfloHome -Runtime 'cursor' -DestinationDir $skillDst
+    $installedSfloHome = $skillDst
+    $stopHook = Join-Path $installedSfloHome 'src\hooks\cursor\stop_hook.py'
+    if (-not (Test-Path $stopHook -PathType Leaf)) { throw "Installed Cursor stop hook not found at $stopHook." }
     $python = Get-SfloPythonCommand
     Set-CursorStopHook -HooksFile $hooksFile -HookCommand "$python $(ConvertTo-PowerShellSingleQuoted -Value $stopHook)"
-    $skillDst = Join-Path $skillsRoot 'sflo'
-    Install-SfloOwnedSkillDirectory -SourceDir $skillSrc -DestinationDir $skillDst -SfloHome $SfloHome
-    $oldSkillDst = Join-Path $skillsRoot 'sflo-factory-triggering'
+    $oldSkillDst = Join-Path (Get-CursorSkillsRoot) 'sflo-factory-triggering'
     Remove-SfloOwnedSkillDirectory -Path $oldSkillDst
     Remove-SfloOwnedSkillDirectory -Path (Join-Path $compatRoot 'sflo')
     Remove-SfloOwnedSkillDirectory -Path (Join-Path $compatRoot 'sflo-factory-triggering')
@@ -462,7 +511,7 @@ function Install-SfloCursor {
     if ((Test-Path $rulesDir) -and -not (Get-ChildItem -Path $rulesDir -Force)) {
         Remove-Item -Path $rulesDir -Force
     }
-    Write-Host "    .cursor hook and global factory-triggering skill installed" -ForegroundColor Green
+    Write-Host "    .cursor hook and self-contained global sflo skill installed" -ForegroundColor Green
 
     if (-not (Get-Command cursor-agent -ErrorAction SilentlyContinue)) {
         Write-Host "    NOTE: cursor-agent CLI not on PATH. Install/login before triggering SFLO." -ForegroundColor Yellow
@@ -478,16 +527,18 @@ function Install-SfloClaudeCode {
 
     Assert-SfloCheckout -SfloHome $SfloHome
 
-    $stopHook = Join-Path $SfloHome 'src\hooks\claude-code\stop_hook.py'
-    if (-not (Test-Path $stopHook)) {
-        throw "Claude Code stop hook not found at $stopHook."
-    }
-
     Write-Host "==> Installing SFLO Claude Code integration" -ForegroundColor Cyan
+    $skillDst = Get-SfloSkillDestination -Runtime 'claude-code'
+    Install-SfloSelfContainedSkill -SfloHome $SfloHome -Runtime 'claude-code' -DestinationDir $skillDst
+    $installedSfloHome = $skillDst
+    $stopHook = Join-Path $installedSfloHome 'src\hooks\claude-code\stop_hook.py'
+    if (-not (Test-Path $stopHook -PathType Leaf)) {
+        throw "Installed Claude Code stop hook not found at $stopHook."
+    }
     $settingsFile = Join-Path $InstallDir '.claude\settings.json'
     $python = Get-SfloPythonCommand
     Set-StopHook -SettingsFile $settingsFile -HookCommand "$python $(ConvertTo-PowerShellSingleQuoted -Value $stopHook)"
-    Write-Host "    .claude/settings.json updated" -ForegroundColor Green
+    Write-Host "    .claude/settings.json and self-contained global sflo skill installed" -ForegroundColor Green
 }
 
 if ($DefineFunctionsOnly) {
@@ -525,7 +576,8 @@ try {
     }
 
     $status = Write-SetupStatus -InstallDir $InstallDir -Status 'ready'
-    Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir -SfloHome $SfloHome -Status $status -Ok $true
+    $installedSfloHome = Get-SfloSkillDestination -Runtime $Runtime
+    Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir -SfloHome $installedSfloHome -Status $status -Ok $true
 } catch {
     $message = $_.Exception.Message
     try { Write-SetupStatus -InstallDir $InstallDir -Status 'failed' | Out-Null } catch {}

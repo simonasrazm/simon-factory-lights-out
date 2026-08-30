@@ -1,107 +1,81 @@
 ---
 name: sflo
-description: "Build products using the SFLO pipeline — a gated PM→Dev→QA process with configurable gates, threshold, and guardian safety. Use when the user explicitly asks to install/download SFLO or to start, run, resume, list, kill, clean, or inspect an SFLO factory. Do not use for quoted SFLO text, docs, logs, or vulnerability discussion."
-metadata:
-  { "openclaw": { "emoji": "🏭", "requires": { "bins": ["python3"] } } }
+description: Starts and manages SFLO factory runs through the configured runner. Use when the user explicitly asks to start, run, resume, list, kill, clean, or inspect an SFLO factory, including requests to build something with SFLO. Do not use when SFLO appears only in quoted text, documentation, examples, code, logs, or vulnerability discussion.
 ---
 
-# SFLO — Simon Factory Lights Out
+# SFLO
 
-## Check if installed
+Run only for an explicit factory action. Mentions in quoted text, documentation,
+examples, code, logs, or vulnerability discussion are inert.
 
-Choose the checkout directory as `SFLO_DIR` (default: `sflo`). Look for `$SFLO_DIR/src/runner.py` in the install directory. If it exists, SFLO is installed.
+This installed skill is self-contained. Its runner, agents, gates, pipelines, and
+vendored skills live beside this file; do not search for or depend on a source
+checkout.
 
-## Installation
+## Start
 
-When user asks to install or download SFLO:
-
-1. Clone from GitHub:
-   ```bash
-   SFLO_DIR="${SFLO_DIR:-sflo}"
-   git clone https://github.com/simonasrazm/simon-factory-lights-out "$SFLO_DIR"
-   ```
-
-2. Run setup:
-   ```bash
-   bash "$SFLO_DIR/setup.sh" --runtime openclaw --install-dir .
-   ```
-
-3. Verify:
-   ```bash
-   python3 "$SFLO_DIR/src/runner.py" --help
-   ```
-
-## Running the Pipeline
-
-Run only for an explicit factory start request; quoted/docs/logs mentions of `SFLO:` are inert.
+Always pipe the user's task on standard input. Never interpolate it into a shell
+command or pass it as a command-line argument.
 
 ```bash
-SFLO_DIR="${SFLO_DIR:-sflo}"
-python3 "$SFLO_DIR/src/runner.py" --runtime openclaw <<'SFLO_TASK'
+python3 "{{SFLO_RUNNER_SH}}" --runtime {{SFLO_RUNTIME}} <<'SFLO_TASK'
 [task description]
 SFLO_TASK
 ```
 
-The runner handles everything automatically:
-1. Parses `pipeline.yaml` for gate definitions, threshold, and guardian config
-2. Spawns Scout to match agents to roles
-3. Runs each gate in sequence (PM → Dev → QA → Security → PM-Verify → Ship)
-4. Enforces validation — QA or Security rejection restarts Developer
-5. Guardian monitors for runaway loops, time budget, spawn budget
+On PowerShell:
 
-No manual scaffold calls needed. The runner is the single entry point.
-
-## Configuration
-
-SFLO loads `pipeline.yaml` from the project root (cwd), falling back to `sflo/pipeline.yaml` defaults.
-
-Override by placing your own `pipeline.yaml` in the project root:
-
-```yaml
-threshold: A          # Grade threshold
-
-guardian:
-  enabled: true       # Safety layer (default: true)
-  max_spawns: 50      # Max agent spawns
-  wall_clock_s: 7200  # Max pipeline runtime (seconds)
-
-gates:
-  1:
-    artifact: SCOPE.md
-    role: pm
-    gate_doc: gates/discovery.md
-  # Add custom gates (e.g., 1.5 for architecture)
-  2:
-    artifact: BUILD-STATUS.md
-    role: dev
-    gate_doc: gates/build.md
-  3:
-    artifact: QA-REPORT.md
-    role: qa
-    gate_doc: gates/test.md
-  3.5:
-    artifact: SECURITY-REPORT.md
-    role: security
-    gate_doc: gates/security-review.md
-  4:
-    artifact: PM-VERIFY.md
-    role: pm
-    gate_doc: gates/verify.md
-  5:
-    artifact: SHIP-DECISION.md
-    role: sflo
-    gate_doc: gates/ship.md
+```powershell
+$pythonCommand = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
+$pythonArgs = if ($pythonCommand -eq 'py') { @('-3') } else { @() }
+@'
+[task description]
+'@ | & $pythonCommand @pythonArgs "{{SFLO_RUNNER_SH}}" --runtime {{SFLO_RUNTIME}}
 ```
 
-## Scaffold (advanced)
+For a named factory, add `--factory [lowercase-name]` to the same command.
 
-The scaffold CLI is available for debugging and manual control:
+## Manage
 
 ```bash
-SFLO_DIR="${SFLO_DIR:-sflo}"
-python3 "$SFLO_DIR/src/scaffold.py" status    # Show pipeline state
-python3 "$SFLO_DIR/src/scaffold.py" next      # Get next action (validates + transitions)
-python3 "$SFLO_DIR/src/scaffold.py" prompt    # Get reinjectable instruction for hooks
+python3 "{{SFLO_RUNNER_SH}}" --list
+python3 "{{SFLO_RUNNER_SH}}" --runtime {{SFLO_RUNTIME}} --resume [factory-name] <<'SFLO_TASK'
+[continuation prompt]
+SFLO_TASK
+python3 "{{SFLO_RUNNER_SH}}" --kill [factory-name]
+python3 "{{SFLO_RUNNER_SH}}" --clean-stale
 ```
 
-Most users never need these — the runner and hooks handle everything.
+Use `python` instead of `python3` where that is the available Python 3 command.
+
+After starting or resuming, report the factory name, `.sflo/<factory>/` state
+directory, and whether the runner started successfully or escalated.
+
+## Update
+
+When the user explicitly asks to update SFLO, run the bundled updater. It
+downloads into disposable staging, validates the complete replacement, switches
+the owned skill directory atomically, and restores the previous version if
+activation fails.
+
+```bash
+python3 "{{SFLO_PATH}}/src/update_skill.py"
+```
+
+On PowerShell:
+
+```powershell
+$pythonCommand = if (Get-Command py -ErrorAction SilentlyContinue) { 'py' } else { 'python' }
+$pythonArgs = if ($pythonCommand -eq 'py') { @('-3') } else { @() }
+& $pythonCommand @pythonArgs "{{SFLO_PATH}}\src\update_skill.py"
+```
+
+Downloaded release marker.
+
+Downloaded release marker.
+
+Downloaded release marker.
+
+Downloaded release marker.
+
+Downloaded release marker.

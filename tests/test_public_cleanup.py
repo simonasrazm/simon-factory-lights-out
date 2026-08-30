@@ -1,5 +1,6 @@
 """Public SFLO setup cleanup regressions."""
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -18,6 +19,9 @@ requires_posix_shell = pytest.mark.skipif(
 def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
     """Codex setup installs the sflo skill and removes its legacy name."""
     install_dir = tmp_path / "install"
+    home_dir = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home_dir)
     legacy_skill = (
         install_dir / ".agents" / "skills" / "sflo-factory-triggering"
     )
@@ -25,6 +29,10 @@ def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
     (legacy_skill / "SKILL.md").write_text(
         "# SFLO Factory Triggering\n", encoding="utf-8"
     )
+    old_short_skill = install_dir / ".agents" / "skills" / "sflo"
+    old_short_skill.mkdir(parents=True)
+    (old_short_skill / ".sflo-owned").write_text("sflo\n", encoding="utf-8")
+    (old_short_skill / "SKILL.md").write_text("# SFLO Factory Triggering\n")
 
     result = subprocess.run(
         [
@@ -38,6 +46,7 @@ def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
             str(SFLO_ROOT),
         ],
         cwd=SFLO_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -46,16 +55,16 @@ def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     assert '"install_dir":"' + str(install_dir) + '"' in result.stdout
     assert '"workspace":' not in result.stdout
-    skill = (
-        install_dir / ".agents" / "skills" / "sflo" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+    installed = home_dir / ".agents" / "skills" / "sflo"
+    skill = (installed / "SKILL.md").read_text(encoding="utf-8")
     assert "name: sflo" in skill
-    assert (
-        install_dir / ".agents" / "skills" / "sflo" / ".sflo-owned"
-    ).is_file()
+    assert (installed / ".sflo-install.json").is_file()
+    assert (installed / "src" / "runner.py").is_file()
     assert not legacy_skill.exists()
+    assert not old_short_skill.exists()
     assert "--runtime codex" in skill
-    assert str(SFLO_ROOT) in skill
+    assert str(installed) in skill
+    assert str(SFLO_ROOT) not in skill
     assert "{{SFLO_PATH}}" not in skill
     assert "{{SFLO_RUNNER_SH}}" not in skill
     assert "<<'SFLO_TASK'" in skill
@@ -69,7 +78,10 @@ def test_setup_sh_codex_install_dir_writes_factory_skill(tmp_path):
 def test_setup_sh_codex_does_not_overwrite_unowned_sflo_skill(tmp_path):
     """The concise name must not clobber an unrelated project skill."""
     install_dir = tmp_path / "install"
-    existing = install_dir / ".agents" / "skills" / "sflo" / "SKILL.md"
+    home_dir = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home_dir)
+    existing = home_dir / ".agents" / "skills" / "sflo" / "SKILL.md"
     existing.parent.mkdir(parents=True)
     existing.write_text("name: sflo\n# User-owned skill\n", encoding="utf-8")
 
@@ -85,6 +97,7 @@ def test_setup_sh_codex_does_not_overwrite_unowned_sflo_skill(tmp_path):
             str(SFLO_ROOT),
         ],
         cwd=SFLO_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -100,6 +113,8 @@ def test_setup_sh_codex_removes_old_agents_trigger_block(tmp_path):
     """Codex setup removes old token-trigger AGENTS blocks without clobbering user text."""
     install_dir = tmp_path / "install"
     install_dir.mkdir()
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "home")
     agents_file = install_dir / "AGENTS.md"
     agents_file.write_text(
         "Keep this.\n\n"
@@ -123,6 +138,7 @@ def test_setup_sh_codex_removes_old_agents_trigger_block(tmp_path):
             str(SFLO_ROOT),
         ],
         cwd=SFLO_ROOT,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -168,6 +184,21 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     )
     stale_compat_skill.parent.mkdir(parents=True)
     stale_compat_skill.write_text("# SFLO Factory Triggering\n", encoding="utf-8")
+    hooks_file = install_dir / ".cursor" / "hooks.json"
+    hooks_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "hooks": {
+                    "stop": [
+                        {"command": "python tools/stop_hook.py"},
+                        {"command": "python old/src/hooks/cursor/stop_hook.py"},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = subprocess.run(
         [
@@ -195,18 +226,19 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
         / "sflo"
         / "SKILL.md"
     ).read_text(encoding="utf-8")
-    assert "SFLO Factory Triggering" in skill
+    assert "# SFLO" in skill
     assert "name: sflo" in skill
-    assert "disable-model-invocation: true" in skill
     assert "--runtime cursor" in skill
-    assert str(SFLO_ROOT) in skill
+    installed = home_dir / ".cursor" / "skills" / "sflo"
+    assert str(installed) in skill
+    assert str(SFLO_ROOT) not in skill
     assert "{{SFLO_PATH}}" not in skill
     assert "{{SFLO_RUNNER_SH}}" not in skill
     assert "<<'SFLO_TASK'" in skill
     assert (install_dir / "pipeline.yaml").read_text(encoding="utf-8") == (
         SFLO_ROOT / "pipeline-cursor.yaml"
     ).read_text(encoding="utf-8")
-    assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
+    assert (old_global_skill.parents[1] / "sflo" / ".sflo-install.json").is_file()
     assert not stale_compat_skill.parent.exists()
     assert not rule_file.exists()
     assert not duplicate_rule.exists()
@@ -214,6 +246,62 @@ def test_setup_sh_cursor_installs_global_factory_skill(tmp_path):
     assert not old_global_skill.parent.exists()
     assert not old_skills_cursor_skill.parent.exists()
     assert (install_dir / ".cursor" / "hooks.json").is_file()
+    installed_hooks = json.loads(hooks_file.read_text(encoding="utf-8"))["hooks"]["stop"]
+    commands = [entry["command"] for entry in installed_hooks]
+    assert "python tools/stop_hook.py" in commands
+    assert "python old/src/hooks/cursor/stop_hook.py" not in commands
+
+
+@requires_posix_shell
+def test_setup_sh_claude_preserves_unrelated_stop_hooks(tmp_path):
+    install_dir = tmp_path / "install"
+    settings = install_dir / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {"type": "command", "command": "python tools/stop_hook.py"},
+                        {
+                            "type": "command",
+                            "command": "python old/src/hooks/claude-code/stop_hook.py",
+                        },
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path / "home")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "setup.sh"),
+            "--runtime",
+            "claude-code",
+            "--install-dir",
+            str(install_dir),
+            "--sflo-path",
+            str(SFLO_ROOT),
+        ],
+        cwd=SFLO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    commands = [
+        entry["command"]
+        for entry in json.loads(settings.read_text(encoding="utf-8"))["hooks"]["Stop"]
+    ]
+    assert "python tools/stop_hook.py" in commands
+    assert "python old/src/hooks/claude-code/stop_hook.py" not in commands
+    assert any(".claude/skills/sflo/src/hooks/claude-code/stop_hook.py" in command for command in commands)
 
 
 @requires_posix_shell
@@ -244,8 +332,8 @@ def test_setup_sh_rejects_removed_workspace_flag(tmp_path):
 
 
 @requires_posix_shell
-def test_hook_installer_openclaw_copies_hook(tmp_path):
-    """OpenClaw hook repair copies the hook into the chosen install dir."""
+def test_hook_installer_openclaw_links_hook_to_installed_payload(tmp_path):
+    """OpenClaw hook repair links the active hook so updates cannot drift."""
     install_dir = tmp_path / "install"
     env = os.environ.copy()
     env["HOME"] = str(tmp_path / "home")
@@ -269,15 +357,14 @@ def test_hook_installer_openclaw_copies_hook(tmp_path):
     assert result.returncode == 0, result.stderr + result.stdout
     copied = install_dir / "hooks" / "sflo-pipeline"
     assert (copied / "handler.ts").is_file()
-    assert (copied / ".sflo-home").read_text(encoding="utf-8") == str(SFLO_ROOT) + "\n"
-    assert not copied.is_symlink()
-    assert "Copied:" in result.stdout
-    assert "Symlinked:" not in result.stdout
+    assert copied.is_symlink()
+    assert copied.resolve() == (SFLO_ROOT / "src/hooks/openclaw/sflo-pipeline").resolve()
+    assert "Linked:" in result.stdout
 
 
 @requires_posix_shell
-def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
-    """Cursor hook repair installs the guarded global factory-triggering skill."""
+def test_hook_installer_cursor_repairs_only_project_hook(tmp_path):
+    """Cursor hook repair does not mutate globally installed skills."""
     install_dir = tmp_path / "install"
     home_dir = tmp_path / "home"
     old_rule = install_dir / ".cursor" / "rules" / "sflo.mdc"
@@ -325,31 +412,46 @@ def test_hook_installer_cursor_installs_global_factory_skill(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
-    skill = (
-        home_dir
-        / ".cursor"
-        / "skills"
-        / "sflo"
-        / "SKILL.md"
-    ).read_text(encoding="utf-8")
-    assert "name: sflo" in skill
-    assert "disable-model-invocation: true" in skill
-    assert "--runtime cursor" in skill
-    assert str(SFLO_ROOT) in skill
-    assert "{{SFLO_PATH}}" not in skill
-    assert "{{SFLO_RUNNER_SH}}" not in skill
-    assert "<<'SFLO_TASK'" in skill
     assert (install_dir / "pipeline.yaml").read_text(encoding="utf-8") == (
         SFLO_ROOT / "pipeline-cursor.yaml"
     ).read_text(encoding="utf-8")
-    assert (old_global_skill.parents[1] / "sflo" / ".sflo-owned").is_file()
-    assert not stale_compat_skill.parent.exists()
+    assert old_global_skill.is_file()
+    assert old_skills_cursor_skill.is_file()
+    assert stale_compat_skill.is_file()
     assert not old_rule.exists()
     assert not duplicate_rule.exists()
     assert not (install_dir / ".cursor" / "rules").exists()
-    assert not old_global_skill.parent.exists()
-    assert not old_skills_cursor_skill.parent.exists()
     assert (install_dir / ".cursor" / "hooks.json").is_file()
+
+
+@requires_posix_shell
+def test_hook_installer_cursor_preserves_custom_pipeline(tmp_path):
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    custom = "threshold: B\ncustom: keep-me\n"
+    (install_dir / "pipeline.yaml").write_text(custom, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SFLO_ROOT / "src/hooks/install.sh"),
+            "--runtime",
+            "cursor",
+            "--install-dir",
+            str(install_dir),
+        ],
+        cwd=SFLO_ROOT,
+        env={**os.environ, "HOME": str(tmp_path / "home")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (install_dir / "pipeline.yaml").read_text(encoding="utf-8") == custom
+    assert (install_dir / "pipeline.yaml.sflo-default").read_text(
+        encoding="utf-8"
+    ) == (SFLO_ROOT / "pipeline-cursor.yaml").read_text(encoding="utf-8")
 
 
 def test_cursor_hook_template_uses_shell_quoted_placeholder():
@@ -422,7 +524,12 @@ def test_setup_sh_openclaw_without_install_dir_uses_current_directory(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr + result.stdout
-    assert (install_dir / "hooks" / "sflo-pipeline" / "handler.ts").is_file()
+    hook = install_dir / "hooks" / "sflo-pipeline"
+    assert (hook / "handler.ts").is_file()
+    assert hook.is_symlink()
+    assert hook.resolve() == (
+        install_dir / "skills" / "sflo" / "src/hooks/openclaw/sflo-pipeline"
+    ).resolve()
     assert not (configured_workspace / "hooks" / "sflo-pipeline").exists()
     assert '"install_dir":"' + str(install_dir) + '"' in result.stdout
 
@@ -572,8 +679,8 @@ def test_setup_ps1_declares_reduced_windows_integration_scope():
     """PowerShell setup contract is explicit where it differs from bash setup."""
     text = (SFLO_ROOT / "setup.ps1").read_text(encoding="utf-8")
 
-    assert "configures an existing SFLO checkout" in text
-    assert "does not clone, copy, or update SFLO from git" in text
+    assert "source checkout is used only as installation input" in text
+    assert "does not clone or update SFLO from git" in text
     assert "OpenClaw setup remains in setup.sh" in text
 
 
@@ -587,7 +694,7 @@ def test_setup_ps1_writes_all_runtime_status_and_result():
     assert "$status = Write-SetupStatus -InstallDir $InstallDir -Status 'ready'" in text
     assert (
         "Write-SetupResult -Runtime $Runtime -InstallDir $InstallDir "
-        "-SfloHome $SfloHome -Status $status -Ok $true"
+        "-SfloHome $installedSfloHome -Status $status -Ok $true"
     ) in text
     assert "-Status 'failed' -Ok $false" in text
     assert "function Assert-SfloVendoredSkills" in text
@@ -611,7 +718,7 @@ def test_setup_ps1_cursor_uses_only_primary_skills_directory():
 
     assert "function Get-CursorSkillsRoot" in text
     assert "function Get-CursorSkillsRoots" not in text
-    assert "$skillsRoot = Get-CursorSkillsRoot" in text
+    assert "$skillDst = Get-SfloSkillDestination -Runtime 'cursor'" in text
     assert "foreach ($skillsRoot in $skillsRoots)" not in text
     assert "Join-Path $cursorHome 'skills-cursor'" in text
     assert "Remove-SfloOwnedSkillDirectory -Path (Join-Path $compatRoot 'sflo')" in text
@@ -627,9 +734,10 @@ def test_setup_ps1_codex_installs_short_skill_name_and_removes_legacy():
     """Windows Codex setup matches the public sflo skill name."""
     text = (SFLO_ROOT / "setup.ps1").read_text(encoding="utf-8")
 
-    assert "src\\hooks\\codex\\skills\\sflo'" in text
-    assert ".agents\\skills\\sflo'" in text
-    assert "Install-SfloOwnedSkillDirectory -SourceDir $skillSrc" in text
+    assert "function Get-CodexSkillsRoot" in text
+    assert "Join-Path $HOME '.agents'" in text
+    assert "Join-Path $agentsHome 'skills'" in text
+    assert "Install-SfloSelfContainedSkill -SfloHome $SfloHome -Runtime 'codex'" in text
     assert (
         "Remove-SfloOwnedSkillDirectory -Path "
         "(Join-Path $InstallDir '.agents\\skills\\sflo-factory-triggering')"
@@ -657,17 +765,14 @@ def test_setup_sh_does_not_provision_python_runtime_venv():
     assert ".sflo/.venv" not in text
 
 
-def test_public_skill_uses_required_runtime_and_install_dir():
-    """Root OpenClaw skill install instructions match setup.sh contract."""
+def test_public_skill_is_single_runtime_neutral_self_contained_template():
+    """The canonical skill renders one selected runtime and bundled runner."""
     text = (SFLO_ROOT / "skill" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "SFLO_DIR" in text
-    assert "sflo/src/runner.py" not in text
-    assert "sflo/src/scaffold.py" not in text
-    assert "bash sflo/setup.sh\n" not in text
-    assert "(default: B+)" not in text
-    assert "--runtime" in text
-    assert "--install-dir" in text
+    assert "{{SFLO_RUNNER_SH}}" in text
+    assert "{{SFLO_RUNTIME}}" in text
+    assert "self-contained" in text
+    assert "do not search for or depend on a source" in text
     assert 'src/runner.py "[description]"' not in text
     assert "printf '%s\\n'" not in text
     assert '"[description]"' not in text
@@ -684,9 +789,6 @@ def test_trigger_docs_use_heredoc_not_shell_quoted_prompt_placeholders():
         "root skill": (SFLO_ROOT / "skill" / "SKILL.md").read_text(
             encoding="utf-8"
         ),
-        "openclaw skill": (
-            SFLO_ROOT / "src/hooks/openclaw/skill/SKILL.md"
-        ).read_text(encoding="utf-8"),
     }
 
     for name, text in docs.items():
@@ -696,45 +798,18 @@ def test_trigger_docs_use_heredoc_not_shell_quoted_prompt_placeholders():
         assert "<<'SFLO_TASK'" in text, name
 
 
-def test_codex_and_cursor_factory_skills_have_explicit_trigger_guard():
-    """Runtime factory skills reject inert SFLO token mentions."""
-    codex = (
-        SFLO_ROOT
-        / "src"
-        / "hooks"
-        / "codex"
-        / "skills"
-        / "sflo"
-        / "SKILL.md"
-    ).read_text(encoding="utf-8")
-    cursor = (
-        SFLO_ROOT
-        / "src"
-        / "hooks"
-        / "cursor"
-        / "skills"
-        / "sflo"
-        / "SKILL.md"
-    ).read_text(encoding="utf-8")
+def test_canonical_factory_skill_has_explicit_trigger_guard():
+    """The one runtime-neutral skill rejects inert SFLO token mentions."""
+    skill = (SFLO_ROOT / "skill" / "SKILL.md").read_text(encoding="utf-8")
 
-    assert "--runtime codex" in codex
-    assert "Run only for an explicit factory action" in codex
-    assert "Quoted text, docs, logs" in codex
-    assert "printf '%s\\n'" not in codex
-    assert '"[task description]"' not in codex
-    assert "{{SFLO_RUNNER_SH}}" in codex
-    assert "--runtime cursor" in cursor
-    assert "name: sflo" in cursor
-    assert "disable-model-invocation: true" in cursor
-    assert "Run only when explicitly invoked as `/sflo`" in cursor
-    assert "Quoted text, docs, logs" in cursor
-    assert "printf '%s\\n'" not in cursor
-    assert '"[task description]"' not in cursor
-    assert "{{SFLO_RUNNER_SH}}" in cursor
-    assert "```powershell" in codex
-    assert "```powershell" in cursor
-    assert "@'" in codex
-    assert "@'" in cursor
+    assert "Run only for an explicit factory action" in skill
+    assert "quoted text" in skill
+    assert "printf '%s\\n'" not in skill
+    assert '"[task description]"' not in skill
+    assert "{{SFLO_RUNNER_SH}}" in skill
+    assert "{{SFLO_RUNTIME}}" in skill
+    assert "```powershell" in skill
+    assert "@'" in skill
 
 
 def test_vendor_provenance_matches_pinned_upstream_release():
@@ -773,10 +848,8 @@ def test_old_token_trigger_templates_are_not_shipped():
 
 
 def test_installed_openclaw_skill_uses_runner_entrypoint():
-    """Copied OpenClaw skill starts SFLO through the public runner."""
-    text = (SFLO_ROOT / "src/hooks/openclaw/skill/SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    """Canonical skill starts every runtime through the public runner."""
+    text = (SFLO_ROOT / "skill/SKILL.md").read_text(encoding="utf-8")
 
     assert "scaffold.py init" not in text
     assert "{{SFLO_RUNNER_SH}}" in text

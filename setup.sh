@@ -5,14 +5,14 @@
 #   bash setup.sh --runtime <openclaw|cursor|claude-code|codex> [--install-dir PATH] [--source PATH_OR_URL] [--branch BRANCH]
 #
 # Install directory:
-#   Directory where SFLO installs runtime integration files and, when needed,
-#   an SFLO checkout. Defaults to the current directory.
+#   Project directory for runtime integration, pipeline defaults, and state.
+#   The complete runtime is installed in the selected runtime's skill root.
 #
 # What this does:
-#   1. Copies/clones SFLO into the install directory (or configures in-place)
-#   2. Installs the appropriate hook/config for your runtime
-#   3. Verifies pipeline.yaml is present
-#   4. Installs runtime skills where supported
+#   1. Resolves a local source or temporary remote clone
+#   2. Atomically installs a complete self-contained runtime skill
+#   3. Installs the appropriate hook/config for your runtime
+#   4. Preserves project pipeline overrides
 #   5. Writes setup status marker
 
 set -euo pipefail
@@ -22,7 +22,6 @@ BRANCH="main"
 INSTALL_DIR=""
 SOURCE=""
 RUNTIME=""
-SFLO_DIR_NAME="sflo"
 
 # --- Cross-platform Python detection ---
 
@@ -82,7 +81,7 @@ echo "Runtime: $RUNTIME"
 # --- Detect if running from inside SFLO repo ---
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/sflo.md" ]]; then
+if [[ -z "$SOURCE" && -f "$SCRIPT_DIR/sflo.md" ]]; then
   SOURCE="$SCRIPT_DIR"
   echo "Source: $SOURCE (local — running from SFLO repo)"
 elif [[ -z "$SOURCE" ]]; then
@@ -132,6 +131,7 @@ PYEOF
 
 SETUP_SUCCEEDED=false
 SETUP_ERROR="setup did not complete"
+TEMP_SOURCE_ROOT=""
 atomic_status "failed"
 setup_exit() {
   local rc=$?
@@ -141,6 +141,7 @@ setup_exit() {
     emit_setup_result false failed "$SETUP_ERROR" || true
     [[ $rc -ne 0 ]] || rc=1
   fi
+  [[ -z "$TEMP_SOURCE_ROOT" ]] || rm -rf "$TEMP_SOURCE_ROOT"
   exit "$rc"
 }
 trap setup_exit EXIT
@@ -157,84 +158,48 @@ ensure_matt_skills() {
   [[ -f "$root/$MATT_REQUIRED_REL" ]] || die "required vendored Matt skill is missing: $root/$MATT_REQUIRED_REL"
 }
 
-# --- Install SFLO to install directory ---
-
-# If --sflo-path was provided, sflo is already in place — skip copy entirely
+# --- Resolve installation source ---
+#
+# A checkout is an installation source, not the installed product. Local
+# sources are consumed in place; remote sources are cloned to disposable
+# staging. The durable copy is installed under the selected runtime's skill
+# root below.
 if [[ -n "${SFLO_PATH_OVERRIDE:-}" ]]; then
   SFLO_PATH="$SFLO_PATH_OVERRIDE"
-  IN_PLACE=true
-  echo "SFLO path provided: $SFLO_PATH — skipping copy"
-  echo "  ✓ SFLO at $SFLO_PATH"
-else
-
-SFLO_PATH="$INSTALL_DIR/$SFLO_DIR_NAME"
-IN_PLACE=false
-
-# Detect in-place install: source IS the target (or its parent is install dir)
-resolve_real() { cd "$1" 2>/dev/null && pwd; }
-
-SOURCE_REAL="$(resolve_real "$SOURCE" || echo "")"
-SFLO_REAL="$(resolve_real "$SFLO_PATH" || echo "")"
-INSTALL_DIR_REAL="$(resolve_real "$INSTALL_DIR" || echo "")"
-
-if [[ -n "$SOURCE_REAL" && -n "$SFLO_REAL" && "$SOURCE_REAL" == "$SFLO_REAL" ]]; then
-  # Source and destination are the same directory
-  IN_PLACE=true
-  echo "Running from SFLO repo inside install directory — configuring in-place (no copy needed)"
-elif [[ -n "$SOURCE_REAL" && -n "$INSTALL_DIR_REAL" && "$SOURCE_REAL" == "$INSTALL_DIR_REAL" ]]; then
-  # Source is the install directory itself (user ran setup.sh from the SFLO repo root)
-  IN_PLACE=true
-  SFLO_PATH="$SOURCE"
-  echo "Running from SFLO repo root — configuring in-place (no copy needed)"
-elif [[ -n "$SOURCE_REAL" && -n "$SFLO_REAL" && "$SOURCE_REAL" == "$SFLO_REAL"/* ]]; then
-  # Source is INSIDE the target (e.g. an in-repo SFLO checkout)
-  # Copying would destroy the source. Use source's parent as SFLO_PATH.
-  IN_PLACE=true
-  SFLO_PATH="$SFLO_REAL"
-  echo "Source is inside target directory — configuring in-place (no copy needed)"
-elif [[ -n "$SFLO_REAL" && -n "$SOURCE_REAL" && "$SFLO_REAL" == "$SOURCE_REAL"/* ]]; then
-  # Target is inside source — same overlap problem in reverse
-  IN_PLACE=true
-  echo "Target is inside source directory — configuring in-place (no copy needed)"
 elif [[ -d "$SOURCE" ]]; then
-  # Local source — copy (prefer cp -r for cross-platform, rsync if available)
-  ensure_matt_skills "$SOURCE"
-  if [[ -d "$SFLO_PATH" ]]; then
-    echo "Updating SFLO at $SFLO_PATH from local source..."
-  else
-    echo "Copying SFLO to $SFLO_PATH..."
-    mkdir -p "$SFLO_PATH"
-  fi
-
-  if command -v rsync &>/dev/null; then
-    rsync -a --delete --exclude='.git' --exclude='__pycache__' --exclude='.sflo' "$SOURCE/" "$SFLO_PATH/"
-  else
-    # Fallback for Windows / systems without rsync
-    rm -rf "$SFLO_PATH"
-    cp -r "$SOURCE" "$SFLO_PATH"
-    rm -rf "$SFLO_PATH/.git" "$SFLO_PATH/__pycache__" "$SFLO_PATH/.sflo"
-  fi
+  SFLO_PATH="$(cd "$SOURCE" && pwd)"
+  echo "Using local SFLO source at $SFLO_PATH"
 elif [[ "$SOURCE" == http* || "$SOURCE" == git@* || "$SOURCE" == ssh://* || "$SOURCE" == file://* ]]; then
-  # Remote source — git clone
-  if [[ -d "$SFLO_PATH/.git" ]]; then
-    echo "Updating SFLO at $SFLO_PATH from git..."
-    git -C "$SFLO_PATH" pull --ff-only origin "$BRANCH" || die "failed to update SFLO checkout at $SFLO_PATH"
-  elif [[ -d "$SFLO_PATH" ]]; then
-    die "SFLO exists at $SFLO_PATH but is not a git checkout"
-  else
-    echo "Cloning SFLO..."
-    git clone --branch "$BRANCH" --depth 1 "$SOURCE" "$SFLO_PATH" || die "failed to clone SFLO from $SOURCE"
-  fi
+  TEMP_SOURCE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/sflo-install.XXXXXX")"
+  SFLO_PATH="$TEMP_SOURCE_ROOT/sflo"
+  echo "Cloning SFLO into disposable staging..."
+  git clone --branch "$BRANCH" --depth 1 "$SOURCE" "$SFLO_PATH" || die "failed to clone SFLO from $SOURCE"
 else
-  echo "ERROR: Source not found: $SOURCE"
-  exit 1
+  die "source not found: $SOURCE"
 fi
-echo "  ✓ SFLO at $SFLO_PATH"
-
-fi  # end of SFLO_PATH_OVERRIDE check
+echo "  ✓ SFLO source ready at $SFLO_PATH"
 
 ensure_matt_skills "$SFLO_PATH"
 [[ -f "$SFLO_PATH/pipeline.yaml" ]] || die "pipeline.yaml not found at $SFLO_PATH/pipeline.yaml"
+
+# Install one complete, owned SFLO payload in the selected runtime's canonical
+# skill directory. All runner, agent, gate, vendor, and integration paths below
+# resolve from this durable copy, so the source checkout may be deleted.
+SOURCE_SFLO_PATH="$SFLO_PATH"
+case "$RUNTIME" in
+  codex) SKILL_DST="${AGENTS_HOME:-$HOME/.agents}/skills/sflo" ;;
+  cursor) SKILL_DST="${CURSOR_HOME:-$HOME/.cursor}/skills/sflo" ;;
+  claude-code) SKILL_DST="${CLAUDE_HOME:-$HOME/.claude}/skills/sflo" ;;
+  openclaw) SKILL_DST="$INSTALL_DIR/skills/sflo" ;;
+esac
+mkdir -p "$(dirname "$SKILL_DST")"
+"$PYTHON_CMD" "$SOURCE_SFLO_PATH/src/install_skill.py" \
+  --source "$SOURCE_SFLO_PATH" \
+  --runtime "$RUNTIME" \
+  --destination "$SKILL_DST" \
+  || die "failed to install the self-contained SFLO skill at $SKILL_DST"
+SFLO_PATH="$SKILL_DST"
+echo "  ✓ Self-contained SFLO skill installed at $SFLO_PATH"
 
 # --- Install hooks ---
 
@@ -251,44 +216,6 @@ print(os.path.relpath(sys.argv[1], sys.argv[2]))
 ' "$to" "$from" 2>/dev/null
 }
 
-render_template_file() {
-  local src="$1"
-  local dst="$2"
-  local label="$3"
-
-  if [[ ! -f "$src" ]]; then
-    echo "  ⚠ $label source not found at $src"
-    return 1
-  fi
-
-  mkdir -p "$(dirname "$dst")"
-  "$PYTHON_CMD" - "$src" "$dst" "$SFLO_PATH" <<'PYEOF'
-import os
-import shlex
-import sys
-
-src, dst, sflo_path = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(src, encoding="utf-8") as f:
-    content = f.read()
-content = content.replace("{{SFLO_PATH}}", sflo_path)
-content = content.replace(
-    "{{SFLO_RUNNER_SH}}",
-    shlex.quote(os.path.join(sflo_path, "src", "runner.py")),
-)
-content = content.replace(
-    "{{SFLO_SCAFFOLD_SH}}",
-    shlex.quote(os.path.join(sflo_path, "src", "scaffold.py")),
-)
-content = content.replace(
-    "{{SFLO_CURSOR_STOP_HOOK_SH}}",
-    shlex.quote(os.path.join(sflo_path, "src", "hooks", "cursor", "stop_hook.py")),
-)
-with open(dst, "w", encoding="utf-8") as f:
-    f.write(content)
-PYEOF
-  echo "  ✓ $label installed at $dst"
-}
-
 shell_quote() {
   "$PYTHON_CMD" - "$1" <<'PYEOF'
 import shlex
@@ -298,46 +225,12 @@ print(shlex.quote(sys.argv[1]))
 PYEOF
 }
 
-install_skill_dir() {
-  local src="$1"
-  local dst="$2"
-  local label="$3"
-
-  if [[ ! -d "$src" ]]; then
-    echo "  ⚠ $label skill source not found at $src"
-    return 1
-  fi
-
-  rm -rf "$dst"
-  mkdir -p "$dst"
-  cp -r "$src"/* "$dst/"
-  if [[ -f "$dst/SKILL.md" ]]; then
-    render_template_file "$dst/SKILL.md" "$dst/SKILL.md" "$label skill"
-  fi
-}
-
 is_sflo_skill_dir() {
   local dir="$1"
 
   [[ -f "$dir/.sflo-owned" ]] && return 0
+  [[ -f "$dir/.sflo-install.json" ]] && grep -q '"product"[[:space:]]*:[[:space:]]*"sflo"' "$dir/.sflo-install.json" && return 0
   [[ -f "$dir/SKILL.md" ]] && grep -q "SFLO Factory Triggering" "$dir/SKILL.md"
-}
-
-install_owned_skill_dir() {
-  local src="$1"
-  local dst="$2"
-  local label="$3"
-
-  if [[ -e "$dst" ]]; then
-    if ! is_sflo_skill_dir "$dst"; then
-      echo "  ⚠ $label skill already exists at $dst and is not SFLO-owned"
-      return 1
-    fi
-    rm -rf "$dst"
-  fi
-
-  install_skill_dir "$src" "$dst" "$label" || return 1
-  printf '%s\n' "sflo" > "$dst/.sflo-owned"
 }
 
 remove_owned_skill_dir() {
@@ -432,9 +325,8 @@ if [[ "$RUNTIME" == "openclaw" ]]; then
 
   if [[ -d "$HOOK_SRC" ]]; then
     rm -rf "$HOOK_DST"
-    cp -r "$HOOK_SRC" "$HOOK_DST"
-    printf '%s\n' "$SFLO_PATH" > "$HOOK_DST/.sflo-home"
-    echo "  ✓ Hook copied to $HOOK_DST"
+    ln -s "$HOOK_SRC" "$HOOK_DST"
+    echo "  ✓ Hook linked to the self-contained SFLO skill at $HOOK_DST"
   else
     echo "  ⚠ Hook source not found at $HOOK_SRC"
   fi
@@ -464,7 +356,6 @@ elif [[ "$RUNTIME" == "cursor" ]]; then
   CURSOR_DIR="$INSTALL_DIR/.cursor"
   HOOKS_FILE="$CURSOR_DIR/hooks.json"
   RULES_DIR="$CURSOR_DIR/rules"
-  CURSOR_SKILL_SRC="$SFLO_PATH/src/hooks/cursor/skills/sflo"
   CURSOR_SKILL_ROOT="$(cursor_skill_root)"
   CURSOR_COMPAT_SKILL_ROOT="${CURSOR_HOME:-$HOME/.cursor}/skills-cursor"
   STOP_HOOK_ABS="$SFLO_PATH/src/hooks/cursor/stop_hook.py"
@@ -490,7 +381,10 @@ if os.path.isfile(path):
 data.setdefault("version", 1)
 hooks = data.setdefault("hooks", {})
 # Drop any prior SFLO stop entry (matched by the stop_hook.py command).
-stop_list = [h for h in hooks.get("stop", []) if "stop_hook" not in h.get("command", "")]
+def is_sflo_stop(entry):
+    command = str(entry.get("command", "")).replace("\\", "/")
+    return "src/hooks/cursor/stop_hook.py" in command
+stop_list = [h for h in hooks.get("stop", []) if not is_sflo_stop(h)]
 stop_list.insert(0, {"command": hook_cmd, "loop_limit": None})
 hooks["stop"] = stop_list
 with open(path, "w") as f:
@@ -498,7 +392,6 @@ with open(path, "w") as f:
 print("  ✓ .cursor/hooks.json updated (stop hook -> SFLO)")
 PYEOF
 
-  install_owned_skill_dir "$CURSOR_SKILL_SRC" "$CURSOR_SKILL_ROOT/sflo" "Cursor factory-triggering" || exit 1
   remove_owned_skill_dir "$CURSOR_SKILL_ROOT/sflo-factory-triggering"
   remove_owned_skill_dir "$CURSOR_COMPAT_SKILL_ROOT/sflo"
   remove_owned_skill_dir "$CURSOR_COMPAT_SKILL_ROOT/sflo-factory-triggering"
@@ -534,8 +427,13 @@ settings_file, hook_cmd = sys.argv[1], sys.argv[2]
 with open(settings_file) as f:
     s = json.load(f)
 hooks = s.setdefault("hooks", {})
-hooks["Stop"] = [{"type": "command", "command": hook_cmd}]
-# Remove legacy v1 key if present
+existing = list(hooks.get("Stop", [])) + list(hooks.get("stop", []))
+def is_sflo_stop(entry):
+    command = str(entry.get("command", "")).replace("\\", "/")
+    return "src/hooks/claude-code/stop_hook.py" in command
+hooks["Stop"] = [{"type": "command", "command": hook_cmd}] + [
+    entry for entry in existing if not is_sflo_stop(entry)
+]
 hooks.pop("stop", None)
 with open(settings_file, "w") as f:
     json.dump(s, f, indent=2)
@@ -554,12 +452,17 @@ print("  ✓ Created .claude/settings.json with Stop hook")
 
 elif [[ "$RUNTIME" == "codex" ]]; then
   echo "  ✓ Codex runtime selected — no stop hook installation required"
-  CODEX_SKILL_SRC="$SFLO_PATH/src/hooks/codex/skills/sflo"
-  CODEX_SKILL_DST="$INSTALL_DIR/.agents/skills/sflo"
+  CODEX_SKILL_DST="$SKILL_DST"
+  CODEX_OLD_PROJECT_SKILL_DST="$INSTALL_DIR/.agents/skills/sflo"
   CODEX_LEGACY_SKILL_DST="$INSTALL_DIR/.agents/skills/sflo-factory-triggering"
-  mkdir -p "$INSTALL_DIR/.agents/skills"
-  install_owned_skill_dir "$CODEX_SKILL_SRC" "$CODEX_SKILL_DST" "Codex SFLO" || exit 1
+  CODEX_GLOBAL_LEGACY_SKILL_DST="${AGENTS_HOME:-$HOME/.agents}/skills/sflo-factory-triggering"
   remove_owned_skill_dir "$CODEX_LEGACY_SKILL_DST"
+  remove_owned_skill_dir "$CODEX_GLOBAL_LEGACY_SKILL_DST"
+  CODEX_OLD_PROJECT_SKILL_REAL="$($PYTHON_CMD -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$CODEX_OLD_PROJECT_SKILL_DST")"
+  CODEX_SKILL_REAL="$($PYTHON_CMD -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$CODEX_SKILL_DST")"
+  if [[ "$CODEX_OLD_PROJECT_SKILL_REAL" != "$CODEX_SKILL_REAL" ]]; then
+    remove_owned_skill_dir "$CODEX_OLD_PROJECT_SKILL_DST"
+  fi
   remove_old_agents_block "$INSTALL_DIR/AGENTS.md"
   if ! command -v codex &>/dev/null; then
     echo "  NOTE: codex CLI not on PATH — install/login before triggering the pipeline."
@@ -575,16 +478,6 @@ if [[ ! -f "$PIPELINE_FILE" ]]; then
   die "pipeline.yaml not found at $PIPELINE_FILE"
 else
   echo "  ✓ pipeline.yaml present"
-fi
-
-# --- Install skill (OpenClaw only) ---
-
-if [[ "$RUNTIME" == "openclaw" ]]; then
-  SKILL_SRC="$SFLO_PATH/src/hooks/openclaw/skill"
-  SKILL_DST="$INSTALL_DIR/skills/sflo"
-
-  mkdir -p "$INSTALL_DIR/skills"
-  install_skill_dir "$SKILL_SRC" "$SKILL_DST" "OpenClaw" || true
 fi
 
 # --- Write setup status ---
@@ -608,3 +501,4 @@ echo ""
 emit_setup_result true "$FINAL_STATUS"
 SETUP_SUCCEEDED=true
 trap - EXIT
+[[ -z "$TEMP_SOURCE_ROOT" ]] || rm -rf "$TEMP_SOURCE_ROOT"

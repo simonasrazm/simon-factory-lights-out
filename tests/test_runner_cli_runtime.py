@@ -209,7 +209,5 @@ def test_generic_runner_docs_do_not_default_to_codex():
         assert "--runtime codex" not in text, rel
 
     assert "--runtime <runtime>" in (root / "sflo.md").read_text(encoding="utf-8")
-    assert "--runtime codex" in (
-        root
-        / "src/hooks/codex/skills/sflo/SKILL.md"
-    ).read_text(encoding="utf-8")
+    skill = (root / "skill/SKILL.md").read_text(encoding="utf-8")
+    assert "--runtime {{SFLO_RUNTIME}}" in skill

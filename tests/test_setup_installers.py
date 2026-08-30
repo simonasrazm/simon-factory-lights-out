@@ -24,6 +24,8 @@ def _records(output):
 
 
 def _run(install_dir, sflo_path, env=None):
+    run_env = (env or os.environ).copy()
+    run_env["HOME"] = str(install_dir.parent / "home")
     return subprocess.run(
         [
             "bash",
@@ -36,7 +38,7 @@ def _run(install_dir, sflo_path, env=None):
             str(sflo_path),
         ],
         cwd=SFLO_ROOT,
-        env=env,
+        env=run_env,
         capture_output=True,
         text=True,
         check=False,
@@ -96,29 +98,11 @@ def test_populated_checkout_succeeds_without_invoking_git(tmp_path):
     env["PATH"] = str(fake_bin) + os.pathsep + env["PATH"]
     install = tmp_path / "install"
     archive = tmp_path / "archive"
-    matt_skill = (
-        archive
-        / "vendor"
-        / "mattpocock-skills"
-        / "skills"
-        / "engineering"
-        / "tdd"
-        / "SKILL.md"
+    shutil.copytree(
+        SFLO_ROOT,
+        archive,
+        ignore=shutil.ignore_patterns(".git", ".sflo", "__pycache__"),
     )
-    matt_skill.parent.mkdir(parents=True)
-    matt_skill.write_text("# TDD\n")
-    (archive / "pipeline.yaml").write_text("gates: {}\n")
-    runtime_skill = (
-        archive
-        / "src"
-        / "hooks"
-        / "codex"
-        / "skills"
-        / "sflo"
-        / "SKILL.md"
-    )
-    runtime_skill.parent.mkdir(parents=True)
-    runtime_skill.write_text("name: sflo\n")
 
     result = _run(install, archive, env)
 
@@ -130,10 +114,30 @@ def test_populated_checkout_succeeds_without_invoking_git(tmp_path):
             "ok": True,
             "runtime": "codex",
             "install_dir": str(install),
-            "sflo_path": str(archive),
+            "sflo_path": str(tmp_path / "home" / ".agents" / "skills" / "sflo"),
             "status": "ready",
         }
     ]
+
+
+def test_codex_install_is_self_contained_in_global_skill_root(tmp_path):
+    install = tmp_path / "project"
+    home = tmp_path / "home"
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+
+    result = _run(install, SFLO_ROOT, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    skill = home / ".agents" / "skills" / "sflo"
+    assert (skill / "SKILL.md").is_file()
+    assert (skill / "src" / "runner.py").is_file()
+    assert (skill / "agents" / "dev" / "SOUL.md").is_file()
+    assert (skill / "gates" / "build.md").is_file()
+    assert (skill / "pipeline.yaml").is_file()
+    assert (skill / "vendor" / "mattpocock-skills" / "skills").is_dir()
+    assert str(SFLO_ROOT) not in (skill / "SKILL.md").read_text(encoding="utf-8")
+    assert not (install / "sflo").exists()
 
 
 def test_missing_matt_skills_fails_before_runtime_mutation(tmp_path):
@@ -195,23 +199,13 @@ def test_cursor_setup_preserves_existing_project_pipeline(tmp_path):
 
 def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path):
     source = tmp_path / "source"
-    _git("init", "-b", "main", str(source))
-    (source / "sflo.md").write_text("# SFLO\n", encoding="utf-8")
-    (source / "pipeline.yaml").write_text("gates: {}\n", encoding="utf-8")
-    runtime_skill = (
-        source
-        / "src"
-        / "hooks"
-        / "codex"
-        / "skills"
-        / "sflo"
-        / "SKILL.md"
+    shutil.copytree(
+        SFLO_ROOT,
+        source,
+        ignore=shutil.ignore_patterns(".git", ".sflo", "__pycache__"),
     )
-    runtime_skill.parent.mkdir(parents=True)
-    runtime_skill.write_text("name: sflo\n", encoding="utf-8")
+    _git("init", "-b", "main", str(source))
     skill = source / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("# TDD\n", encoding="utf-8")
     _commit(source, "add sflo fixture")
     bare = tmp_path / "source.git"
     _git("clone", "--bare", str(source), str(bare))
@@ -221,6 +215,8 @@ def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path)
     launcher_script = launcher / "setup.sh"
     shutil.copy2(SFLO_ROOT / "setup.sh", launcher_script)
     install = tmp_path / "install"
+    env = _clean_git_env()
+    env["HOME"] = str(tmp_path / "home")
     result = subprocess.run(
         [
             "bash",
@@ -235,7 +231,7 @@ def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path)
             "main",
         ],
         cwd=launcher,
-        env=_clean_git_env(),
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -243,7 +239,9 @@ def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path)
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (install / "sflo" / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd" / "SKILL.md").is_file()
+    installed = tmp_path / "home" / ".agents" / "skills" / "sflo"
+    assert (installed / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd" / "SKILL.md").is_file()
+    assert not (install / "sflo").exists()
     assert (install / ".sflo" / ".setup-status").read_text() == "ready\n"
     records = _records(result.stdout)
     assert len(records) == 1 and records[0]["ok"] is True
@@ -266,11 +264,11 @@ def test_remote_fresh_clone_contains_vendored_matt_skills_before_ready(tmp_path)
             "main",
         ],
         cwd=launcher,
-        env=_clean_git_env(),
+        env=env,
         capture_output=True,
         text=True,
         check=False,
         timeout=30,
     )
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
-    assert (install / "sflo" / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd" / "SKILL.md").read_text() == "# TDD v2\n"
+    assert (installed / "vendor" / "mattpocock-skills" / "skills" / "engineering" / "tdd" / "SKILL.md").read_text() == "# TDD v2\n"
